@@ -1,1 +1,5 @@
-./dataset
+config/config.json
+dataset/
+ml/model.pkl
+__pycache__/
+venv/

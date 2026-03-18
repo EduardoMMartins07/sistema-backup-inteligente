@@ -28,9 +28,18 @@ def first_run():
     return False
 
 
+def ensure_folders():
+    import os
+
+    os.makedirs("config", exist_ok=True)
+    os.makedirs("dataset", exist_ok=True)
+    os.makedirs("ml", exist_ok=True)
+
+
 if __name__ == "__main__":
 
     print("Iniciando Smart Backup...")
+    ensure_folders()
 
     # verificar primeira execução
     if first_run():
