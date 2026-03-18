@@ -2,7 +2,6 @@ import pystray
 from pystray import MenuItem as item
 from PIL import Image, ImageDraw
 import threading
-import tkinter as tk
 
 from interface.gui import start_gui
 from scanner.scanner import run_scanner
@@ -22,14 +21,6 @@ def create_image():
 def open_gui(icon, item):
 
     threading.Thread(target=start_gui).start()
-
-    def run():
-
-        root = tk.Tk()
-        app = BackupGUI(root)
-        root.mainloop()
-
-    threading.Thread(target=run).start()
 
 
 def run_backup(icon, item):
