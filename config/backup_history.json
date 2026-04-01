@@ -1,0 +1,8 @@
+[
+    {
+        "timestamp": "01/04/2026 18:36:48",
+        "backup_file": "backup_20260401_183648.csv",
+        "source_dataset": "dataset/files_dataset.csv",
+        "total_files": 82794
+    }
+]
