@@ -3,6 +3,9 @@ import json
 import pandas as pd
 from datetime import datetime
 
+from backup.backup_manager import BackupCancelledError
+from backup.backup_manager import is_path_ignored
+
 CONFIG_PATH = "config/config.json"
 DATASET_PATH = "dataset/files_dataset.csv"
 
@@ -62,17 +65,40 @@ def get_file_type(extension):
     return "other"
 
 
-def scan_directory(directory):
+def ensure_not_cancelled(should_cancel=None):
+    if should_cancel and should_cancel():
+        raise BackupCancelledError("Backup cancelado pelo usuario.")
+
+
+def scan_directory(directory, should_cancel=None):
 
     results = []
+    normalized_directory = os.path.normpath(directory)
 
-    for root, dirs, files in os.walk(directory):
+    if not os.path.isdir(normalized_directory):
+        return results
+
+    if is_path_ignored(normalized_directory):
+        return results
+
+    for root, dirs, files in os.walk(normalized_directory):
+        ensure_not_cancelled(should_cancel)
+
+        dirs[:] = [
+            current_dir
+            for current_dir in dirs
+            if not is_path_ignored(os.path.join(root, current_dir))
+        ]
 
         for file in files:
+            ensure_not_cancelled(should_cancel)
 
             try:
 
                 path = os.path.join(root, file)
+
+                if is_path_ignored(path):
+                    continue
 
                 size_kb = os.path.getsize(path) / 1024
 
@@ -110,7 +136,7 @@ def scan_directory(directory):
     return results
 
 
-def run_scanner():
+def run_scanner(should_cancel=None, progress_callback=None):
 
     print("\nIniciando scanner...\n")
 
@@ -121,14 +147,22 @@ def run_scanner():
         return
 
     all_files = []
+    total_directories = len(directories)
 
-    for d in directories:
+    for index, d in enumerate(directories, start=1):
+        ensure_not_cancelled(should_cancel)
 
         print("Escaneando:", d)
 
-        files = scan_directory(d)
+        if progress_callback:
+            percent = 5 + int((index - 1) / max(total_directories, 1) * 25)
+            progress_callback(percent, f"Escaneando diretorio {index}/{total_directories}")
+
+        files = scan_directory(d, should_cancel=should_cancel)
 
         all_files.extend(files)
+
+    ensure_not_cancelled(should_cancel)
 
     if not all_files:
         print("Nenhum arquivo encontrado.")
@@ -142,6 +176,9 @@ def run_scanner():
 
     print("\nDataset atualizado:", DATASET_PATH)
     print("Arquivos analisados:", len(df))
+
+    if progress_callback:
+        progress_callback(35, f"Scanner concluiu {len(df)} arquivo(s).")
 
 
 # execução direta para teste

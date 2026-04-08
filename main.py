@@ -2,8 +2,8 @@ import threading
 import os
 import json
 
-from scanner.scanner import run_scanner
 from monitor.monitor import start_monitor
+from scheduler.scheduler import start_scheduler
 from tray.tray_icon import start_tray
 from interface.gui import start_gui
 
@@ -46,13 +46,15 @@ if __name__ == "__main__":
         print("Primeira execução detectada")
         start_gui()
 
-    # scanner inicial
-    run_scanner()
-
     # iniciar monitoramento
     monitor_thread = threading.Thread(target=start_monitor)
     monitor_thread.daemon = True
     monitor_thread.start()
+
+    # iniciar agendador de backup
+    scheduler_thread = threading.Thread(target=start_scheduler)
+    scheduler_thread.daemon = True
+    scheduler_thread.start()
 
     # iniciar tray icon
     start_tray()

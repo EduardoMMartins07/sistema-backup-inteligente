@@ -4,5 +4,28 @@
         "backup_file": "backup_20260401_183648.csv",
         "source_dataset": "dataset/files_dataset.csv",
         "total_files": 82794
+    },
+    {
+        "timestamp": "08/04/2026 19:30:39",
+        "backup_file": "backup_20260408_193039.csv",
+        "source_dataset": "dataset/files_dataset.csv",
+        "total_files": 116
+    },
+    {
+        "timestamp": "08/04/2026 20:20:57",
+        "backup_file": "backup_2026-04-08_20-20-56.zip",
+        "backup_path": "C:\\Users\\super\\Downloads\\TCC\\sistema-backup-inteligente\\backups\\2026-04-08\\backup_2026-04-08_20-20-56.zip",
+        "backup_folder": "C:\\Users\\super\\Downloads\\TCC\\sistema-backup-inteligente\\backups\\2026-04-08",
+        "total_files": 121,
+        "trigger": "manual"
+    },
+    {
+        "timestamp": "08/04/2026 20:37:24",
+        "backup_file": "backup_2026-04-08_20-37-17.zip",
+        "backup_path": "C:\\Users\\super\\Downloads\\TCC\\sistema-backup-inteligente\\backups\\2026-04-08\\backup_2026-04-08_20-37-17.zip",
+        "backup_folder": "C:\\Users\\super\\Downloads\\TCC\\sistema-backup-inteligente\\backups\\2026-04-08",
+        "total_files": 21,
+        "trigger": "manual",
+        "warnings_count": 0
     }
 ]
