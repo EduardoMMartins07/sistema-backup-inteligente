@@ -5,6 +5,7 @@ from datetime import datetime
 
 from backup.backup_manager import BackupCancelledError
 from backup.backup_manager import is_path_ignored
+from utils.file_hash import calculate_file_hash
 
 CONFIG_PATH = "config/config.json"
 DATASET_PATH = "dataset/files_dataset.csv"
@@ -70,6 +71,24 @@ def ensure_not_cancelled(should_cancel=None):
         raise BackupCancelledError("Backup cancelado pelo usuario.")
 
 
+def annotate_duplicates(files):
+    seen_hashes = set()
+
+    for file_data in files:
+        file_hash = file_data.get("file_hash")
+
+        if not file_hash:
+            file_data["is_duplicate"] = 0
+            file_data["duplicate_group"] = ""
+            continue
+
+        file_data["is_duplicate"] = 1 if file_hash in seen_hashes else 0
+        file_data["duplicate_group"] = file_hash
+        seen_hashes.add(file_hash)
+
+    return files
+
+
 def scan_directory(directory, should_cancel=None):
 
     results = []
@@ -113,6 +132,7 @@ def scan_directory(directory, should_cancel=None):
                 file_type = get_file_type(extension)
 
                 important_keyword = contains_important_keyword(file)
+                file_hash = calculate_file_hash(path)
 
                 # heurística simples para gerar label
                 important = 1 if important_keyword == 1 else 0
@@ -124,6 +144,7 @@ def scan_directory(directory, should_cancel=None):
                     "type": file_type,
                     "size_kb": size_kb,
                     "days_since_modified": days_since_modified,
+                    "file_hash": file_hash,
                     "important_keyword": important_keyword,
                     "important": important
 
@@ -167,6 +188,8 @@ def run_scanner(should_cancel=None, progress_callback=None):
     if not all_files:
         print("Nenhum arquivo encontrado.")
         return
+
+    annotate_duplicates(all_files)
 
     df = pd.DataFrame(all_files)
 

@@ -2,6 +2,7 @@ import json
 import os
 import zipfile
 from datetime import datetime
+from utils.file_hash import calculate_file_hash
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 CONFIG_PATH = os.path.join(PROJECT_ROOT, "config", "config.json")
@@ -80,6 +81,11 @@ def get_monitored_directories(config=None):
 def get_backup_destination(config=None):
     config = config or load_config()
     return resolve_configured_path(config.get("backup_destination"))
+
+
+def is_deduplication_enabled(config=None):
+    config = config or load_config()
+    return bool(config.get("deduplicate_backup", False))
 
 
 def get_ignored_roots(config=None, backup_destination=None):
@@ -173,6 +179,43 @@ def build_backup_manifest(directories=None, config=None, backup_destination=None
 def count_files_in_directories(directories=None, config=None, backup_destination=None):
     manifest = build_backup_manifest(directories, config, backup_destination)
     return len(manifest)
+
+
+def deduplicate_manifest(manifest):
+    unique_entries = []
+    warnings = []
+    seen_hashes = {}
+    skipped_duplicates = []
+
+    for source_path, archive_name in manifest:
+        try:
+            file_hash = calculate_file_hash(source_path)
+        except OSError as error:
+            warnings.append(
+                {
+                    "path": source_path,
+                    "error": f"Falha ao calcular hash para deduplicacao: {error}"
+                }
+            )
+            unique_entries.append((source_path, archive_name))
+            continue
+
+        existing_path = seen_hashes.get(file_hash)
+
+        if existing_path:
+            skipped_duplicates.append(
+                {
+                    "path": source_path,
+                    "kept_path": existing_path,
+                    "reason": "Arquivo duplicado ignorado por hash."
+                }
+            )
+            continue
+
+        seen_hashes[file_hash] = source_path
+        unique_entries.append((source_path, archive_name))
+
+    return unique_entries, skipped_duplicates, warnings
 
 
 def create_versioned_backup(
@@ -291,11 +334,26 @@ def run_backup_job(
         backup_destination=backup_destination,
         config=config
     )
+    deduplication_enabled = is_deduplication_enabled(config)
+    skipped_duplicates = []
+    pre_backup_warnings = []
+
+    if deduplication_enabled:
+        manifest, skipped_duplicates, pre_backup_warnings = deduplicate_manifest(manifest)
 
     total_files = len(manifest)
 
     if progress_callback:
-        progress_callback(40, f"{total_files} arquivo(s) prontos para compactacao.")
+        if deduplication_enabled:
+            progress_callback(
+                40,
+                (
+                    f"{total_files} arquivo(s) unicos prontos para compactacao. "
+                    f"{len(skipped_duplicates)} duplicado(s) ignorado(s)."
+                )
+            )
+        else:
+            progress_callback(40, f"{total_files} arquivo(s) prontos para compactacao.")
 
     def on_zip_progress(processed, total, current_entry):
         if not progress_callback:
@@ -319,6 +377,7 @@ def run_backup_job(
         progress_callback=on_zip_progress,
         cancel_callback=cancel_callback
     )
+    warnings = pre_backup_warnings + warnings
     backup_folder = os.path.dirname(backup_path)
 
     history_entry = {
@@ -327,6 +386,7 @@ def run_backup_job(
         "backup_path": backup_path,
         "backup_folder": backup_folder,
         "total_files": total_files,
+        "duplicate_files_skipped": len(skipped_duplicates),
         "trigger": trigger,
         "warnings_count": len(warnings)
     }
@@ -336,6 +396,7 @@ def run_backup_job(
         progress_callback(100, "Backup concluido.")
 
     history_entry["warnings"] = warnings
+    history_entry["skipped_duplicates"] = skipped_duplicates
 
     return history_entry
 
