@@ -36,5 +36,15 @@
         "total_files": 347,
         "trigger": "agendado",
         "warnings_count": 0
+    },
+    {
+        "timestamp": "22/04/2026 21:42:49",
+        "backup_file": "backup_2026-04-22_21-42-41.zip",
+        "backup_path": "C:\\Users\\super\\Downloads\\TCC\\sistema-backup-inteligente\\backups\\2026-04-22\\backup_2026-04-22_21-42-41.zip",
+        "backup_folder": "C:\\Users\\super\\Downloads\\TCC\\sistema-backup-inteligente\\backups\\2026-04-22",
+        "total_files": 24,
+        "duplicate_files_skipped": 0,
+        "trigger": "manual",
+        "warnings_count": 0
     }
 ]

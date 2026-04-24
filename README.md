@@ -46,7 +46,7 @@ Toda alteracao relevante no projeto deve ser refletida neste `README.md`, manten
 - [x] Marcacao de arquivos duplicados no dataset por hash SHA-256
 - [x] Classificacao inicial de arquivos importantes com base em palavras-chave e estrutura preparada para modelo de machine learning
 - [x] Treinamento de modelo em `ml/` a partir do dataset gerado pelo scanner
-- [x] Backup manual e backup agendado com compactacao em `.zip`
+- [x] Backup manual e backup agendado com compactacao em `.zip` usando `ZIP_LZMA`
 - [x] Deduplicacao opcional no backup por hash do conteudo via `deduplicate_backup`
 - [x] Versionamento automatico dos backups por dia e horario, com organizacao em pastas por data
 - [x] Definicao de diretorio padrao para armazenamento dos backups
@@ -57,6 +57,11 @@ Toda alteracao relevante no projeto deve ser refletida neste `README.md`, manten
 - [x] Tratamento de falhas parciais durante a compactacao, ignorando arquivos problematicos sem derrubar toda a execucao
 - [x] Protecao contra recursao, ignorando pastas internas do sistema e a propria area de backup
 - [x] Interface grafica principal com menu central e suporte por icone na bandeja do sistema
+- [x] Icone personalizado aplicado na janela principal, barra de tarefas e bandeja do sistema
+- [x] Rodape da interface principal com resumo do ultimo backup e pasta destino
+- [x] Bandeja do sistema com informacoes resumidas do ultimo backup e destino atual
+- [x] Tooltip da bandeja ajustado para respeitar o limite de caracteres do Windows
+- [x] Layout da tela principal ajustado para evitar sobreposicao entre botoes auxiliares e menu
 - [ ] Restauracao de backup `.zip` pela interface
 - [ ] Visualizacao do tamanho dos backups e status da ultima execucao
 - [ ] Configuracao mais avancada de agendamento
@@ -125,6 +130,7 @@ backups/
 - `utils/file_hash.py`: calculo de hash SHA-256 para identificacao de duplicados.
 - `scheduler/scheduler.py`: execucao automatica de backups agendados.
 - `tray/tray_icon.py`: integracao com bandeja do sistema.
+- `assets/`: arquivos visuais usados pela interface, como o icone da aplicacao.
 - `config/`: arquivos de configuracao, historico e agendamento.
 - `dataset/`: CSV gerado pelo scanner.
 - `backups/`: destino padrao local dos backups.

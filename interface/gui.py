@@ -16,6 +16,7 @@ CONFIG_PATH = "config/config.json"
 BACKUP_DIR = "backups"
 HISTORY_PATH = "config/backup_history.json"
 SCHEDULE_PATH = "config/backup_schedule.json"
+ICON_PATH = os.path.join("assets", "nuvem.png")
 
 BG_COLOR = "#283241"
 PANEL_COLOR = "#1F2733"
@@ -33,6 +34,7 @@ class BackupGUI:
         self.root.geometry("820x520")
         self.root.minsize(760, 500)
         self.root.configure(bg=BG_COLOR)
+        self.window_icon_photo = None
 
         self.directories = []
         self.backup_destination = BACKUP_DIR
@@ -45,8 +47,29 @@ class BackupGUI:
         self.backup_button = None
         self.cancel_backup_requested = threading.Event()
 
+        self.configure_window_icon()
         self.load_directories()
         self.build_layout()
+
+    def configure_window_icon(self):
+        if os.name == "nt":
+            try:
+                import ctypes
+
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                    "SmartBackup.App"
+                )
+            except Exception:
+                pass
+
+        if not os.path.exists(ICON_PATH):
+            return
+
+        try:
+            self.window_icon_photo = tk.PhotoImage(file=ICON_PATH)
+            self.root.iconphoto(True, self.window_icon_photo)
+        except tk.TclError:
+            self.window_icon_photo = None
 
     def build_layout(self):
         self.outer_frame = tk.Frame(
@@ -57,17 +80,23 @@ class BackupGUI:
         )
         self.outer_frame.pack(fill="both", expand=True)
 
+        self.header_frame = tk.Frame(self.outer_frame, bg=BG_COLOR)
+        self.header_frame.pack(fill="x", padx=34, pady=(20, 0))
+
         title = tk.Label(
-            self.outer_frame,
+            self.header_frame,
             text="MENU",
             bg=BG_COLOR,
             fg=TITLE_COLOR,
             font=("Arial Black", 30, "bold")
         )
-        title.place(x=35, y=18)
+        title.pack(side="left", anchor="nw")
+
+        self.utility_frame = tk.Frame(self.header_frame, bg=BG_COLOR)
+        self.utility_frame.pack(side="right", anchor="ne")
 
         self.menu_frame = tk.Frame(self.outer_frame, bg=BG_COLOR)
-        self.menu_frame.place(relx=0.5, rely=0.5, anchor="center", y=-20)
+        self.menu_frame.place(relx=0.5, rely=0.55, anchor="center")
 
         self.backup_button = self.create_menu_button(
             "Realizar Backup",
@@ -94,24 +123,21 @@ class BackupGUI:
             self.download_latest_backup,
             bg=LIGHT_BUTTON
         )
-        self.create_menu_button(
-            "Retornar",
-            self.root.destroy,
-            bg=TITLE_COLOR
-        )
 
         footer = tk.Label(
             self.outer_frame,
             text=self.build_footer_text(),
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
-            font=("Arial", 10)
+            font=("Arial", 10),
+            justify="center",
+            wraplength=720
         )
         footer.place(relx=0.5, rely=1.0, anchor="s", y=-18)
         self.footer_label = footer
 
         manage_button = tk.Button(
-            self.outer_frame,
+            self.utility_frame,
             text="Gerenciar diretorios",
             command=self.open_directory_manager,
             font=("Arial", 11, "bold"),
@@ -124,10 +150,10 @@ class BackupGUI:
             padx=12,
             pady=6
         )
-        manage_button.place(relx=1.0, x=-24, y=28, anchor="ne")
+        manage_button.pack(fill="x", pady=(0, 10))
 
         destination_button = tk.Button(
-            self.outer_frame,
+            self.utility_frame,
             text="Diretorio padrao de backup",
             command=self.choose_backup_destination,
             font=("Arial", 11, "bold"),
@@ -140,7 +166,7 @@ class BackupGUI:
             padx=12,
             pady=6
         )
-        destination_button.place(relx=1.0, x=-24, y=72, anchor="ne")
+        destination_button.pack(fill="x")
 
     def create_menu_button(self, text, command, bg):
         button = tk.Button(
@@ -161,21 +187,18 @@ class BackupGUI:
         return button
 
     def build_footer_text(self):
-        total_dirs = len(self.directories)
-        last_schedule = self.load_schedule()
+        latest_backup = self.get_latest_history_entry()
         backup_destination = self.get_backup_destination()
 
-        if last_schedule:
-            schedule_text = (
-                f"Agendamento salvo para {last_schedule['time']} "
-                f"({last_schedule['frequency']})"
+        if latest_backup:
+            backup_text = (
+                f"Ultimo backup: {latest_backup.get('timestamp', 'desconhecido')}"
             )
         else:
-            schedule_text = "Nenhum agendamento salvo"
+            backup_text = "Ultimo backup: nenhum registro"
 
         return (
-            f"{total_dirs} diretorio(s) monitorado(s)  |  "
-            f"Destino: {backup_destination}  |  {schedule_text}"
+            f"{backup_text}  |  Destino: {backup_destination}"
         )
 
     def refresh_footer(self):
@@ -492,6 +515,7 @@ class BackupGUI:
         self.cancel_backup_requested.clear()
         self.set_backup_button_state(tk.NORMAL)
         self.close_progress_window()
+        self.refresh_footer()
 
         warning_count = len(result.get("warnings", []))
         warning_text = ""
@@ -549,6 +573,14 @@ class BackupGUI:
             return data
 
         return []
+
+    def get_latest_history_entry(self):
+        history = self.load_history()
+
+        if not history:
+            return None
+
+        return history[-1]
 
     def open_schedule_window(self):
         window = tk.Toplevel(self.root)

@@ -10,6 +10,7 @@ DATASET_PATH = os.path.join(PROJECT_ROOT, "dataset", "files_dataset.csv")
 DEFAULT_BACKUP_DIR = os.path.join(PROJECT_ROOT, "backups")
 HISTORY_PATH = os.path.join(PROJECT_ROOT, "config", "backup_history.json")
 SCHEDULE_PATH = os.path.join(PROJECT_ROOT, "config", "backup_schedule.json")
+ZIP_COMPRESSION_METHOD = zipfile.ZIP_LZMA
 
 INTERNAL_IGNORED_PATHS = [
     os.path.join(PROJECT_ROOT, "config"),
@@ -256,7 +257,7 @@ def create_versioned_backup(
     warnings = []
 
     try:
-        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        with zipfile.ZipFile(zip_path, "w", compression=ZIP_COMPRESSION_METHOD) as archive:
             if progress_callback:
                 progress_callback(0, total_entries, "Compactando arquivos...")
 
