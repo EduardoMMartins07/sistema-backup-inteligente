@@ -62,6 +62,17 @@ Toda alteracao relevante no projeto deve ser refletida neste `README.md`, manten
 - [x] Bandeja do sistema com informacoes resumidas do ultimo backup e destino atual
 - [x] Tooltip da bandeja ajustado para respeitar o limite de caracteres do Windows
 - [x] Layout da tela principal ajustado para evitar sobreposicao entre botoes auxiliares e menu
+- [x] Login local com criacao automatica do primeiro administrador
+- [x] Controle de usuarios por perfil: administrador, operador e visualizador
+- [x] Permissoes aplicadas na interface para backup, agendamento, historico, arquivos, configuracoes e usuarios
+- [x] Registro do usuario responsavel em cada backup manual
+- [x] Logout com retorno para a tela de login
+- [x] Historico filtravel por backup com arquivos adicionados, alterados e excluidos
+- [x] Visibilidade do historico por perfil: visualizador ve apenas os proprios backups, operador ve os proprios e os de visualizadores, administrador ve todos
+- [x] Tela de arquivos analisados com data de inclusao no backup, filtros por coluna e barras de rolagem
+- [x] Administrador pode nomear o backup e adicionar descricao antes da execucao manual
+- [x] Filtros avancados por janela nas telas de arquivos analisados e historico de backups
+- [x] Clique esquerdo no icone da bandeja abre o painel; clique direito mantem o menu de opcoes
 - [ ] Restauracao de backup `.zip` pela interface
 - [ ] Visualizacao do tamanho dos backups e status da ultima execucao
 - [ ] Configuracao mais avancada de agendamento
@@ -101,10 +112,37 @@ backups/
     "backup_folder": "C:/Users/super/Backups/SmartBackup/2026-04-08",
     "total_files": 128,
     "duplicate_files_skipped": 12,
-    "trigger": "manual"
+    "trigger": "manual",
+    "user": "admin",
+    "user_role": "admin",
+    "file_changes": [
+      {
+        "action": "adicionado",
+        "name": "contrato.pdf",
+        "archive_name": "Documentos/contrato.pdf",
+        "source_path": "C:/Users/super/Documents/contrato.pdf",
+        "size_bytes": 34520,
+        "modified_at": "2026-04-08T19:48:12"
+      }
+    ]
   }
 ]
 ```
+
+### Perfis de Usuario
+- **Administrador:** acessa todas as funcionalidades, incluindo gerenciamento de usuarios, diretorios e destino de backup.
+- **Operador:** pode realizar backup, agendar backup, visualizar arquivos, consultar historico e baixar o ultimo backup.
+- **Visualizador:** possui acesso somente leitura aos arquivos analisados e ao historico de backups.
+- **Sem login:** nao acessa o painel nem executa acoes protegidas.
+
+Os usuarios ficam em `config/users.json`. As senhas nao sao salvas em texto puro; o sistema armazena hash PBKDF2 com salt individual.
+
+### Filtro de Historico por Perfil
+- **Visualizador:** visualiza somente backups executados pelo proprio usuario e seus arquivos adicionados, alterados ou excluidos.
+- **Operador:** visualiza os proprios backups e backups executados por visualizadores.
+- **Administrador:** visualiza backups de administradores, operadores, visualizadores e execucoes do sistema.
+
+Cada backup novo registra um snapshot dos arquivos e compara com o snapshot anterior para montar a lista de mudancas. Backups antigos, criados antes dessa funcionalidade, podem aparecer sem detalhes de mudancas.
 
 ### Execucao do Backup na Interface
 - Ao iniciar um backup manual, a aplicacao abre uma barra de loading para acompanhar o progresso da operacao.
@@ -123,7 +161,9 @@ backups/
 
 ## Estrutura do Projeto
 - `main.py`: ponto de entrada da aplicacao.
+- `auth/`: autenticacao local, hash de senhas e regras de permissao por perfil.
 - `interface/gui.py`: interface principal e janelas auxiliares.
+- `interface/login.py`: login e criacao do primeiro administrador.
 - `scanner/scanner.py`: varredura dos diretorios, calculo de hash e geracao do dataset CSV.
 - `monitor/monitor.py`: monitoramento de alteracoes com watchdog.
 - `backup/backup_manager.py`: criacao, versionamento, deduplicacao opcional e historico dos backups.
@@ -144,9 +184,10 @@ backups/
 - [ ] Exibir logs mais detalhados na interface
 - [ ] Integrar classificacao de relevancia usando o modulo `ml/`
 - [ ] Adicionar um controle visual na interface para ativar ou desativar `deduplicate_backup`
+- [ ] Adicionar troca de senha pelo proprio usuario
 
 ## Comandos Uteis
 - `python main.py`: inicia a aplicacao.
-- `python -m py_compile main.py monitor/monitor.py interface/gui.py backup/backup_manager.py scheduler/scheduler.py scanner/scanner.py utils/file_hash.py`: valida a sintaxe dos modulos principais.
+- `python -m py_compile main.py auth/users.py auth/permissions.py monitor/monitor.py interface/login.py interface/gui.py backup/backup_manager.py scheduler/scheduler.py scanner/scanner.py utils/file_hash.py`: valida a sintaxe dos modulos principais.
 - `python scanner/scanner.py`: executa o scanner manualmente.
 - `pip install -r requirements.txt`: instala as dependencias do projeto.

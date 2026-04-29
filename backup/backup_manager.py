@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import zipfile
 from datetime import datetime
 from utils.file_hash import calculate_file_hash
@@ -219,12 +220,109 @@ def deduplicate_manifest(manifest):
     return unique_entries, skipped_duplicates, warnings
 
 
+def build_file_snapshot(manifest):
+    snapshot = {}
+
+    for source_path, archive_name in manifest:
+        try:
+            stat = os.stat(source_path)
+            file_hash = calculate_file_hash(source_path)
+        except OSError:
+            continue
+
+        snapshot[archive_name] = {
+            "name": os.path.basename(source_path),
+            "source_path": source_path,
+            "archive_name": archive_name,
+            "size_bytes": stat.st_size,
+            "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+            "file_hash": file_hash,
+        }
+
+    return snapshot
+
+
+def get_latest_history_snapshot():
+    history = load_history()
+
+    for entry in reversed(history):
+        snapshot = entry.get("file_snapshot")
+
+        if isinstance(snapshot, dict):
+            return snapshot
+
+    return {}
+
+
+def build_file_changes(previous_snapshot, current_snapshot):
+    changes = []
+    previous_keys = set(previous_snapshot.keys())
+    current_keys = set(current_snapshot.keys())
+
+    for archive_name in sorted(current_keys - previous_keys):
+        file_data = current_snapshot[archive_name]
+        changes.append(
+            {
+                "action": "adicionado",
+                "name": file_data.get("name", ""),
+                "archive_name": archive_name,
+                "source_path": file_data.get("source_path", ""),
+                "size_bytes": file_data.get("size_bytes", 0),
+                "modified_at": file_data.get("modified_at", ""),
+            }
+        )
+
+    for archive_name in sorted(previous_keys & current_keys):
+        previous_file = previous_snapshot[archive_name]
+        current_file = current_snapshot[archive_name]
+
+        if previous_file.get("file_hash") == current_file.get("file_hash"):
+            continue
+
+        changes.append(
+            {
+                "action": "alterado",
+                "name": current_file.get("name", ""),
+                "archive_name": archive_name,
+                "source_path": current_file.get("source_path", ""),
+                "size_bytes": current_file.get("size_bytes", 0),
+                "modified_at": current_file.get("modified_at", ""),
+            }
+        )
+
+    for archive_name in sorted(previous_keys - current_keys):
+        file_data = previous_snapshot[archive_name]
+        changes.append(
+            {
+                "action": "excluido",
+                "name": file_data.get("name", ""),
+                "archive_name": archive_name,
+                "source_path": file_data.get("source_path", ""),
+                "size_bytes": file_data.get("size_bytes", 0),
+                "modified_at": file_data.get("modified_at", ""),
+            }
+        )
+
+    return changes
+
+
+def sanitize_backup_name(name):
+    if not name:
+        return ""
+
+    sanitized = re.sub(r"[^A-Za-z0-9._ -]+", "", name.strip())
+    sanitized = re.sub(r"\s+", "_", sanitized)
+    sanitized = sanitized.strip("._- ")
+    return sanitized[:60]
+
+
 def create_versioned_backup(
     directories=None,
     backup_destination=None,
     config=None,
     now=None,
     manifest=None,
+    backup_name=None,
     progress_callback=None,
     cancel_callback=None
 ):
@@ -237,7 +335,14 @@ def create_versioned_backup(
         raise ValueError("Adicione ao menos um diretorio antes de iniciar o backup.")
 
     day_folder = now.strftime("%Y-%m-%d")
-    zip_name = f"backup_{now.strftime('%Y-%m-%d_%H-%M-%S')}.zip"
+    safe_backup_name = sanitize_backup_name(backup_name)
+    timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
+
+    if safe_backup_name:
+        zip_name = f"{safe_backup_name}_{timestamp}.zip"
+    else:
+        zip_name = f"backup_{timestamp}.zip"
+
     target_directory = os.path.join(backup_destination, day_folder)
     os.makedirs(target_directory, exist_ok=True)
 
@@ -301,6 +406,10 @@ def run_backup_job(
     directories=None,
     backup_destination=None,
     trigger="manual",
+    username=None,
+    user_role=None,
+    backup_name=None,
+    backup_description=None,
     run_scan_first=True,
     progress_callback=None,
     cancel_callback=None
@@ -335,6 +444,9 @@ def run_backup_job(
         backup_destination=backup_destination,
         config=config
     )
+    current_snapshot = build_file_snapshot(manifest)
+    previous_snapshot = get_latest_history_snapshot()
+    file_changes = build_file_changes(previous_snapshot, current_snapshot)
     deduplication_enabled = is_deduplication_enabled(config)
     skipped_duplicates = []
     pre_backup_warnings = []
@@ -375,6 +487,7 @@ def run_backup_job(
         backup_destination=backup_destination,
         config=config,
         manifest=manifest,
+        backup_name=backup_name,
         progress_callback=on_zip_progress,
         cancel_callback=cancel_callback
     )
@@ -384,11 +497,17 @@ def run_backup_job(
     history_entry = {
         "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
         "backup_file": os.path.basename(backup_path),
+        "backup_name": backup_name or "",
+        "backup_description": backup_description or "",
         "backup_path": backup_path,
         "backup_folder": backup_folder,
         "total_files": total_files,
         "duplicate_files_skipped": len(skipped_duplicates),
         "trigger": trigger,
+        "user": username or "sistema",
+        "user_role": user_role or "system",
+        "file_changes": file_changes,
+        "file_snapshot": current_snapshot,
         "warnings_count": len(warnings)
     }
     append_history(history_entry)

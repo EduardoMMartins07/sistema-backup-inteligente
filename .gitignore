@@ -1,6 +1,38 @@
+# Configuracoes e dados locais
 config/config.json
+config/users.json
+config/backup_history.json
+config/backup_schedule.json
+
+# Dados gerados pela aplicacao
 dataset/
-ml/model.pkl
-__pycache__/
-venv/
 backups/
+ml/model.pkl
+*.zip
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Ambientes virtuais
+venv/
+.venv/
+env/
+.env/
+
+# Logs e arquivos temporarios
+*.log
+*.tmp
+*.bak
+
+# Sistema operacional e IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -5,6 +5,8 @@ import threading
 import os
 import json
 
+from auth.permissions import can
+from interface.login import login_user
 from interface.gui import start_gui
 from scanner.scanner import run_scanner
 
@@ -80,7 +82,7 @@ def build_tray_title():
 
 def build_menu():
     return pystray.Menu(
-        item("Abrir painel", open_gui),
+        item("Abrir painel", open_gui, default=True),
         item(f"Ultimo backup: {get_latest_backup_timestamp()}", None, enabled=False),
         item(
             f"Destino: {format_destination_for_menu(get_backup_destination())}",
@@ -99,7 +101,13 @@ def open_gui(icon, item):
 
 def run_backup(icon, item):
 
-    print("Executando scanner manual...")
+    user = login_user()
+
+    if not can(user, "run_backup"):
+        print("Acesso negado para executar scanner manual.")
+        return
+
+    print(f"Executando scanner manual por {user.get('username')}...")
     run_scanner()
 
 

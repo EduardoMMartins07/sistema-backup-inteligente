@@ -89,7 +89,7 @@ def annotate_duplicates(files):
     return files
 
 
-def scan_directory(directory, should_cancel=None):
+def scan_directory(directory, should_cancel=None, added_to_backup_at=None):
 
     results = []
     normalized_directory = os.path.normpath(directory)
@@ -144,6 +144,7 @@ def scan_directory(directory, should_cancel=None):
                     "type": file_type,
                     "size_kb": size_kb,
                     "days_since_modified": days_since_modified,
+                    "added_to_backup_at": added_to_backup_at or "",
                     "file_hash": file_hash,
                     "important_keyword": important_keyword,
                     "important": important
@@ -162,6 +163,7 @@ def run_scanner(should_cancel=None, progress_callback=None):
     print("\nIniciando scanner...\n")
 
     directories = load_directories()
+    added_to_backup_at = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
     if not directories:
         print("Nenhum diretório configurado.")
@@ -179,7 +181,11 @@ def run_scanner(should_cancel=None, progress_callback=None):
             percent = 5 + int((index - 1) / max(total_directories, 1) * 25)
             progress_callback(percent, f"Escaneando diretorio {index}/{total_directories}")
 
-        files = scan_directory(d, should_cancel=should_cancel)
+        files = scan_directory(
+            d,
+            should_cancel=should_cancel,
+            added_to_backup_at=added_to_backup_at
+        )
 
         all_files.extend(files)
 

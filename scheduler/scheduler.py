@@ -14,7 +14,11 @@ def start_scheduler():
 
         try:
             if is_schedule_due(now):
-                result = run_backup_job(trigger="agendado")
+                result = run_backup_job(
+                    trigger="agendado",
+                    username="sistema",
+                    user_role="system"
+                )
                 mark_schedule_executed(now)
                 print(f"Backup agendado criado: {result['backup_path']}")
         except Exception as error:

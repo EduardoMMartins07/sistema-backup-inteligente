@@ -6,6 +6,7 @@ from monitor.monitor import start_monitor
 from scheduler.scheduler import start_scheduler
 from tray.tray_icon import start_tray
 from interface.gui import start_gui
+from auth.users import users_exist
 
 CONFIG_FILE = "config/config.json"
 
@@ -42,7 +43,7 @@ if __name__ == "__main__":
     ensure_folders()
 
     # verificar primeira execução
-    if first_run():
+    if first_run() or not users_exist():
         print("Primeira execução detectada")
         start_gui()
 
