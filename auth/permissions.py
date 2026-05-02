@@ -8,6 +8,7 @@ ROLES = {
         "view_files",
         "view_history",
         "download_backup",
+        "restore_backup",
     },
     "operator": {
         "run_backup",
@@ -15,6 +16,7 @@ ROLES = {
         "view_files",
         "view_history",
         "download_backup",
+        "restore_backup",
     },
     "viewer": {
         "view_files",

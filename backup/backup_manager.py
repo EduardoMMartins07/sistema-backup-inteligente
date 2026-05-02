@@ -1,6 +1,8 @@
+import hashlib
 import json
 import os
 import re
+import shutil
 import zipfile
 from datetime import datetime
 from utils.file_hash import calculate_file_hash
@@ -12,6 +14,7 @@ DEFAULT_BACKUP_DIR = os.path.join(PROJECT_ROOT, "backups")
 HISTORY_PATH = os.path.join(PROJECT_ROOT, "config", "backup_history.json")
 SCHEDULE_PATH = os.path.join(PROJECT_ROOT, "config", "backup_schedule.json")
 ZIP_COMPRESSION_METHOD = zipfile.ZIP_LZMA
+RECOVERABLE_ACTIONS = {"alterado", "excluido"}
 
 INTERNAL_IGNORED_PATHS = [
     os.path.join(PROJECT_ROOT, "config"),
@@ -569,6 +572,418 @@ def mark_schedule_executed(now=None):
 
     schedule["last_run_at"] = now.isoformat(timespec="seconds")
     save_schedule(schedule)
+
+
+def normalize_archive_name(archive_name):
+    if not archive_name:
+        return ""
+
+    return str(archive_name).replace("\\", "/").strip("/")
+
+
+def calculate_zip_member_hash(archive, member_info, chunk_size=65536):
+    hasher = hashlib.sha256()
+
+    with archive.open(member_info, "r") as file:
+        while True:
+            chunk = file.read(chunk_size)
+
+            if not chunk:
+                break
+
+            hasher.update(chunk)
+
+    return hasher.hexdigest()
+
+
+def build_recovered_file_path(path):
+    directory = os.path.dirname(path)
+    filename = os.path.basename(path)
+    name, extension = os.path.splitext(filename)
+
+    if not name:
+        name = filename
+        extension = ""
+
+    base_path = os.path.join(directory, f"{name}_recuperado{extension}")
+    candidate_path = base_path
+    counter = 2
+
+    while os.path.exists(candidate_path):
+        candidate_path = os.path.join(
+            directory,
+            f"{name}_recuperado_{counter}{extension}"
+        )
+        counter += 1
+
+    return candidate_path
+
+
+def build_recovered_folder_path(path):
+    normalized_path = normalize_path(path)
+    parent_directory = os.path.dirname(normalized_path)
+    folder_name = os.path.basename(normalized_path.rstrip("\\/"))
+    base_path = os.path.join(parent_directory, f"{folder_name}_recuperado")
+    candidate_path = base_path
+    counter = 2
+
+    while os.path.exists(candidate_path):
+        candidate_path = os.path.join(
+            parent_directory,
+            f"{folder_name}_recuperado_{counter}"
+        )
+        counter += 1
+
+    return candidate_path
+
+
+def iter_history_backup_paths(entry, backup_destination=None):
+    if not isinstance(entry, dict):
+        return
+
+    backup_file = entry.get("backup_file", "")
+    direct_path = entry.get("backup_path", "")
+    backup_folder = entry.get("backup_folder", "")
+    seen_paths = set()
+
+    def yield_if_zip(path):
+        if not path or not str(path).lower().endswith(".zip"):
+            return
+
+        normalized_path = normalize_path(path)
+
+        if normalized_path in seen_paths:
+            return
+
+        if os.path.exists(normalized_path):
+            seen_paths.add(normalized_path)
+            yield normalized_path
+
+    for path in yield_if_zip(direct_path):
+        yield path
+
+    search_roots = [
+        backup_folder,
+        backup_destination,
+        get_backup_destination(),
+        DEFAULT_BACKUP_DIR,
+    ]
+
+    if direct_path:
+        search_roots.append(os.path.dirname(direct_path))
+
+    for root in search_roots:
+        if not root:
+            continue
+
+        root = resolve_configured_path(root)
+
+        if not os.path.isdir(root):
+            continue
+
+        if backup_file and str(backup_file).lower().endswith(".zip"):
+            for current_root, _, names in os.walk(root):
+                for name in names:
+                    if name != backup_file:
+                        continue
+
+                    for path in yield_if_zip(os.path.join(current_root, name)):
+                        yield path
+
+
+def find_zip_member(archive, archive_name):
+    target_name = normalize_archive_name(archive_name)
+
+    if not target_name:
+        return None
+
+    target_name_lower = target_name.lower()
+    fallback_member = None
+
+    for info in archive.infolist():
+        if info.is_dir():
+            continue
+
+        member_name = normalize_archive_name(info.filename)
+
+        if member_name == target_name:
+            return info.filename
+
+        if member_name.lower() == target_name_lower:
+            fallback_member = info.filename
+
+    return fallback_member
+
+
+def find_backup_containing_archive(
+    archive_name,
+    before_history_index=None,
+    backup_destination=None,
+    history=None
+):
+    history = history if history is not None else load_history()
+    indexed_history = list(enumerate(history))
+
+    if before_history_index is not None:
+        indexed_history = [
+            (index, entry)
+            for index, entry in indexed_history
+            if index < before_history_index
+        ]
+
+    for history_index, entry in reversed(indexed_history):
+        for backup_path in iter_history_backup_paths(entry, backup_destination):
+            try:
+                with zipfile.ZipFile(backup_path, "r") as archive:
+                    member_name = find_zip_member(archive, archive_name)
+            except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile):
+                continue
+
+            if member_name:
+                return {
+                    "backup_path": backup_path,
+                    "member_name": member_name,
+                    "history_index": history_index,
+                    "history_entry": entry,
+                }
+
+    return None
+
+
+def build_restore_target(change):
+    source_path = change.get("source_path", "")
+
+    if source_path:
+        return normalize_path(source_path)
+
+    archive_name = normalize_archive_name(change.get("archive_name", ""))
+
+    if not archive_name:
+        return ""
+
+    return normalize_path(os.path.join(PROJECT_ROOT, "restaurados", archive_name))
+
+
+def inspect_restore_change(
+    change,
+    before_history_index=None,
+    backup_destination=None
+):
+    archive_name = change.get("archive_name", "")
+    target_path = build_restore_target(change)
+    result = {
+        "name": change.get("name", ""),
+        "archive_name": archive_name,
+        "target_path": target_path,
+        "status": "error",
+        "message": "",
+        "backup_path": "",
+    }
+
+    if not archive_name:
+        result["message"] = "Entrada sem caminho interno no backup."
+        return result
+
+    if not target_path:
+        result["message"] = "Entrada sem caminho de destino."
+        return result
+
+    backup_source = find_backup_containing_archive(
+        archive_name,
+        before_history_index=before_history_index,
+        backup_destination=backup_destination
+    )
+
+    if not backup_source:
+        result["status"] = "not_found"
+        result["message"] = "Arquivo nao encontrado em backups anteriores."
+        return result
+
+    result["backup_path"] = backup_source["backup_path"]
+
+    if not os.path.exists(target_path):
+        result["status"] = "target_missing"
+        result["message"] = "Destino livre."
+        return result
+
+    if not os.path.isfile(target_path):
+        result["status"] = "different_existing"
+        result["message"] = "Ja existe um item no destino com este nome."
+        return result
+
+    try:
+        with zipfile.ZipFile(backup_source["backup_path"], "r") as archive:
+            member_info = archive.getinfo(backup_source["member_name"])
+            backup_hash = calculate_zip_member_hash(archive, member_info)
+
+        existing_hash = calculate_file_hash(target_path)
+    except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile, KeyError) as error:
+        result["message"] = str(error)
+        return result
+
+    if backup_hash == existing_hash:
+        result["status"] = "identical_existing"
+        result["message"] = "Arquivo existente tem o mesmo conteudo."
+    else:
+        result["status"] = "different_existing"
+        result["message"] = "Arquivo existente tem conteudo diferente."
+
+    return result
+
+
+def inspect_restore_changes(
+    changes,
+    before_history_index=None,
+    backup_destination=None
+):
+    return [
+        inspect_restore_change(
+            change,
+            before_history_index=before_history_index,
+            backup_destination=backup_destination
+        )
+        for change in changes
+        if change.get("action") in RECOVERABLE_ACTIONS
+    ]
+
+
+def restore_recoverable_change(
+    change,
+    before_history_index=None,
+    backup_destination=None,
+    overwrite=False,
+    conflict_strategy="skip",
+    target_path_override=None
+):
+    archive_name = change.get("archive_name", "")
+    original_target_path = build_restore_target(change)
+    target_path = normalize_path(target_path_override) if target_path_override else original_target_path
+    result = {
+        "name": change.get("name", ""),
+        "archive_name": archive_name,
+        "target_path": target_path,
+        "original_target_path": original_target_path,
+        "status": "error",
+        "message": "",
+        "backup_path": "",
+    }
+
+    if not archive_name:
+        result["message"] = "Entrada sem caminho interno no backup."
+        return result
+
+    if not original_target_path or not target_path:
+        result["message"] = "Entrada sem caminho de destino."
+        return result
+
+    backup_source = find_backup_containing_archive(
+        archive_name,
+        before_history_index=before_history_index,
+        backup_destination=backup_destination
+    )
+
+    if not backup_source:
+        result["status"] = "not_found"
+        result["message"] = "Arquivo nao encontrado em backups anteriores."
+        return result
+
+    result["backup_path"] = backup_source["backup_path"]
+
+    try:
+        with zipfile.ZipFile(backup_source["backup_path"], "r") as archive:
+            member_info = archive.getinfo(backup_source["member_name"])
+
+            if os.path.exists(target_path):
+                is_identical = False
+
+                if os.path.isfile(target_path):
+                    existing_hash = calculate_file_hash(target_path)
+                    backup_hash = calculate_zip_member_hash(archive, member_info)
+                    is_identical = existing_hash == backup_hash
+
+                if is_identical and not overwrite:
+                    result["status"] = "identical_existing"
+                    result["message"] = "Arquivo existente tem o mesmo conteudo."
+                    return result
+
+                if not overwrite:
+                    if conflict_strategy == "rename":
+                        target_path = build_recovered_file_path(target_path)
+                        result["target_path"] = target_path
+                    else:
+                        result["status"] = "skipped_existing"
+                        result["message"] = "Destino ja existe."
+                        return result
+
+            target_directory = os.path.dirname(target_path)
+
+            if target_directory:
+                os.makedirs(target_directory, exist_ok=True)
+
+            with archive.open(member_info, "r") as source_file:
+                with open(target_path, "wb") as target_file:
+                    shutil.copyfileobj(source_file, target_file)
+
+            try:
+                modified_at = datetime(*member_info.date_time).timestamp()
+                os.utime(target_path, (modified_at, modified_at))
+            except (OSError, ValueError):
+                pass
+    except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile, KeyError) as error:
+        result["message"] = str(error)
+        return result
+
+    if target_path != original_target_path:
+        result["status"] = "restored_renamed"
+        result["message"] = "Arquivo recuperado com outro nome."
+    else:
+        result["status"] = "restored"
+        result["message"] = "Arquivo recuperado."
+
+    return result
+
+
+def restore_recoverable_changes(
+    changes,
+    before_history_index=None,
+    backup_destination=None,
+    overwrite=False,
+    conflict_strategy="skip",
+    target_overrides=None
+):
+    results = []
+    target_overrides = target_overrides or {}
+    normalized_overrides = {
+        normalize_archive_name(archive_name): target_path
+        for archive_name, target_path in target_overrides.items()
+    }
+
+    for change in changes:
+        if change.get("action") not in RECOVERABLE_ACTIONS:
+            continue
+
+        archive_name = normalize_archive_name(change.get("archive_name", ""))
+
+        results.append(
+            restore_recoverable_change(
+                change,
+                before_history_index=before_history_index,
+                backup_destination=backup_destination,
+                overwrite=overwrite,
+                conflict_strategy=conflict_strategy,
+                target_path_override=normalized_overrides.get(archive_name)
+            )
+        )
+
+    return results
+
+
+def restore_deleted_change(*args, **kwargs):
+    return restore_recoverable_change(*args, **kwargs)
+
+
+def restore_deleted_changes(*args, **kwargs):
+    return restore_recoverable_changes(*args, **kwargs)
 
 
 def get_latest_backup_path(backup_destination=None):

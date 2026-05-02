@@ -73,7 +73,7 @@ Toda alteracao relevante no projeto deve ser refletida neste `README.md`, manten
 - [x] Administrador pode nomear o backup e adicionar descricao antes da execucao manual
 - [x] Filtros avancados por janela nas telas de arquivos analisados e historico de backups
 - [x] Clique esquerdo no icone da bandeja abre o painel; clique direito mantem o menu de opcoes
-- [ ] Restauracao de backup `.zip` pela interface
+- [x] Restauracao de arquivos excluidos e versoes anteriores pela interface
 - [ ] Visualizacao do tamanho dos backups e status da ultima execucao
 - [ ] Configuracao mais avancada de agendamento
 - [ ] Integracao completa da predicao do modulo `ml/` ao fluxo principal do backup
@@ -158,6 +158,8 @@ Cada backup novo registra um snapshot dos arquivos e compara com o snapshot ante
 5. O usuario pode acompanhar o andamento e cancelar a operacao de forma segura durante o scanner ou a compactacao.
 6. Se `deduplicate_backup` estiver ativado no `config.json`, apenas a primeira ocorrencia de cada hash entra no `.zip`.
 7. O sistema registra o historico da execucao e permite exportar o ultimo backup.
+8. A interface permite consultar arquivos excluidos ou alterados por backup e recuperar itens a partir de backups anteriores.
+9. Ao recuperar, arquivos existentes no destino sao comparados por hash; conflitos podem ser renomeados, usando `_recuperado` como nome padrao.
 
 ## Estrutura do Projeto
 - `main.py`: ponto de entrada da aplicacao.
@@ -166,7 +168,7 @@ Cada backup novo registra um snapshot dos arquivos e compara com o snapshot ante
 - `interface/login.py`: login e criacao do primeiro administrador.
 - `scanner/scanner.py`: varredura dos diretorios, calculo de hash e geracao do dataset CSV.
 - `monitor/monitor.py`: monitoramento de alteracoes com watchdog.
-- `backup/backup_manager.py`: criacao, versionamento, deduplicacao opcional e historico dos backups.
+- `backup/backup_manager.py`: criacao, versionamento, deduplicacao opcional, historico e restauracao dos backups.
 - `utils/file_hash.py`: calculo de hash SHA-256 para identificacao de duplicados.
 - `scheduler/scheduler.py`: execucao automatica de backups agendados.
 - `tray/tray_icon.py`: integracao com bandeja do sistema.
@@ -177,7 +179,7 @@ Cada backup novo registra um snapshot dos arquivos e compara com o snapshot ante
 - `ml/`: estrutura preparada para inteligencia/classificacao futura.
 
 ## Proximos Passos Sugeridos
-- [ ] Adicionar restauracao de backup pela interface
+- [x] Adicionar restauracao de backup e versoes anteriores pela interface
 - [ ] Mostrar tamanho, data e origem do ultimo backup na tela principal
 - [ ] Permitir exclusao ou limpeza de backups antigos
 - [ ] Melhorar o menu da bandeja para disparar backup completo e nao apenas scan

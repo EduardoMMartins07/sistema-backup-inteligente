@@ -2,11 +2,12 @@ import csv
 import json
 import os
 import queue
+import re
 import shutil
 import threading
 from datetime import datetime
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from auth.permissions import can
 from auth.permissions import can_view_backup_entry
@@ -17,7 +18,12 @@ from auth.users import delete_user
 from auth.users import list_public_users
 from auth.users import update_user
 from backup.backup_manager import BackupCancelledError
+from backup.backup_manager import build_recovered_file_path
+from backup.backup_manager import build_recovered_folder_path
+from backup.backup_manager import build_restore_target
 from backup.backup_manager import get_latest_backup_path
+from backup.backup_manager import inspect_restore_changes
+from backup.backup_manager import restore_recoverable_changes
 from backup.backup_manager import run_backup_job
 
 CONFIG_PATH = "config/config.json"
@@ -58,6 +64,7 @@ class BackupGUI:
         self.files_button = None
         self.history_button = None
         self.download_button = None
+        self.restore_button = None
         self.manage_button = None
         self.destination_button = None
         self.logout_requested = False
@@ -143,6 +150,11 @@ class BackupGUI:
         self.history_button = self.create_menu_button(
             "Historico de Backups",
             self.show_history_window,
+            bg=LIGHT_BUTTON
+        )
+        self.restore_button = self.create_menu_button(
+            "Recuperar arquivos",
+            self.show_restore_window,
             bg=LIGHT_BUTTON
         )
         self.download_button = self.create_menu_button(
@@ -269,6 +281,7 @@ class BackupGUI:
             (self.schedule_button, "schedule_backup"),
             (self.files_button, "view_files"),
             (self.history_button, "view_history"),
+            (self.restore_button, "restore_backup"),
             (self.download_button, "download_backup"),
             (self.manage_button, "manage_directories"),
             (self.destination_button, "change_backup_destination"),
@@ -1289,6 +1302,649 @@ class BackupGUI:
             return f"{float(value):.2f}"
         except (TypeError, ValueError):
             return value
+
+    def format_size_bytes(self, size_bytes):
+        try:
+            size = float(size_bytes)
+        except (TypeError, ValueError):
+            return "-"
+
+        if size >= 1024 * 1024:
+            return f"{size / (1024 * 1024):.2f} MB"
+
+        if size >= 1024:
+            return f"{size / 1024:.2f} KB"
+
+        return f"{int(size)} B"
+
+    def get_recoverable_changes(self, entry):
+        changes = entry.get("file_changes", [])
+
+        if not isinstance(changes, list):
+            return []
+
+        return [
+            change
+            for change in changes
+            if (
+                isinstance(change, dict)
+                and change.get("action") in ("alterado", "excluido")
+            )
+        ]
+
+    def count_changes_by_action(self, entry, action):
+        return sum(
+            1
+            for change in self.get_recoverable_changes(entry)
+            if change.get("action") == action
+        )
+
+    def get_change_folder(self, change):
+        target_path = build_restore_target(change)
+
+        if target_path:
+            return os.path.dirname(os.path.abspath(os.path.normpath(target_path)))
+
+        return ""
+
+    def sanitize_restore_name(self, name):
+        sanitized = re.sub(r'[<>:"/\\|?*]+', "_", name.strip())
+        sanitized = sanitized.strip(". ")
+        return sanitized
+
+    def ensure_unique_folder_path(self, folder_path):
+        candidate_path = folder_path
+        counter = 2
+
+        while os.path.exists(candidate_path):
+            candidate_path = f"{folder_path}_{counter}"
+            counter += 1
+
+        return candidate_path
+
+    def build_folder_target_overrides(self, changes, folder_path, restored_folder):
+        overrides = {}
+        normalized_folder = os.path.abspath(os.path.normpath(folder_path))
+
+        for change in changes:
+            target_path = build_restore_target(change)
+
+            if not target_path:
+                continue
+
+            try:
+                relative_path = os.path.relpath(target_path, normalized_folder)
+            except ValueError:
+                relative_path = os.path.basename(target_path)
+
+            overrides[change.get("archive_name", "")] = os.path.join(
+                restored_folder,
+                relative_path
+            )
+
+        return overrides
+
+    def is_change_inside_folder(self, change, folder_path):
+        if not folder_path:
+            return False
+
+        target_path = build_restore_target(change)
+
+        if target_path:
+            try:
+                normalized_path = os.path.normcase(os.path.abspath(target_path))
+                normalized_folder = os.path.normcase(os.path.abspath(folder_path))
+                return os.path.commonpath(
+                    [normalized_path, normalized_folder]
+                ) == normalized_folder
+            except ValueError:
+                return False
+
+        return False
+
+    def show_restore_window(self):
+        if not self.require_permission("restore_backup"):
+            return
+
+        history = [
+            (index, entry)
+            for index, entry in enumerate(self.load_history())
+            if can_view_backup_entry(self.current_user, entry)
+        ]
+
+        if not history:
+            messagebox.showinfo(
+                "Sem backups",
+                "Nenhum backup disponivel para recuperacao."
+            )
+            return
+
+        indexed_history = list(reversed(history))
+        current_recoverable_changes = []
+
+        window = tk.Toplevel(self.root)
+        window.title("Recuperar arquivos e versoes")
+        window.geometry("1220x650")
+        window.minsize(980, 520)
+        window.configure(bg=BG_COLOR)
+        window.transient(self.root)
+
+        tk.Label(
+            window,
+            text="Recuperar Arquivos e Versoes",
+            bg=BG_COLOR,
+            fg=TITLE_COLOR,
+            font=("Arial Black", 20)
+        ).pack(pady=(18, 10))
+
+        content = tk.Frame(window, bg=BG_COLOR)
+        content.pack(fill="both", expand=True, padx=18, pady=(0, 18))
+        content.columnconfigure(0, weight=1)
+        content.columnconfigure(1, weight=2)
+        content.rowconfigure(1, weight=1)
+
+        tk.Label(
+            content,
+            text="Backups",
+            bg=BG_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Arial", 10, "bold")
+        ).grid(row=0, column=0, sticky="w", pady=(0, 6))
+
+        recoverable_summary = tk.StringVar(value="Arquivos recuperaveis")
+        tk.Label(
+            content,
+            textvariable=recoverable_summary,
+            bg=BG_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Arial", 10, "bold")
+        ).grid(row=0, column=1, sticky="w", pady=(0, 6))
+
+        backup_frame = tk.Frame(content, bg=BG_COLOR)
+        backup_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 14))
+        backup_frame.columnconfigure(0, weight=1)
+        backup_frame.rowconfigure(0, weight=1)
+
+        backup_columns = (
+            "timestamp",
+            "user",
+            "backup_name",
+            "trigger",
+            "changed",
+            "deleted"
+        )
+        backup_tree = ttk.Treeview(
+            backup_frame,
+            columns=backup_columns,
+            show="headings",
+            selectmode="browse"
+        )
+        backup_tree.grid(row=0, column=0, sticky="nsew")
+
+        backup_scrollbar = ttk.Scrollbar(
+            backup_frame,
+            orient="vertical",
+            command=backup_tree.yview
+        )
+        backup_scrollbar.grid(row=0, column=1, sticky="ns")
+        backup_tree.configure(yscrollcommand=backup_scrollbar.set)
+
+        backup_headings = {
+            "timestamp": "Data",
+            "user": "Usuario",
+            "backup_name": "Backup",
+            "trigger": "Tipo",
+            "changed": "Alterados",
+            "deleted": "Excluidos"
+        }
+
+        for key, title in backup_headings.items():
+            backup_tree.heading(key, text=title)
+            backup_tree.column(key, width=100, anchor="center")
+
+        backup_tree.column("timestamp", width=135)
+        backup_tree.column("backup_name", width=170, anchor="w")
+
+        file_frame = tk.Frame(content, bg=BG_COLOR)
+        file_frame.grid(row=1, column=1, sticky="nsew")
+        file_frame.columnconfigure(0, weight=1)
+        file_frame.rowconfigure(0, weight=1)
+
+        file_columns = (
+            "action",
+            "name",
+            "archive_name",
+            "source_path",
+            "size",
+            "modified_at"
+        )
+        file_tree = ttk.Treeview(
+            file_frame,
+            columns=file_columns,
+            show="headings",
+            selectmode="extended"
+        )
+        file_tree.grid(row=0, column=0, sticky="nsew")
+
+        file_vertical_scrollbar = ttk.Scrollbar(
+            file_frame,
+            orient="vertical",
+            command=file_tree.yview
+        )
+        file_vertical_scrollbar.grid(row=0, column=1, sticky="ns")
+
+        file_horizontal_scrollbar = ttk.Scrollbar(
+            file_frame,
+            orient="horizontal",
+            command=file_tree.xview
+        )
+        file_horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
+
+        file_tree.configure(
+            yscrollcommand=file_vertical_scrollbar.set,
+            xscrollcommand=file_horizontal_scrollbar.set
+        )
+
+        file_headings = {
+            "action": "Acao",
+            "name": "Arquivo",
+            "archive_name": "Caminho no backup",
+            "source_path": "Local original",
+            "size": "Tamanho",
+            "modified_at": "Modificado em"
+        }
+
+        for key, title in file_headings.items():
+            file_tree.heading(key, text=title)
+            file_tree.column(key, width=130, anchor="center")
+
+        file_tree.column("name", width=180, anchor="w")
+        file_tree.column("archive_name", width=250, anchor="w")
+        file_tree.column("source_path", width=330, anchor="w")
+
+        button_bar = tk.Frame(content, bg=BG_COLOR)
+        button_bar.grid(row=2, column=1, sticky="ew", pady=(10, 0))
+
+        def refresh_backups():
+            for item in backup_tree.get_children():
+                backup_tree.delete(item)
+
+            for list_index, (_, entry) in enumerate(indexed_history):
+                changed_count = self.count_changes_by_action(entry, "alterado")
+                deleted_count = self.count_changes_by_action(entry, "excluido")
+                backup_tree.insert(
+                    "",
+                    tk.END,
+                    iid=str(list_index),
+                    values=(
+                        entry.get("timestamp", "-"),
+                        entry.get("user", "sistema"),
+                        entry.get("backup_name", "") or entry.get("backup_file", "-"),
+                        entry.get("trigger", "-"),
+                        changed_count,
+                        deleted_count
+                    )
+                )
+
+            if indexed_history:
+                backup_tree.selection_set("0")
+                refresh_recoverable_files()
+
+        def get_selected_backup():
+            selected = backup_tree.selection()
+
+            if not selected:
+                return None
+
+            return indexed_history[int(selected[0])]
+
+        def refresh_recoverable_files(event=None):
+            nonlocal current_recoverable_changes
+
+            for item in file_tree.get_children():
+                file_tree.delete(item)
+
+            selected_backup = get_selected_backup()
+
+            if not selected_backup:
+                current_recoverable_changes = []
+                recoverable_summary.set("Arquivos recuperaveis")
+                return
+
+            _, entry = selected_backup
+            current_recoverable_changes = self.get_recoverable_changes(entry)
+            recoverable_summary.set(
+                f"Arquivos recuperaveis: {len(current_recoverable_changes)}"
+            )
+
+            if not current_recoverable_changes:
+                file_tree.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        "-",
+                        "Nenhum arquivo alterado ou excluido neste backup",
+                        "",
+                        "",
+                        "-",
+                        "-"
+                    )
+                )
+                return
+
+            for index, change in enumerate(current_recoverable_changes):
+                file_tree.insert(
+                    "",
+                    tk.END,
+                    iid=str(index),
+                    values=(
+                        change.get("action", ""),
+                        change.get("name", ""),
+                        change.get("archive_name", ""),
+                        change.get("source_path", ""),
+                        self.format_size_bytes(change.get("size_bytes")),
+                        change.get("modified_at", "")
+                    )
+                )
+
+        def get_selected_changes():
+            selected_changes = []
+
+            for item in file_tree.selection():
+                try:
+                    index = int(item)
+                except ValueError:
+                    continue
+
+                if 0 <= index < len(current_recoverable_changes):
+                    selected_changes.append(current_recoverable_changes[index])
+
+            return selected_changes
+
+        def show_restore_results(results):
+            if not results:
+                messagebox.showwarning(
+                    "Nada recuperado",
+                    "Nenhum arquivo recuperavel foi selecionado.",
+                    parent=window
+                )
+                return
+
+            restored = [item for item in results if item["status"] == "restored"]
+            renamed = [
+                item for item in results
+                if item["status"] == "restored_renamed"
+            ]
+            identical = [
+                item for item in results
+                if item["status"] == "identical_existing"
+            ]
+            skipped = [
+                item for item in results
+                if item["status"] == "skipped_existing"
+            ]
+            missing = [item for item in results if item["status"] == "not_found"]
+            errors = [item for item in results if item["status"] == "error"]
+
+            lines = [
+                f"Recuperados: {len(restored)}",
+                f"Recuperados com outro nome: {len(renamed)}",
+                f"Ja existiam com mesmo conteudo: {len(identical)}",
+                f"Ignorados por conflito: {len(skipped)}",
+                f"Nao encontrados em backups anteriores: {len(missing)}",
+                f"Com erro: {len(errors)}",
+            ]
+            problem_items = (missing + errors)[:5]
+
+            if problem_items:
+                lines.append("")
+                lines.append("Detalhes:")
+
+                for item in problem_items:
+                    lines.append(
+                        f"- {item.get('archive_name', '')}: "
+                        f"{item.get('message', '')}"
+                    )
+
+            messagebox.showinfo(
+                "Recuperacao finalizada",
+                "\n".join(lines),
+                parent=window
+            )
+
+        def ask_file_rename_overrides(inspections):
+            conflicts = [
+                item for item in inspections
+                if item.get("status") == "different_existing"
+            ]
+            target_overrides = {}
+
+            if not conflicts:
+                return target_overrides
+
+            choose_custom_names = True
+
+            if len(conflicts) > 1:
+                choose_custom_names = messagebox.askyesno(
+                    "Arquivos diferentes",
+                    (
+                        f"{len(conflicts)} arquivo(s) ja existem no destino "
+                        "com conteudo diferente.\n\n"
+                        "Deseja escolher o nome de cada arquivo recuperado?\n"
+                        "Se escolher Nao, sera usado '_recuperado'."
+                    ),
+                    parent=window
+                )
+
+            for inspection in conflicts:
+                target_path = inspection.get("target_path", "")
+
+                if not target_path:
+                    continue
+
+                default_path = build_recovered_file_path(target_path)
+                new_path = default_path
+
+                if len(conflicts) == 1:
+                    choose_custom_names = messagebox.askyesno(
+                        "Arquivo diferente",
+                        (
+                            "Ja existe um arquivo no destino com o mesmo nome, "
+                            "mas o conteudo e diferente do backup.\n\n"
+                            "Deseja escolher outro nome para o arquivo recuperado?\n"
+                            f"Se escolher Nao, sera usado:\n{os.path.basename(default_path)}"
+                        ),
+                        parent=window
+                    )
+
+                if choose_custom_names:
+                    new_name = simpledialog.askstring(
+                        "Renomear arquivo",
+                        "Novo nome do arquivo recuperado:",
+                        initialvalue=os.path.basename(default_path),
+                        parent=window
+                    )
+
+                    if new_name:
+                        sanitized_name = self.sanitize_restore_name(new_name)
+
+                        if sanitized_name:
+                            new_path = os.path.join(
+                                os.path.dirname(target_path),
+                                sanitized_name
+                            )
+
+                target_overrides[inspection.get("archive_name", "")] = new_path
+
+            return target_overrides
+
+        def ask_folder_rename_overrides(changes, inspections, folder_path):
+            conflicts = [
+                item for item in inspections
+                if item.get("status") == "different_existing"
+            ]
+
+            if not conflicts:
+                return {}
+
+            default_folder = build_recovered_folder_path(folder_path)
+            restored_folder = default_folder
+
+            choose_custom_name = messagebox.askyesno(
+                "Pasta com conflitos",
+                (
+                    f"{len(conflicts)} arquivo(s) da pasta ja existem no destino "
+                    "com conteudo diferente.\n\n"
+                    "Deseja escolher outro nome para a pasta recuperada?\n"
+                    f"Se escolher Nao, sera usada:\n{os.path.basename(default_folder)}"
+                ),
+                parent=window
+            )
+
+            if choose_custom_name:
+                new_name = simpledialog.askstring(
+                    "Renomear pasta",
+                    "Novo nome da pasta recuperada:",
+                    initialvalue=os.path.basename(default_folder),
+                    parent=window
+                )
+
+                if new_name:
+                    sanitized_name = self.sanitize_restore_name(new_name)
+
+                    if sanitized_name:
+                        restored_folder = os.path.join(
+                            os.path.dirname(folder_path),
+                            sanitized_name
+                        )
+
+            restored_folder = self.ensure_unique_folder_path(restored_folder)
+
+            return self.build_folder_target_overrides(
+                changes,
+                folder_path,
+                restored_folder
+            )
+
+        def restore_changes(changes, restore_mode="files", folder_path=None):
+            selected_backup = get_selected_backup()
+
+            if not selected_backup:
+                return
+
+            history_index, _ = selected_backup
+
+            if not changes:
+                messagebox.showwarning(
+                    "Selecao vazia",
+                    "Selecione ao menos um arquivo recuperavel.",
+                    parent=window
+                )
+                return
+
+            if not messagebox.askyesno(
+                "Confirmar recuperacao",
+                (
+                    f"Iniciar a recuperacao de {len(changes)} arquivo(s)?"
+                ),
+                parent=window
+            ):
+                return
+
+            window.config(cursor="watch")
+            window.update_idletasks()
+
+            try:
+                inspections = inspect_restore_changes(
+                    changes,
+                    before_history_index=history_index,
+                    backup_destination=self.get_backup_destination()
+                )
+            except Exception as error:
+                window.config(cursor="")
+                messagebox.showerror("Erro", str(error), parent=window)
+                return
+            finally:
+                window.config(cursor="")
+
+            if restore_mode == "folder" and folder_path:
+                target_overrides = ask_folder_rename_overrides(
+                    changes,
+                    inspections,
+                    folder_path
+                )
+            else:
+                target_overrides = ask_file_rename_overrides(inspections)
+
+            window.config(cursor="watch")
+            window.update_idletasks()
+
+            try:
+                results = restore_recoverable_changes(
+                    changes,
+                    before_history_index=history_index,
+                    backup_destination=self.get_backup_destination(),
+                    conflict_strategy="rename",
+                    target_overrides=target_overrides
+                )
+            except Exception as error:
+                messagebox.showerror("Erro", str(error), parent=window)
+                return
+            finally:
+                window.config(cursor="")
+
+            show_restore_results(results)
+
+        def restore_selected_files():
+            restore_changes(get_selected_changes())
+
+        def restore_selected_folder():
+            selected_changes = get_selected_changes()
+
+            if not selected_changes:
+                messagebox.showwarning(
+                    "Selecao vazia",
+                    "Selecione um arquivo da pasta que deseja recuperar.",
+                    parent=window
+                )
+                return
+
+            folder_path = self.get_change_folder(selected_changes[0])
+
+            if not folder_path:
+                messagebox.showwarning(
+                    "Pasta nao identificada",
+                    "Nao foi possivel identificar a pasta do arquivo selecionado.",
+                    parent=window
+                )
+                return
+
+            folder_changes = [
+                change
+                for change in current_recoverable_changes
+                if self.is_change_inside_folder(change, folder_path)
+            ]
+
+            restore_changes(
+                folder_changes,
+                restore_mode="folder",
+                folder_path=folder_path
+            )
+
+        self.create_dialog_button(
+            button_bar,
+            "Recuperar selecionados",
+            restore_selected_files
+        ).pack(side="left", padx=(0, 8))
+
+        self.create_dialog_button(
+            button_bar,
+            "Recuperar pasta do item",
+            restore_selected_folder
+        ).pack(side="left")
+
+        backup_tree.bind("<<TreeviewSelect>>", refresh_recoverable_files)
+        refresh_backups()
 
     def show_history_window(self):
         if not self.require_permission("view_history"):
