@@ -38,6 +38,17 @@ TITLE_COLOR = "#FF990F"
 LIGHT_BUTTON = "#D9D9D9"
 TEXT_COLOR = "#101010"
 SUBTLE_TEXT = "#E7EAF0"
+BORDER_COLOR = "#3A4657"
+DEFAULT_FONT = ("Segoe UI", 10)
+BODY_FONT = ("Segoe UI", 10)
+BODY_BOLD_FONT = ("Segoe UI", 10, "bold")
+TABLE_FONT = ("Segoe UI", 10, "bold")
+TABLE_HEADING_FONT = ("Segoe UI", 10, "bold")
+SUGGESTION_FONT = ("Segoe UI", 10, "bold")
+TITLE_FONT = ("Segoe UI Black", 22, "bold")
+MENU_TITLE_FONT = ("Segoe UI Black", 30, "bold")
+MENU_BUTTON_FONT = ("Segoe UI", 13, "bold")
+BUTTON_FONT = ("Segoe UI", 10, "bold")
 
 
 class BackupGUI:
@@ -105,26 +116,73 @@ class BackupGUI:
         except tk.TclError:
             pass
 
+        self.root.option_add("*Font", DEFAULT_FONT)
+        self.root.option_add("*Entry.relief", "flat")
+        self.root.option_add("*Entry.highlightThickness", 1)
+        self.root.option_add("*Entry.highlightBackground", BORDER_COLOR)
+        self.root.option_add("*Entry.highlightColor", TITLE_COLOR)
+        self.root.option_add("*Listbox.relief", "flat")
+        self.root.option_add("*Listbox.highlightThickness", 1)
+        self.root.option_add("*Listbox.highlightBackground", BORDER_COLOR)
+        self.root.option_add("*Listbox.highlightColor", TITLE_COLOR)
+
         style.configure(
             "Treeview",
             background="white",
             fieldbackground="white",
             foreground=TEXT_COLOR,
-            font=("Arial", 9),
-            rowheight=24,
-            borderwidth=0
+            font=TABLE_FONT,
+            rowheight=30,
+            borderwidth=0,
+            relief="flat"
         )
         style.configure(
             "Treeview.Heading",
             background="#EEF1F5",
             foreground=TEXT_COLOR,
-            font=("Arial", 9, "bold"),
-            relief="flat"
+            font=TABLE_HEADING_FONT,
+            relief="flat",
+            padding=(8, 7)
         )
         style.map(
             "Treeview",
             background=[("selected", "#0E7DD8")],
             foreground=[("selected", "white")]
+        )
+        style.configure(
+            "Vertical.TScrollbar",
+            background=LIGHT_BUTTON,
+            troughcolor=PANEL_COLOR,
+            bordercolor=BORDER_COLOR,
+            arrowcolor=TEXT_COLOR,
+            relief="flat",
+            width=14
+        )
+        style.configure(
+            "Horizontal.TScrollbar",
+            background=LIGHT_BUTTON,
+            troughcolor=PANEL_COLOR,
+            bordercolor=BORDER_COLOR,
+            arrowcolor=TEXT_COLOR,
+            relief="flat",
+            width=14
+        )
+        style.map(
+            "Vertical.TScrollbar",
+            background=[("active", TITLE_COLOR)]
+        )
+        style.map(
+            "Horizontal.TScrollbar",
+            background=[("active", TITLE_COLOR)]
+        )
+        style.configure(
+            "Horizontal.TProgressbar",
+            troughcolor=PANEL_COLOR,
+            background=TITLE_COLOR,
+            bordercolor=BORDER_COLOR,
+            lightcolor=TITLE_COLOR,
+            darkcolor=TITLE_COLOR,
+            thickness=14
         )
 
     def build_layout(self):
@@ -144,7 +202,7 @@ class BackupGUI:
             text="MENU",
             bg=BG_COLOR,
             fg=TITLE_COLOR,
-            font=("Arial Black", 30, "bold")
+            font=MENU_TITLE_FONT
         )
         title.pack(side="left", anchor="nw")
 
@@ -156,7 +214,7 @@ class BackupGUI:
             text=self.build_user_label(),
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
-            font=("Arial", 10),
+            font=BODY_FONT,
             justify="right"
         ).pack(fill="x", pady=(0, 8))
 
@@ -199,7 +257,7 @@ class BackupGUI:
             text=self.build_footer_text(),
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
-            font=("Arial", 10),
+            font=("Segoe UI", 9),
             justify="center",
             wraplength=720
         )
@@ -210,66 +268,86 @@ class BackupGUI:
             self.utility_frame,
             text="Gerenciar diretorios",
             command=self.open_directory_manager,
-            font=("Arial", 11, "bold"),
+            font=BUTTON_FONT,
             bg=PANEL_COLOR,
             fg="white",
             activebackground=PANEL_COLOR,
             activeforeground="white",
             relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground="#101722",
+            highlightcolor="#101722",
             cursor="hand2",
-            padx=12,
-            pady=6
+            padx=10,
+            pady=5
         )
         self.manage_button.pack(fill="x", pady=(0, 10))
+        self.apply_button_feedback(self.manage_button)
 
         self.destination_button = tk.Button(
             self.utility_frame,
             text="Diretorio padrao de backup",
             command=self.choose_backup_destination,
-            font=("Arial", 11, "bold"),
+            font=BUTTON_FONT,
             bg=PANEL_COLOR,
             fg="white",
             activebackground=PANEL_COLOR,
             activeforeground="white",
             relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground="#101722",
+            highlightcolor="#101722",
             cursor="hand2",
-            padx=12,
-            pady=6
+            padx=10,
+            pady=5
         )
         self.destination_button.pack(fill="x", pady=(0, 10))
+        self.apply_button_feedback(self.destination_button)
 
         if can(self.current_user, "manage_users"):
             users_button = tk.Button(
                 self.utility_frame,
                 text="Gerenciar usuarios",
                 command=self.open_user_manager,
-                font=("Arial", 11, "bold"),
+                font=BUTTON_FONT,
                 bg=PANEL_COLOR,
                 fg="white",
                 activebackground=PANEL_COLOR,
                 activeforeground="white",
                 relief="flat",
+                bd=0,
+                highlightthickness=1,
+                highlightbackground="#101722",
+                highlightcolor="#101722",
                 cursor="hand2",
-                padx=12,
-                pady=6
+                padx=10,
+                pady=5
             )
             users_button.pack(fill="x")
+            self.apply_button_feedback(users_button)
 
         logout_button = tk.Button(
             self.utility_frame,
             text="Sair da conta",
             command=self.logout,
-            font=("Arial", 11, "bold"),
+            font=BUTTON_FONT,
             bg=LIGHT_BUTTON,
             fg=TEXT_COLOR,
             activebackground=LIGHT_BUTTON,
             activeforeground=TEXT_COLOR,
             relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground="#101722",
+            highlightcolor="#101722",
             cursor="hand2",
-            padx=12,
-            pady=6
+            padx=10,
+            pady=5
         )
         logout_button.pack(fill="x", pady=(10, 0))
+        self.apply_button_feedback(logout_button)
 
         self.apply_permissions()
 
@@ -278,18 +356,41 @@ class BackupGUI:
             self.menu_frame,
             text=text,
             command=command,
-            font=("Arial", 15),
+            font=MENU_BUTTON_FONT,
             bg=bg,
             fg=TEXT_COLOR,
             activebackground=bg,
             activeforeground=TEXT_COLOR,
             relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground="#101722",
+            highlightcolor="#101722",
             cursor="hand2",
-            width=22,
-            pady=4
+            width=20,
+            pady=5
         )
-        button.pack(pady=8)
+        button.pack(pady=7)
+        self.apply_button_feedback(button)
         return button
+
+    def apply_button_feedback(self, button):
+        default_bg = button.cget("bg")
+        default_highlight = button.cget("highlightbackground")
+
+        def on_enter(_event):
+            if str(button.cget("state")) != tk.DISABLED:
+                button.config(highlightbackground="#05080D")
+
+        def on_leave(_event):
+            if button.winfo_exists():
+                button.config(
+                    bg=default_bg,
+                    highlightbackground=default_highlight
+                )
+
+        button.bind("<Enter>", on_enter, add="+")
+        button.bind("<Leave>", on_leave, add="+")
 
     def build_user_label(self):
         name = self.current_user.get("name") or self.current_user.get("username")
@@ -418,13 +519,14 @@ class BackupGUI:
         window.minsize(560, 360)
         window.configure(bg=BG_COLOR)
         window.transient(self.root)
+        self.prepare_window(window)
 
         tk.Label(
             window,
             text="Diretorios para backup",
             bg=BG_COLOR,
             fg=TITLE_COLOR,
-            font=("Arial Black", 20)
+            font=TITLE_FONT
         ).pack(pady=(20, 12))
 
         list_frame = tk.Frame(window, bg=BG_COLOR)
@@ -435,7 +537,7 @@ class BackupGUI:
         listbox = tk.Listbox(
             list_frame,
             height=12,
-            font=("Arial", 11),
+            font=TABLE_FONT,
             bg=LIGHT_BUTTON,
             fg=TEXT_COLOR,
             selectbackground=TITLE_COLOR,
@@ -505,20 +607,57 @@ class BackupGUI:
         )
 
     def create_dialog_button(self, parent, text, command):
-        return tk.Button(
+        button = tk.Button(
             parent,
             text=text,
             command=command,
-            font=("Arial", 11, "bold"),
+            font=BUTTON_FONT,
             bg=TITLE_COLOR,
             fg=TEXT_COLOR,
             activebackground=TITLE_COLOR,
             activeforeground=TEXT_COLOR,
             relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground="#101722",
+            highlightcolor="#101722",
             cursor="hand2",
-            padx=14,
-            pady=7
+            padx=12,
+            pady=5
         )
+        self.apply_button_feedback(button)
+        return button
+
+    def prepare_window(self, window):
+        self.configure_child_icon(window)
+        self.fade_in_window(window)
+
+    def configure_child_icon(self, window):
+        if self.window_icon_photo is None:
+            return
+
+        try:
+            window.iconphoto(False, self.window_icon_photo)
+        except tk.TclError:
+            pass
+
+    def fade_in_window(self, window):
+        try:
+            window.attributes("-alpha", 0.0)
+        except tk.TclError:
+            return
+
+        def step(alpha=0.0):
+            if not window.winfo_exists():
+                return
+
+            next_alpha = min(alpha + 0.18, 1.0)
+            window.attributes("-alpha", next_alpha)
+
+            if next_alpha < 1.0:
+                window.after(12, lambda: step(next_alpha))
+
+        window.after(10, step)
 
     def create_scrollable_tree(
         self,
@@ -723,6 +862,7 @@ class BackupGUI:
         window.minsize(420, 330)
         window.configure(bg=BG_COLOR)
         window.transient(self.root)
+        self.prepare_window(window)
         window.grab_set()
 
         result = {"value": None}
@@ -732,7 +872,7 @@ class BackupGUI:
             text="Identificar Backup",
             bg=BG_COLOR,
             fg=TITLE_COLOR,
-            font=("Arial Black", 20)
+            font=TITLE_FONT
         ).pack(pady=(22, 14))
 
         form = tk.Frame(window, bg=BG_COLOR)
@@ -793,20 +933,26 @@ class BackupGUI:
         self.create_dialog_button(buttons, "Continuar", submit).grid(
             row=0, column=0, padx=6
         )
-        tk.Button(
+        cancel_button = tk.Button(
             buttons,
             text="Cancelar",
             command=cancel,
-            font=("Arial", 11, "bold"),
+            font=BUTTON_FONT,
             bg=LIGHT_BUTTON,
             fg=TEXT_COLOR,
             activebackground=LIGHT_BUTTON,
             activeforeground=TEXT_COLOR,
             relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground="#101722",
+            highlightcolor="#101722",
             cursor="hand2",
-            padx=14,
-            pady=7
-        ).grid(row=0, column=1, padx=6)
+            padx=12,
+            pady=5
+        )
+        cancel_button.grid(row=0, column=1, padx=6)
+        self.apply_button_feedback(cancel_button)
 
         name_entry.focus_set()
         window.protocol("WM_DELETE_WINDOW", cancel)
@@ -854,6 +1000,7 @@ class BackupGUI:
         self.progress_window.minsize(380, 170)
         self.progress_window.configure(bg=BG_COLOR)
         self.progress_window.transient(self.root)
+        self.prepare_window(self.progress_window)
         self.progress_window.grab_set()
         self.progress_window.protocol("WM_DELETE_WINDOW", lambda: None)
 
@@ -862,7 +1009,7 @@ class BackupGUI:
             text="Realizando backup",
             bg=BG_COLOR,
             fg=TITLE_COLOR,
-            font=("Arial Black", 20)
+            font=TITLE_FONT
         ).pack(pady=(22, 14))
 
         self.progress_label = tk.Label(
@@ -870,7 +1017,7 @@ class BackupGUI:
             text="Preparando...",
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
-            font=("Arial", 11),
+            font=BODY_FONT,
             wraplength=360,
             justify="center"
         )
@@ -889,17 +1036,22 @@ class BackupGUI:
             self.progress_window,
             text="Cancelar",
             command=self.request_backup_cancel,
-            font=("Arial", 10, "bold"),
+            font=BUTTON_FONT,
             bg=LIGHT_BUTTON,
             fg=TEXT_COLOR,
             activebackground=LIGHT_BUTTON,
             activeforeground=TEXT_COLOR,
             relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground="#101722",
+            highlightcolor="#101722",
             cursor="hand2",
-            padx=18,
-            pady=6
+            padx=14,
+            pady=5
         )
         self.cancel_button.pack(pady=(4, 0))
+        self.apply_button_feedback(self.cancel_button)
 
     def update_progress_window(self, percent, message):
         if self.progress_window is None or not self.progress_window.winfo_exists():
@@ -1028,13 +1180,14 @@ class BackupGUI:
         window.minsize(390, 260)
         window.configure(bg=BG_COLOR)
         window.transient(self.root)
+        self.prepare_window(window)
 
         tk.Label(
             window,
             text="Agendar Backup",
             bg=BG_COLOR,
             fg=TITLE_COLOR,
-            font=("Arial Black", 20)
+            font=TITLE_FONT
         ).pack(pady=(18, 18))
 
         form = tk.Frame(window, bg=BG_COLOR)
@@ -1156,13 +1309,14 @@ class BackupGUI:
         window.minsize(840, 420)
         window.configure(bg=BG_COLOR)
         window.transient(self.root)
+        self.prepare_window(window)
 
         tk.Label(
             window,
             text="Arquivos analisados",
             bg=BG_COLOR,
             fg=TITLE_COLOR,
-            font=("Arial Black", 20)
+            font=TITLE_FONT
         ).pack(pady=(18, 10))
 
         content = tk.Frame(window, bg=BG_COLOR)
@@ -1384,6 +1538,7 @@ class BackupGUI:
             filter_window.minsize(520, 370)
             filter_window.configure(bg=BG_COLOR)
             filter_window.transient(window)
+            self.prepare_window(filter_window)
             filter_window.grab_set()
 
             tk.Label(
@@ -1391,7 +1546,7 @@ class BackupGUI:
                 text="Filtrar Arquivos",
                 bg=BG_COLOR,
                 fg=TITLE_COLOR,
-                font=("Arial Black", 18)
+                font=TITLE_FONT
             ).pack(pady=(18, 12))
 
             form = tk.Frame(filter_window, bg=BG_COLOR)
@@ -1688,7 +1843,6 @@ class BackupGUI:
             "action": "Todos",
             "modified_from": "",
             "modified_to": "",
-            "size": "",
         }
 
         window = tk.Toplevel(self.root)
@@ -1697,17 +1851,152 @@ class BackupGUI:
         window.minsize(900, 540)
         window.configure(bg=BG_COLOR)
         window.transient(self.root)
+        self.prepare_window(window)
 
         tk.Label(
             window,
             text="Recuperar Arquivos e Versoes",
             bg=BG_COLOR,
             fg=TITLE_COLOR,
-            font=("Arial Black", 20)
+            font=TITLE_FONT
         ).pack(pady=(18, 10))
 
         content = tk.Frame(window, bg=BG_COLOR)
         content.pack(fill="both", expand=True, padx=18, pady=(0, 18))
+
+        search_bar = tk.Frame(content, bg=BG_COLOR)
+        search_bar.columnconfigure(1, weight=1)
+
+        search_var = tk.StringVar()
+
+        tk.Label(
+            search_bar,
+            text="Buscar arquivo",
+            bg=BG_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Arial", 10, "bold")
+        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
+
+        search_entry = tk.Entry(
+            search_bar,
+            textvariable=search_var,
+            font=TABLE_FONT,
+            bg=LIGHT_BUTTON,
+            fg=TEXT_COLOR,
+            relief="flat"
+        )
+        search_entry.grid(row=0, column=1, sticky="ew")
+
+        suggestion_box = tk.Listbox(
+            search_bar,
+            height=4,
+            font=SUGGESTION_FONT,
+            bg="#F2F2F2",
+            fg=TEXT_COLOR,
+            selectbackground="#FFE0B2",
+            selectforeground=TEXT_COLOR,
+            relief="flat",
+            bd=0,
+            highlightthickness=2,
+            highlightbackground=TITLE_COLOR,
+            highlightcolor=TITLE_COLOR,
+            activestyle="none"
+        )
+
+        self.create_dialog_button(
+            search_bar,
+            "Buscar",
+            lambda: apply_restore_search()
+        ).grid(row=0, column=2, padx=(10, 0))
+
+        def clear_file_search():
+            search_var.set("")
+            hide_restore_suggestions()
+            refresh_backups()
+
+        self.create_dialog_button(
+            search_bar,
+            "Limpar",
+            clear_file_search
+        ).grid(row=0, column=3, padx=(8, 0))
+
+        def get_restore_search_suggestions():
+            search_text = search_var.get().strip().lower()
+
+            if not search_text:
+                return []
+
+            suggestions = []
+            seen = set()
+
+            for _, entry in indexed_history:
+                for change in self.get_recoverable_changes(entry):
+                    for value in (
+                        change.get("name", ""),
+                        change.get("archive_name", ""),
+                        change.get("source_path", "")
+                    ):
+                        suggestion = str(value).strip()
+
+                        if not suggestion:
+                            continue
+
+                        suggestion_key = suggestion.lower()
+
+                        if (
+                            search_text in suggestion_key
+                            and suggestion_key not in seen
+                        ):
+                            suggestions.append(suggestion)
+                            seen.add(suggestion_key)
+
+                        if len(suggestions) >= 8:
+                            return suggestions
+
+            return suggestions
+
+        def hide_restore_suggestions():
+            suggestion_box.grid_forget()
+
+        def update_restore_suggestions(*_args):
+            suggestion_box.delete(0, tk.END)
+            suggestions = get_restore_search_suggestions()
+
+            if not suggestions:
+                hide_restore_suggestions()
+                return
+
+            for suggestion in suggestions:
+                suggestion_box.insert(tk.END, f"  {suggestion}")
+
+            suggestion_box.config(height=min(len(suggestions), 5))
+            suggestion_box.grid(
+                row=1,
+                column=1,
+                columnspan=3,
+                sticky="ew",
+                pady=(4, 0)
+            )
+
+        def apply_restore_search(value=None):
+            if value is not None:
+                search_var.set(value)
+
+            hide_restore_suggestions()
+            refresh_backups()
+
+        def select_restore_suggestion(_event=None):
+            selection = suggestion_box.curselection()
+
+            if selection:
+                apply_restore_search(suggestion_box.get(selection[0]).strip())
+
+        search_var.trace_add("write", update_restore_suggestions)
+        search_entry.bind("<Return>", lambda _event: apply_restore_search())
+        search_entry.bind("<Escape>", lambda _event: hide_restore_suggestions())
+        suggestion_box.bind("<ButtonRelease-1>", select_restore_suggestion)
+        suggestion_box.bind("<Double-Button-1>", select_restore_suggestion)
+        suggestion_box.bind("<Return>", select_restore_suggestion)
 
         backup_label = tk.Label(
             content,
@@ -1845,6 +2134,7 @@ class BackupGUI:
             for widget in (
                 backup_label,
                 recoverable_label,
+                search_bar,
                 backup_frame,
                 file_frame,
                 button_bar,
@@ -1854,25 +2144,32 @@ class BackupGUI:
             for column in range(2):
                 content.columnconfigure(column, weight=0)
 
-            for row in range(5):
+            for row in range(6):
                 content.rowconfigure(row, weight=0)
 
             if mode == "wide":
                 content.columnconfigure(0, weight=5)
                 content.columnconfigure(1, weight=7)
-                content.rowconfigure(1, weight=1)
+                content.rowconfigure(2, weight=1)
 
-                backup_label.grid(row=0, column=0, sticky="w", pady=(0, 6))
-                recoverable_label.grid(row=0, column=1, sticky="w", pady=(0, 6))
+                search_bar.grid(
+                    row=0,
+                    column=0,
+                    columnspan=2,
+                    sticky="ew",
+                    pady=(0, 10)
+                )
+                backup_label.grid(row=1, column=0, sticky="w", pady=(0, 6))
+                recoverable_label.grid(row=1, column=1, sticky="w", pady=(0, 6))
                 backup_frame.grid(
-                    row=1,
+                    row=2,
                     column=0,
                     sticky="nsew",
                     padx=(0, 14)
                 )
-                file_frame.grid(row=1, column=1, sticky="nsew")
+                file_frame.grid(row=2, column=1, sticky="nsew")
                 button_bar.grid(
-                    row=2,
+                    row=3,
                     column=0,
                     columnspan=2,
                     sticky="e",
@@ -1880,19 +2177,20 @@ class BackupGUI:
                 )
             else:
                 content.columnconfigure(0, weight=1)
-                content.rowconfigure(1, weight=1)
-                content.rowconfigure(3, weight=2)
+                content.rowconfigure(2, weight=1)
+                content.rowconfigure(4, weight=2)
 
-                backup_label.grid(row=0, column=0, sticky="w", pady=(0, 6))
-                backup_frame.grid(row=1, column=0, sticky="nsew")
+                search_bar.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+                backup_label.grid(row=1, column=0, sticky="w", pady=(0, 6))
+                backup_frame.grid(row=2, column=0, sticky="nsew")
                 recoverable_label.grid(
-                    row=2,
+                    row=3,
                     column=0,
                     sticky="w",
                     pady=(10, 6)
                 )
-                file_frame.grid(row=3, column=0, sticky="nsew")
-                button_bar.grid(row=4, column=0, sticky="e", pady=(10, 0))
+                file_frame.grid(row=4, column=0, sticky="nsew")
+                button_bar.grid(row=5, column=0, sticky="e", pady=(10, 0))
 
         def on_restore_resize(event):
             if event.widget == window:
@@ -1901,11 +2199,47 @@ class BackupGUI:
         window.bind("<Configure>", on_restore_resize, add="+")
         window.after_idle(configure_restore_layout)
 
+        def backup_matches_search(entry):
+            search_text = search_var.get().strip().lower()
+
+            if not search_text:
+                return True
+
+            for change in self.get_recoverable_changes(entry):
+                if change_matches_file_search(change, search_text):
+                    return True
+
+            return False
+
+        def change_matches_file_search(change, search_text=None):
+            search_text = (
+                search_var.get().strip().lower()
+                if search_text is None
+                else search_text
+            )
+
+            if not search_text:
+                return True
+
+            searchable_values = (
+                change.get("name", ""),
+                change.get("archive_name", ""),
+                change.get("source_path", "")
+            )
+
+            return any(
+                search_text in str(value).lower()
+                for value in searchable_values
+            )
+
         def refresh_backups():
             for item in backup_tree.get_children():
                 backup_tree.delete(item)
 
             for list_index, (_, entry) in enumerate(indexed_history):
+                if not backup_matches_search(entry):
+                    continue
+
                 changed_count = self.count_changes_by_action(entry, "alterado")
                 deleted_count = self.count_changes_by_action(entry, "excluido")
                 backup_tree.insert(
@@ -1922,9 +2256,28 @@ class BackupGUI:
                     )
                 )
 
-            if indexed_history:
-                backup_tree.selection_set("0")
+            visible_items = backup_tree.get_children()
+
+            if visible_items:
+                backup_tree.selection_set(visible_items[0])
                 refresh_recoverable_files()
+            else:
+                current_recoverable_changes.clear()
+                recoverable_summary.set("Arquivos recuperaveis: 0")
+                for item in file_tree.get_children():
+                    file_tree.delete(item)
+                file_tree.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        "-",
+                        "Nenhum backup encontrado para esta busca",
+                        "",
+                        "",
+                        "-",
+                        "-"
+                    )
+                )
 
         def get_selected_backup():
             selected = backup_tree.selection()
@@ -1952,7 +2305,10 @@ class BackupGUI:
             filtered_changes = [
                 (index, change)
                 for index, change in enumerate(current_recoverable_changes)
-                if change_matches_restore_filters(change)
+                if (
+                    change_matches_restore_filters(change)
+                    and change_matches_file_search(change)
+                )
             ]
 
             if len(filtered_changes) == len(current_recoverable_changes):
@@ -2061,7 +2417,6 @@ class BackupGUI:
                 "name": change.get("name", ""),
                 "archive_name": change.get("archive_name", ""),
                 "source_path": change.get("source_path", ""),
-                "size": self.format_size_bytes(change.get("size_bytes")),
             }
 
             for key, value in text_checks.items():
@@ -2091,10 +2446,11 @@ class BackupGUI:
         def open_restore_filter_window():
             filter_window = tk.Toplevel(window)
             filter_window.title("Filtrar arquivos recuperaveis")
-            filter_window.geometry("560x430")
-            filter_window.minsize(540, 410)
+            filter_window.geometry("560x390")
+            filter_window.minsize(540, 370)
             filter_window.configure(bg=BG_COLOR)
             filter_window.transient(window)
+            self.prepare_window(filter_window)
             filter_window.grab_set()
 
             tk.Label(
@@ -2102,7 +2458,7 @@ class BackupGUI:
                 text="Filtrar Arquivos",
                 bg=BG_COLOR,
                 fg=TITLE_COLOR,
-                font=("Arial Black", 18)
+                font=TITLE_FONT
             ).pack(pady=(18, 12))
 
             form = tk.Frame(filter_window, bg=BG_COLOR)
@@ -2123,7 +2479,6 @@ class BackupGUI:
                 "modified_to": tk.StringVar(
                     value=restore_filters["modified_to"] or "Todos"
                 ),
-                "size": tk.StringVar(value=restore_filters["size"]),
             }
 
             def add_entry(label, key, row, column=0, columnspan=1):
@@ -2201,7 +2556,6 @@ class BackupGUI:
             )
             add_combo("Data inicial", "modified_from", 4, date_options)
             add_combo("Data final", "modified_to", 4, date_options, column=2)
-            add_entry("Tamanho", "size", 5, columnspan=3)
 
             buttons = tk.Frame(filter_window, bg=BG_COLOR)
             buttons.pack(pady=(10, 0))
@@ -2546,19 +2900,21 @@ class BackupGUI:
         window.minsize(900, 540)
         window.configure(bg=BG_COLOR)
         window.transient(self.root)
+        self.prepare_window(window)
 
         tk.Label(
             window,
             text="Historico de Backups",
             bg=BG_COLOR,
             fg=TITLE_COLOR,
-            font=("Arial Black", 20)
+            font=TITLE_FONT
         ).pack(pady=(18, 10))
 
         content = tk.Frame(window, bg=BG_COLOR)
         content.pack(fill="both", expand=True, padx=18, pady=(0, 18))
 
         history_top_bar = tk.Frame(content, bg=BG_COLOR)
+        history_top_bar.columnconfigure(1, weight=1)
 
         history_filter_summary = tk.StringVar(value="Filtros: todos os backups")
         tk.Label(
@@ -2567,7 +2923,7 @@ class BackupGUI:
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
             font=("Arial", 10)
-        ).pack(side="left")
+        ).grid(row=2, column=1, sticky="w", pady=(4, 0))
 
         history_filters = {
             "timestamp_from": "",
@@ -2578,11 +2934,64 @@ class BackupGUI:
             "trigger": "Todos",
         }
 
+        file_name_var = tk.StringVar()
+
+        tk.Label(
+            history_top_bar,
+            text="Buscar arquivo",
+            bg=BG_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Arial", 10, "bold")
+        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
+
+        history_search_entry = tk.Entry(
+            history_top_bar,
+            textvariable=file_name_var,
+            font=TABLE_FONT,
+            bg=LIGHT_BUTTON,
+            fg=TEXT_COLOR,
+            relief="flat"
+        )
+        history_search_entry.grid(row=0, column=1, sticky="ew")
+
+        history_suggestion_box = tk.Listbox(
+            history_top_bar,
+            height=4,
+            font=SUGGESTION_FONT,
+            bg="#F2F2F2",
+            fg=TEXT_COLOR,
+            selectbackground="#FFE0B2",
+            selectforeground=TEXT_COLOR,
+            relief="flat",
+            bd=0,
+            highlightthickness=2,
+            highlightbackground=TITLE_COLOR,
+            highlightcolor=TITLE_COLOR,
+            activestyle="none"
+        )
+
+        self.create_dialog_button(
+            history_top_bar,
+            "Buscar",
+            lambda: apply_history_search()
+        ).grid(row=0, column=2, padx=(10, 0))
+
+        def clear_history_search():
+            file_name_var.set("")
+            hide_history_suggestions()
+            refresh_backup_table()
+
+        self.create_dialog_button(
+            history_top_bar,
+            "Limpar",
+            clear_history_search
+        ).grid(row=0, column=3, padx=(8, 0))
+
         self.create_dialog_button(
             history_top_bar,
             "Filtrar",
             lambda: open_history_filter_window()
-        ).pack(side="right")
+        ).grid(row=0, column=4, padx=(8, 0))
 
         filter_frame = tk.Frame(content, bg=BG_COLOR)
 
@@ -2597,27 +3006,6 @@ class BackupGUI:
         change_filter_controls = tk.Frame(filter_frame, bg=BG_COLOR)
         change_filter_controls.pack(side="right")
 
-        file_name_var = tk.StringVar()
-
-        tk.Label(
-            change_filter_controls,
-            text="Arquivo:",
-            bg=BG_COLOR,
-            fg=SUBTLE_TEXT,
-            font=("Arial", 10)
-        ).grid(row=0, column=0, sticky="e", padx=(0, 6))
-
-        file_name_entry = tk.Entry(
-            change_filter_controls,
-            textvariable=file_name_var,
-            font=("Arial", 10),
-            bg=LIGHT_BUTTON,
-            fg=TEXT_COLOR,
-            relief="flat",
-            width=24
-        )
-        file_name_entry.grid(row=0, column=1, sticky="ew", padx=(0, 12))
-
         action_var = tk.StringVar(value="Todos")
         action_combo = ttk.Combobox(
             change_filter_controls,
@@ -2626,7 +3014,7 @@ class BackupGUI:
             state="readonly",
             width=14
         )
-        action_combo.grid(row=0, column=3, sticky="ew")
+        action_combo.grid(row=0, column=1, sticky="ew")
 
         tk.Label(
             change_filter_controls,
@@ -2634,7 +3022,7 @@ class BackupGUI:
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
             font=("Arial", 10)
-        ).grid(row=0, column=2, sticky="e", padx=(0, 6))
+        ).grid(row=0, column=0, sticky="e", padx=(0, 6))
 
         backup_columns = (
             "timestamp",
@@ -2848,6 +3236,109 @@ class BackupGUI:
                 for key in sorted(dated_options.keys(), reverse=True)
             ]
 
+        def change_matches_history_search(change, search_text=None):
+            search_text = (
+                file_name_var.get().strip().lower()
+                if search_text is None
+                else search_text
+            )
+
+            if not search_text:
+                return True
+
+            searchable_values = (
+                change.get("name", ""),
+                change.get("archive_name", ""),
+                change.get("source_path", "")
+            )
+
+            return any(
+                search_text in str(value).lower()
+                for value in searchable_values
+            )
+
+        def entry_matches_file_search(entry):
+            search_text = file_name_var.get().strip().lower()
+
+            if not search_text:
+                return True
+
+            return any(
+                change_matches_history_search(change, search_text)
+                for change in entry.get("file_changes", [])
+            )
+
+        def get_history_search_suggestions():
+            search_text = file_name_var.get().strip().lower()
+
+            if not search_text:
+                return []
+
+            suggestions = []
+            seen = set()
+
+            for entry in history:
+                for change in entry.get("file_changes", []):
+                    for value in (
+                        change.get("name", ""),
+                        change.get("archive_name", ""),
+                        change.get("source_path", "")
+                    ):
+                        suggestion = str(value).strip()
+
+                        if not suggestion:
+                            continue
+
+                        suggestion_key = suggestion.lower()
+
+                        if (
+                            search_text in suggestion_key
+                            and suggestion_key not in seen
+                        ):
+                            suggestions.append(suggestion)
+                            seen.add(suggestion_key)
+
+                        if len(suggestions) >= 8:
+                            return suggestions
+
+            return suggestions
+
+        def hide_history_suggestions():
+            history_suggestion_box.grid_forget()
+
+        def update_history_suggestions(*_args):
+            history_suggestion_box.delete(0, tk.END)
+            suggestions = get_history_search_suggestions()
+
+            if not suggestions:
+                hide_history_suggestions()
+                return
+
+            for suggestion in suggestions:
+                history_suggestion_box.insert(tk.END, f"  {suggestion}")
+
+            history_suggestion_box.config(height=min(len(suggestions), 5))
+            history_suggestion_box.grid(
+                row=1,
+                column=1,
+                columnspan=4,
+                sticky="ew",
+                pady=(4, 0)
+            )
+
+        def apply_history_search(value=None):
+            if value is not None:
+                file_name_var.set(value)
+
+            hide_history_suggestions()
+            refresh_backup_table()
+
+        def select_history_suggestion(_event=None):
+            selection = history_suggestion_box.curselection()
+
+            if selection:
+                apply_history_search(history_suggestion_box.get(selection[0]).strip())
+
         def entry_matches_history_filters(entry):
             entry_date = parse_history_date(entry.get("timestamp", ""))
             from_date = parse_history_date(history_filters["timestamp_from"])
@@ -2877,7 +3368,7 @@ class BackupGUI:
             ):
                 return False
 
-            return True
+            return entry_matches_file_search(entry)
 
         indexed_history = []
 
@@ -2981,11 +3472,7 @@ class BackupGUI:
                 file_name = change.get("name", "")
                 archive_name = change.get("archive_name", "")
 
-                if (
-                    file_name_filter
-                    and file_name_filter not in file_name.lower()
-                    and file_name_filter not in archive_name.lower()
-                ):
+                if file_name_filter and not change_matches_history_search(change):
                     continue
 
                 change_tree.insert(
@@ -3010,7 +3497,15 @@ class BackupGUI:
 
         backup_tree.bind("<<TreeviewSelect>>", refresh_changes)
         action_combo.bind("<<ComboboxSelected>>", refresh_changes)
-        file_name_var.trace_add("write", lambda *args: refresh_changes())
+        file_name_var.trace_add(
+            "write",
+            lambda *args: (update_history_suggestions(), refresh_changes())
+        )
+        history_search_entry.bind("<Return>", lambda _event: apply_history_search())
+        history_search_entry.bind("<Escape>", lambda _event: hide_history_suggestions())
+        history_suggestion_box.bind("<ButtonRelease-1>", select_history_suggestion)
+        history_suggestion_box.bind("<Double-Button-1>", select_history_suggestion)
+        history_suggestion_box.bind("<Return>", select_history_suggestion)
 
         def open_history_filter_window():
             filter_window = tk.Toplevel(window)
@@ -3019,6 +3514,7 @@ class BackupGUI:
             filter_window.minsize(500, 360)
             filter_window.configure(bg=BG_COLOR)
             filter_window.transient(window)
+            self.prepare_window(filter_window)
             filter_window.grab_set()
 
             tk.Label(
@@ -3026,7 +3522,7 @@ class BackupGUI:
                 text="Filtrar Historico",
                 bg=BG_COLOR,
                 fg=TITLE_COLOR,
-                font=("Arial Black", 18)
+                font=TITLE_FONT
             ).pack(pady=(18, 12))
 
             form = tk.Frame(filter_window, bg=BG_COLOR)
@@ -3228,13 +3724,14 @@ class BackupGUI:
         window.minsize(760, 440)
         window.configure(bg=BG_COLOR)
         window.transient(self.root)
+        self.prepare_window(window)
 
         tk.Label(
             window,
             text="Gerenciar Usuarios",
             bg=BG_COLOR,
             fg=TITLE_COLOR,
-            font=("Arial Black", 20)
+            font=TITLE_FONT
         ).pack(pady=(18, 10))
 
         content = tk.Frame(window, bg=BG_COLOR)

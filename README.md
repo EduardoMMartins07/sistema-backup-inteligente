@@ -74,6 +74,10 @@ Toda alteracao relevante no projeto deve ser refletida neste `README.md`, manten
 - [x] Filtros avancados por janela nas telas de arquivos analisados e historico de backups
 - [x] Clique esquerdo no icone da bandeja abre o painel; clique direito mantem o menu de opcoes
 - [x] Restauracao de arquivos excluidos e versoes anteriores pela interface
+- [x] Busca por nome de arquivo na tela de recuperacao para localizar rapidamente backups relacionados
+- [x] Busca com sugestoes de arquivos nas telas de recuperacao e historico de backups
+- [x] Refinamento de UI/UX com fontes padronizadas, botoes com profundidade, scrollbars estilizados, campos mais destacados e abertura suave de janelas
+- [x] Melhor legibilidade nas tabelas e caixa de pre-pesquisa com destaque visual para sugestoes de arquivos e pastas
 - [ ] Visualizacao do tamanho dos backups e status da ultima execucao
 - [ ] Configuracao mais avancada de agendamento
 - [ ] Integracao completa da predicao do modulo `ml/` ao fluxo principal do backup
