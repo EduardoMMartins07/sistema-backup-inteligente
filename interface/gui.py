@@ -73,6 +73,7 @@ class BackupGUI:
         self.cancel_backup_requested = threading.Event()
 
         self.configure_window_icon()
+        self.configure_widget_styles()
         self.load_directories()
         self.build_layout()
 
@@ -95,6 +96,36 @@ class BackupGUI:
             self.root.iconphoto(True, self.window_icon_photo)
         except tk.TclError:
             self.window_icon_photo = None
+
+    def configure_widget_styles(self):
+        style = ttk.Style()
+
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        style.configure(
+            "Treeview",
+            background="white",
+            fieldbackground="white",
+            foreground=TEXT_COLOR,
+            font=("Arial", 9),
+            rowheight=24,
+            borderwidth=0
+        )
+        style.configure(
+            "Treeview.Heading",
+            background="#EEF1F5",
+            foreground=TEXT_COLOR,
+            font=("Arial", 9, "bold"),
+            relief="flat"
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", "#0E7DD8")],
+            foreground=[("selected", "white")]
+        )
 
     def build_layout(self):
         self.outer_frame = tk.Frame(
@@ -384,6 +415,7 @@ class BackupGUI:
         window = tk.Toplevel(self.root)
         window.title("Gerenciar diretorios")
         window.geometry("700x420")
+        window.minsize(560, 360)
         window.configure(bg=BG_COLOR)
         window.transient(self.root)
 
@@ -395,9 +427,13 @@ class BackupGUI:
             font=("Arial Black", 20)
         ).pack(pady=(20, 12))
 
+        list_frame = tk.Frame(window, bg=BG_COLOR)
+        list_frame.pack(padx=20, pady=10, fill="both", expand=True)
+        list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
+
         listbox = tk.Listbox(
-            window,
-            width=85,
+            list_frame,
             height=12,
             font=("Arial", 11),
             bg=LIGHT_BUTTON,
@@ -405,7 +441,26 @@ class BackupGUI:
             selectbackground=TITLE_COLOR,
             selectforeground=TEXT_COLOR
         )
-        listbox.pack(padx=20, pady=10, fill="both", expand=True)
+        listbox.grid(row=0, column=0, sticky="nsew")
+
+        list_vertical_scrollbar = ttk.Scrollbar(
+            list_frame,
+            orient="vertical",
+            command=listbox.yview
+        )
+        list_vertical_scrollbar.grid(row=0, column=1, sticky="ns")
+
+        list_horizontal_scrollbar = ttk.Scrollbar(
+            list_frame,
+            orient="horizontal",
+            command=listbox.xview
+        )
+        list_horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
+
+        listbox.configure(
+            yscrollcommand=list_vertical_scrollbar.set,
+            xscrollcommand=list_horizontal_scrollbar.set
+        )
 
         for directory in self.directories:
             listbox.insert(tk.END, directory)
@@ -464,6 +519,141 @@ class BackupGUI:
             padx=14,
             pady=7
         )
+
+    def create_scrollable_tree(
+        self,
+        parent,
+        columns,
+        selectmode="browse",
+        height=15
+    ):
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+
+        tree = ttk.Treeview(
+            parent,
+            columns=columns,
+            show="headings",
+            selectmode=selectmode,
+            height=height
+        )
+        tree.grid(row=0, column=0, sticky="nsew")
+
+        vertical_scrollbar = ttk.Scrollbar(
+            parent,
+            orient="vertical",
+            command=tree.yview
+        )
+        vertical_scrollbar.grid(row=0, column=1, sticky="ns")
+
+        horizontal_scrollbar = ttk.Scrollbar(
+            parent,
+            orient="horizontal",
+            command=tree.xview
+        )
+        horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
+
+        tree.configure(
+            yscrollcommand=vertical_scrollbar.set,
+            xscrollcommand=horizontal_scrollbar.set
+        )
+
+        return tree
+
+    def configure_change_tags(self, tree):
+        tree.tag_configure("change_deleted", foreground="#D32F2F")
+        tree.tag_configure("change_modified", foreground="#B77900")
+        tree.tag_configure("change_added", foreground="#15803D")
+
+    def get_change_tag(self, action):
+        normalized_action = str(action).strip().lower()
+
+        if normalized_action in ("excluido", "excluído"):
+            return ("change_deleted",)
+
+        if normalized_action == "alterado":
+            return ("change_modified",)
+
+        if normalized_action == "adicionado":
+            return ("change_added",)
+
+        return ()
+
+    def configure_tree_columns(self, tree, headings, column_specs):
+        specs = []
+
+        for key, title in headings.items():
+            column_spec = column_specs.get(key, {})
+            width = column_spec.get("width", 120)
+            minwidth = column_spec.get("minwidth", min(width, 90))
+            anchor = column_spec.get("anchor", "center")
+            weight = column_spec.get("weight", 1)
+
+            tree.heading(key, text=title)
+            tree.column(
+                key,
+                width=width,
+                minwidth=minwidth,
+                anchor=anchor,
+                stretch=False
+            )
+            specs.append(
+                {
+                    "key": key,
+                    "width": width,
+                    "minwidth": minwidth,
+                    "weight": max(weight, 1),
+                    "shrink": max(width - minwidth, 0),
+                }
+            )
+
+        self.bind_responsive_tree_columns(tree, specs)
+
+    def bind_responsive_tree_columns(self, tree, specs):
+        def apply_widths(available_width):
+            if available_width <= 1 or not tree.winfo_exists():
+                return
+
+            preferred_total = sum(spec["width"] for spec in specs)
+            min_total = sum(spec["minwidth"] for spec in specs)
+
+            if available_width <= min_total:
+                target_widths = [spec["minwidth"] for spec in specs]
+            elif available_width < preferred_total:
+                overflow = preferred_total - available_width
+                shrink_total = sum(spec["shrink"] for spec in specs) or 1
+                target_widths = []
+                used_width = 0
+
+                for index, spec in enumerate(specs):
+                    if index == len(specs) - 1:
+                        width = max(spec["minwidth"], available_width - used_width)
+                    else:
+                        shrink = int(overflow * spec["shrink"] / shrink_total)
+                        width = max(spec["minwidth"], spec["width"] - shrink)
+                        used_width += width
+
+                    target_widths.append(width)
+            else:
+                extra = available_width - preferred_total
+                weight_total = sum(spec["weight"] for spec in specs) or 1
+                target_widths = []
+                used_width = 0
+
+                for index, spec in enumerate(specs):
+                    if index == len(specs) - 1:
+                        width = max(spec["minwidth"], available_width - used_width)
+                    else:
+                        width = spec["width"] + int(extra * spec["weight"] / weight_total)
+                        used_width += width
+
+                    target_widths.append(width)
+
+            for spec, width in zip(specs, target_widths):
+                tree.column(spec["key"], width=max(spec["minwidth"], width))
+
+        tree.bind("<Configure>", lambda event: apply_widths(event.width), add="+")
+        tree.after_idle(lambda: apply_widths(tree.winfo_width()))
 
     def perform_backup(self):
         if not self.require_permission("run_backup"):
@@ -530,10 +720,10 @@ class BackupGUI:
         window = tk.Toplevel(self.root)
         window.title("Identificar backup")
         window.geometry("460x330")
+        window.minsize(420, 330)
         window.configure(bg=BG_COLOR)
         window.transient(self.root)
         window.grab_set()
-        window.resizable(False, False)
 
         result = {"value": None}
 
@@ -546,7 +736,7 @@ class BackupGUI:
         ).pack(pady=(22, 14))
 
         form = tk.Frame(window, bg=BG_COLOR)
-        form.pack(fill="x", padx=34)
+        form.pack(fill="both", expand=True, padx=34)
 
         tk.Label(
             form,
@@ -584,7 +774,7 @@ class BackupGUI:
             relief="flat",
             wrap="word"
         )
-        description_text.pack(fill="x", pady=(0, 16))
+        description_text.pack(fill="both", expand=True, pady=(0, 16))
 
         buttons = tk.Frame(window, bg=BG_COLOR)
         buttons.pack()
@@ -661,10 +851,10 @@ class BackupGUI:
         self.progress_window = tk.Toplevel(self.root)
         self.progress_window.title("Executando backup")
         self.progress_window.geometry("420x170")
+        self.progress_window.minsize(380, 170)
         self.progress_window.configure(bg=BG_COLOR)
         self.progress_window.transient(self.root)
         self.progress_window.grab_set()
-        self.progress_window.resizable(False, False)
         self.progress_window.protocol("WM_DELETE_WINDOW", lambda: None)
 
         tk.Label(
@@ -680,18 +870,19 @@ class BackupGUI:
             text="Preparando...",
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
-            font=("Arial", 11)
+            font=("Arial", 11),
+            wraplength=360,
+            justify="center"
         )
-        self.progress_label.pack(pady=(0, 12))
+        self.progress_label.pack(fill="x", padx=24, pady=(0, 12))
 
         self.progress_bar = ttk.Progressbar(
             self.progress_window,
             orient="horizontal",
             mode="determinate",
-            length=320,
             maximum=100
         )
-        self.progress_bar.pack(pady=(0, 10))
+        self.progress_bar.pack(fill="x", padx=40, pady=(0, 10))
         self.progress_bar["value"] = 0
 
         self.cancel_button = tk.Button(
@@ -834,6 +1025,7 @@ class BackupGUI:
         window = tk.Toplevel(self.root)
         window.title("Agendar backup")
         window.geometry("420x260")
+        window.minsize(390, 260)
         window.configure(bg=BG_COLOR)
         window.transient(self.root)
 
@@ -846,7 +1038,8 @@ class BackupGUI:
         ).pack(pady=(18, 18))
 
         form = tk.Frame(window, bg=BG_COLOR)
-        form.pack(pady=4)
+        form.pack(fill="x", padx=28, pady=4)
+        form.columnconfigure(1, weight=1)
 
         tk.Label(
             form,
@@ -857,8 +1050,8 @@ class BackupGUI:
         ).grid(row=0, column=0, sticky="w", pady=6)
 
         time_var = tk.StringVar(value=self.load_schedule().get("time", "09:00"))
-        time_entry = tk.Entry(form, textvariable=time_var, font=("Arial", 11), width=18)
-        time_entry.grid(row=0, column=1, padx=10, pady=6)
+        time_entry = tk.Entry(form, textvariable=time_var, font=("Arial", 11))
+        time_entry.grid(row=0, column=1, sticky="ew", padx=(10, 0), pady=6)
 
         tk.Label(
             form,
@@ -876,16 +1069,17 @@ class BackupGUI:
             textvariable=frequency_var,
             values=["Diariamente", "Semanalmente", "Mensalmente"],
             state="readonly",
-            width=15
         )
-        frequency_combo.grid(row=1, column=1, padx=10, pady=6)
+        frequency_combo.grid(row=1, column=1, sticky="ew", padx=(10, 0), pady=6)
 
         info = tk.Label(
             window,
             text="O backup sera executado automaticamente no horario escolhido.",
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
-            font=("Arial", 10)
+            font=("Arial", 10),
+            wraplength=340,
+            justify="center"
         )
         info.pack(pady=(12, 14))
 
@@ -1023,43 +1217,33 @@ class BackupGUI:
 
         table_frame = tk.Frame(content, bg=BG_COLOR)
         table_frame.grid(row=1, column=0, sticky="nsew")
-        table_frame.columnconfigure(0, weight=1)
-        table_frame.rowconfigure(0, weight=1)
 
-        tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=15)
-        tree.grid(row=0, column=0, sticky="nsew")
-
-        vertical_scrollbar = ttk.Scrollbar(
-            table_frame,
-            orient="vertical",
-            command=tree.yview
+        tree = self.create_scrollable_tree(table_frame, columns, height=15)
+        self.configure_tree_columns(
+            tree,
+            headings,
+            {
+                "name": {
+                    "width": 300,
+                    "minwidth": 220,
+                    "weight": 4,
+                    "anchor": "w",
+                },
+                "extension": {"width": 100, "minwidth": 80, "weight": 1},
+                "added_to_backup_at": {
+                    "width": 180,
+                    "minwidth": 150,
+                    "weight": 2,
+                },
+                "size_kb": {"width": 120, "minwidth": 95, "weight": 1},
+                "days_since_modified": {
+                    "width": 140,
+                    "minwidth": 120,
+                    "weight": 1,
+                },
+                "important": {"width": 110, "minwidth": 90, "weight": 1},
+            }
         )
-        vertical_scrollbar.grid(row=0, column=1, sticky="ns")
-
-        horizontal_scrollbar = ttk.Scrollbar(
-            table_frame,
-            orient="horizontal",
-            command=tree.xview
-        )
-        horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
-
-        tree.configure(
-            yscrollcommand=vertical_scrollbar.set,
-            xscrollcommand=horizontal_scrollbar.set
-        )
-
-        for key, title in headings.items():
-            tree.heading(key, text=title)
-            width = 150
-
-            if key == "name":
-                width = 280
-            elif key == "added_to_backup_at":
-                width = 180
-
-            tree.column(key, width=width, minwidth=90, anchor="center", stretch=True)
-
-        tree.column("name", anchor="w")
 
         rows = []
 
@@ -1086,7 +1270,7 @@ class BackupGUI:
         def parse_date(value):
             value = value.strip()
 
-            if not value:
+            if not value or value == "Todos":
                 return None
 
             for date_format in ("%d/%m/%Y", "%d/%m/%Y %H:%M:%S"):
@@ -1108,6 +1292,20 @@ class BackupGUI:
                     pass
 
             return None
+
+        def get_file_date_options():
+            dated_options = {}
+
+            for row_values in rows:
+                row_date = parse_row_date(row_values["added_to_backup_at"])
+
+                if row_date:
+                    dated_options[row_date.date()] = row_date.strftime("%d/%m/%Y")
+
+            return [
+                dated_options[key]
+                for key in sorted(dated_options.keys(), reverse=True)
+            ]
 
         def matches_filters(row_values):
             text_filters = {
@@ -1182,11 +1380,11 @@ class BackupGUI:
         def open_filter_window():
             filter_window = tk.Toplevel(window)
             filter_window.title("Filtrar arquivos")
-            filter_window.geometry("420x430")
+            filter_window.geometry("540x390")
+            filter_window.minsize(520, 370)
             filter_window.configure(bg=BG_COLOR)
             filter_window.transient(window)
             filter_window.grab_set()
-            filter_window.resizable(False, False)
 
             tk.Label(
                 filter_window,
@@ -1198,25 +1396,39 @@ class BackupGUI:
 
             form = tk.Frame(filter_window, bg=BG_COLOR)
             form.pack(fill="x", padx=28)
+            form.columnconfigure(1, weight=1)
+            form.columnconfigure(3, weight=1)
+
+            date_options = ["Todos"] + get_file_date_options()
 
             field_vars = {
                 "name": tk.StringVar(value=filter_state["name"]),
                 "extension": tk.StringVar(value=filter_state["extension"]),
-                "added_from": tk.StringVar(value=filter_state["added_from"]),
-                "added_to": tk.StringVar(value=filter_state["added_to"]),
+                "added_from": tk.StringVar(
+                    value=filter_state["added_from"] or "Todos"
+                ),
+                "added_to": tk.StringVar(
+                    value=filter_state["added_to"] or "Todos"
+                ),
                 "size_kb": tk.StringVar(value=filter_state["size_kb"]),
                 "days_since_modified": tk.StringVar(value=filter_state["days_since_modified"]),
                 "important": tk.StringVar(value=filter_state["important"]),
             }
 
-            def add_entry(label, key, row):
+            def add_entry(label, key, row, column=0, columnspan=1):
                 tk.Label(
                     form,
                     text=label,
                     bg=BG_COLOR,
                     fg=SUBTLE_TEXT,
                     font=("Arial", 10, "bold")
-                ).grid(row=row, column=0, sticky="w", pady=(0, 4))
+                ).grid(
+                    row=row,
+                    column=column,
+                    sticky="w",
+                    padx=(0 if column == 0 else 14, 0),
+                    pady=(0, 4)
+                )
 
                 entry = tk.Entry(
                     form,
@@ -1226,15 +1438,49 @@ class BackupGUI:
                     fg=TEXT_COLOR,
                     relief="flat"
                 )
-                entry.grid(row=row, column=1, sticky="ew", padx=(10, 0), pady=(0, 8))
+                entry.grid(
+                    row=row,
+                    column=column + 1,
+                    columnspan=columnspan,
+                    sticky="ew",
+                    padx=(10, 0),
+                    pady=(0, 8)
+                )
+                return entry
 
-            form.columnconfigure(1, weight=1)
-            add_entry("Nome", "name", 0)
-            add_entry("Extensao", "extension", 1)
-            add_entry("Data inicial", "added_from", 2)
-            add_entry("Data final", "added_to", 3)
-            add_entry("Tamanho (KB)", "size_kb", 4)
-            add_entry("Dias sem alterar", "days_since_modified", 5)
+            def add_combo(label, key, row, values, column=0, columnspan=1):
+                tk.Label(
+                    form,
+                    text=label,
+                    bg=BG_COLOR,
+                    fg=SUBTLE_TEXT,
+                    font=("Arial", 10, "bold")
+                ).grid(
+                    row=row,
+                    column=column,
+                    sticky="w",
+                    padx=(0 if column == 0 else 14, 0),
+                    pady=(0, 4)
+                )
+
+                combo = ttk.Combobox(
+                    form,
+                    textvariable=field_vars[key],
+                    values=values,
+                    state="readonly"
+                )
+                combo.grid(
+                    row=row,
+                    column=column + 1,
+                    columnspan=columnspan,
+                    sticky="ew",
+                    padx=(10, 0),
+                    pady=(0, 8)
+                )
+                return combo
+
+            add_entry("Nome", "name", 0, columnspan=3)
+            add_entry("Extensao", "extension", 1, columnspan=3)
 
             tk.Label(
                 form,
@@ -1242,7 +1488,7 @@ class BackupGUI:
                 bg=BG_COLOR,
                 fg=SUBTLE_TEXT,
                 font=("Arial", 10, "bold")
-            ).grid(row=6, column=0, sticky="w", pady=(0, 4))
+            ).grid(row=2, column=0, sticky="w", pady=(0, 4))
 
             important_combo = ttk.Combobox(
                 form,
@@ -1250,7 +1496,24 @@ class BackupGUI:
                 values=["Todos", "Sim", "Nao"],
                 state="readonly"
             )
-            important_combo.grid(row=6, column=1, sticky="ew", padx=(10, 0), pady=(0, 8))
+            important_combo.grid(
+                row=2,
+                column=1,
+                columnspan=3,
+                sticky="ew",
+                padx=(10, 0),
+                pady=(0, 8)
+            )
+
+            add_combo("Data inicial", "added_from", 3, date_options)
+            add_combo("Data final", "added_to", 3, date_options, column=2)
+            add_entry("Tamanho (KB)", "size_kb", 4)
+            add_entry(
+                "Dias sem alterar",
+                "days_since_modified",
+                4,
+                column=2
+            )
 
             buttons = tk.Frame(filter_window, bg=BG_COLOR)
             buttons.pack(pady=(10, 0))
@@ -1259,24 +1522,21 @@ class BackupGUI:
                 from_date = parse_date(field_vars["added_from"].get())
                 to_date = parse_date(field_vars["added_to"].get())
 
-                if field_vars["added_from"].get().strip() and from_date is None:
+                if from_date and to_date and from_date.date() > to_date.date():
                     messagebox.showwarning(
-                        "Data invalida",
-                        "Informe a data inicial no formato DD/MM/AAAA.",
-                        parent=filter_window
-                    )
-                    return
-
-                if field_vars["added_to"].get().strip() and to_date is None:
-                    messagebox.showwarning(
-                        "Data invalida",
-                        "Informe a data final no formato DD/MM/AAAA.",
+                        "Periodo invalido",
+                        "A data inicial nao pode ser maior que a data final.",
                         parent=filter_window
                     )
                     return
 
                 for key, variable in field_vars.items():
-                    filter_state[key] = variable.get().strip()
+                    value = variable.get().strip()
+
+                    if key in ("added_from", "added_to"):
+                        filter_state[key] = "" if value == "Todos" else value
+                    else:
+                        filter_state[key] = value
 
                 refresh_table()
                 filter_window.destroy()
@@ -1421,11 +1681,20 @@ class BackupGUI:
 
         indexed_history = list(reversed(history))
         current_recoverable_changes = []
+        restore_filters = {
+            "name": "",
+            "archive_name": "",
+            "source_path": "",
+            "action": "Todos",
+            "modified_from": "",
+            "modified_to": "",
+            "size": "",
+        }
 
         window = tk.Toplevel(self.root)
         window.title("Recuperar arquivos e versoes")
-        window.geometry("1220x650")
-        window.minsize(980, 520)
+        window.geometry("1240x700")
+        window.minsize(900, 540)
         window.configure(bg=BG_COLOR)
         window.transient(self.root)
 
@@ -1439,31 +1708,25 @@ class BackupGUI:
 
         content = tk.Frame(window, bg=BG_COLOR)
         content.pack(fill="both", expand=True, padx=18, pady=(0, 18))
-        content.columnconfigure(0, weight=1)
-        content.columnconfigure(1, weight=2)
-        content.rowconfigure(1, weight=1)
 
-        tk.Label(
+        backup_label = tk.Label(
             content,
             text="Backups",
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
             font=("Arial", 10, "bold")
-        ).grid(row=0, column=0, sticky="w", pady=(0, 6))
+        )
 
         recoverable_summary = tk.StringVar(value="Arquivos recuperaveis")
-        tk.Label(
+        recoverable_label = tk.Label(
             content,
             textvariable=recoverable_summary,
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
             font=("Arial", 10, "bold")
-        ).grid(row=0, column=1, sticky="w", pady=(0, 6))
+        )
 
         backup_frame = tk.Frame(content, bg=BG_COLOR)
-        backup_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 14))
-        backup_frame.columnconfigure(0, weight=1)
-        backup_frame.rowconfigure(0, weight=1)
 
         backup_columns = (
             "timestamp",
@@ -1473,21 +1736,11 @@ class BackupGUI:
             "changed",
             "deleted"
         )
-        backup_tree = ttk.Treeview(
+        backup_tree = self.create_scrollable_tree(
             backup_frame,
-            columns=backup_columns,
-            show="headings",
+            backup_columns,
             selectmode="browse"
         )
-        backup_tree.grid(row=0, column=0, sticky="nsew")
-
-        backup_scrollbar = ttk.Scrollbar(
-            backup_frame,
-            orient="vertical",
-            command=backup_tree.yview
-        )
-        backup_scrollbar.grid(row=0, column=1, sticky="ns")
-        backup_tree.configure(yscrollcommand=backup_scrollbar.set)
 
         backup_headings = {
             "timestamp": "Data",
@@ -1498,17 +1751,25 @@ class BackupGUI:
             "deleted": "Excluidos"
         }
 
-        for key, title in backup_headings.items():
-            backup_tree.heading(key, text=title)
-            backup_tree.column(key, width=100, anchor="center")
-
-        backup_tree.column("timestamp", width=135)
-        backup_tree.column("backup_name", width=170, anchor="w")
+        self.configure_tree_columns(
+            backup_tree,
+            backup_headings,
+            {
+                "timestamp": {"width": 135, "minwidth": 120, "weight": 2},
+                "user": {"width": 80, "minwidth": 65, "weight": 1},
+                "backup_name": {
+                    "width": 170,
+                    "minwidth": 130,
+                    "weight": 3,
+                    "anchor": "w",
+                },
+                "trigger": {"width": 80, "minwidth": 62, "weight": 1},
+                "changed": {"width": 85, "minwidth": 64, "weight": 1},
+                "deleted": {"width": 85, "minwidth": 64, "weight": 1},
+            }
+        )
 
         file_frame = tk.Frame(content, bg=BG_COLOR)
-        file_frame.grid(row=1, column=1, sticky="nsew")
-        file_frame.columnconfigure(0, weight=1)
-        file_frame.rowconfigure(0, weight=1)
 
         file_columns = (
             "action",
@@ -1518,31 +1779,10 @@ class BackupGUI:
             "size",
             "modified_at"
         )
-        file_tree = ttk.Treeview(
+        file_tree = self.create_scrollable_tree(
             file_frame,
-            columns=file_columns,
-            show="headings",
+            file_columns,
             selectmode="extended"
-        )
-        file_tree.grid(row=0, column=0, sticky="nsew")
-
-        file_vertical_scrollbar = ttk.Scrollbar(
-            file_frame,
-            orient="vertical",
-            command=file_tree.yview
-        )
-        file_vertical_scrollbar.grid(row=0, column=1, sticky="ns")
-
-        file_horizontal_scrollbar = ttk.Scrollbar(
-            file_frame,
-            orient="horizontal",
-            command=file_tree.xview
-        )
-        file_horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
-
-        file_tree.configure(
-            yscrollcommand=file_vertical_scrollbar.set,
-            xscrollcommand=file_horizontal_scrollbar.set
         )
 
         file_headings = {
@@ -1554,16 +1794,112 @@ class BackupGUI:
             "modified_at": "Modificado em"
         }
 
-        for key, title in file_headings.items():
-            file_tree.heading(key, text=title)
-            file_tree.column(key, width=130, anchor="center")
-
-        file_tree.column("name", width=180, anchor="w")
-        file_tree.column("archive_name", width=250, anchor="w")
-        file_tree.column("source_path", width=330, anchor="w")
+        self.configure_tree_columns(
+            file_tree,
+            file_headings,
+            {
+                "action": {"width": 90, "minwidth": 75, "weight": 1},
+                "name": {
+                    "width": 220,
+                    "minwidth": 170,
+                    "weight": 3,
+                    "anchor": "w",
+                },
+                "archive_name": {
+                    "width": 300,
+                    "minwidth": 230,
+                    "weight": 4,
+                    "anchor": "w",
+                },
+                "source_path": {
+                    "width": 360,
+                    "minwidth": 260,
+                    "weight": 5,
+                    "anchor": "w",
+                },
+                "size": {"width": 95, "minwidth": 80, "weight": 1},
+                "modified_at": {
+                    "width": 150,
+                    "minwidth": 130,
+                    "weight": 2,
+                },
+            }
+        )
+        self.configure_change_tags(file_tree)
 
         button_bar = tk.Frame(content, bg=BG_COLOR)
-        button_bar.grid(row=2, column=1, sticky="ew", pady=(10, 0))
+
+        restore_layout_state = {"mode": None}
+
+        def configure_restore_layout(width=None):
+            if width is None:
+                width = window.winfo_width()
+
+            mode = "wide" if width >= 1380 else "stacked"
+
+            if restore_layout_state["mode"] == mode:
+                return
+
+            restore_layout_state["mode"] = mode
+
+            for widget in (
+                backup_label,
+                recoverable_label,
+                backup_frame,
+                file_frame,
+                button_bar,
+            ):
+                widget.grid_forget()
+
+            for column in range(2):
+                content.columnconfigure(column, weight=0)
+
+            for row in range(5):
+                content.rowconfigure(row, weight=0)
+
+            if mode == "wide":
+                content.columnconfigure(0, weight=5)
+                content.columnconfigure(1, weight=7)
+                content.rowconfigure(1, weight=1)
+
+                backup_label.grid(row=0, column=0, sticky="w", pady=(0, 6))
+                recoverable_label.grid(row=0, column=1, sticky="w", pady=(0, 6))
+                backup_frame.grid(
+                    row=1,
+                    column=0,
+                    sticky="nsew",
+                    padx=(0, 14)
+                )
+                file_frame.grid(row=1, column=1, sticky="nsew")
+                button_bar.grid(
+                    row=2,
+                    column=0,
+                    columnspan=2,
+                    sticky="e",
+                    pady=(10, 0)
+                )
+            else:
+                content.columnconfigure(0, weight=1)
+                content.rowconfigure(1, weight=1)
+                content.rowconfigure(3, weight=2)
+
+                backup_label.grid(row=0, column=0, sticky="w", pady=(0, 6))
+                backup_frame.grid(row=1, column=0, sticky="nsew")
+                recoverable_label.grid(
+                    row=2,
+                    column=0,
+                    sticky="w",
+                    pady=(10, 6)
+                )
+                file_frame.grid(row=3, column=0, sticky="nsew")
+                button_bar.grid(row=4, column=0, sticky="e", pady=(10, 0))
+
+        def on_restore_resize(event):
+            if event.widget == window:
+                configure_restore_layout(event.width)
+
+        window.bind("<Configure>", on_restore_resize, add="+")
+        window.after_idle(configure_restore_layout)
 
         def refresh_backups():
             for item in backup_tree.get_children():
@@ -1613,9 +1949,21 @@ class BackupGUI:
 
             _, entry = selected_backup
             current_recoverable_changes = self.get_recoverable_changes(entry)
-            recoverable_summary.set(
-                f"Arquivos recuperaveis: {len(current_recoverable_changes)}"
-            )
+            filtered_changes = [
+                (index, change)
+                for index, change in enumerate(current_recoverable_changes)
+                if change_matches_restore_filters(change)
+            ]
+
+            if len(filtered_changes) == len(current_recoverable_changes):
+                recoverable_summary.set(
+                    f"Arquivos recuperaveis: {len(current_recoverable_changes)}"
+                )
+            else:
+                recoverable_summary.set(
+                    "Arquivos recuperaveis: "
+                    f"{len(filtered_changes)} de {len(current_recoverable_changes)}"
+                )
 
             if not current_recoverable_changes:
                 file_tree.insert(
@@ -1632,19 +1980,36 @@ class BackupGUI:
                 )
                 return
 
-            for index, change in enumerate(current_recoverable_changes):
+            if not filtered_changes:
+                file_tree.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        "-",
+                        "Nenhum arquivo para este filtro",
+                        "",
+                        "",
+                        "-",
+                        "-"
+                    )
+                )
+                return
+
+            for index, change in filtered_changes:
+                action = change.get("action", "")
                 file_tree.insert(
                     "",
                     tk.END,
                     iid=str(index),
                     values=(
-                        change.get("action", ""),
+                        action,
                         change.get("name", ""),
                         change.get("archive_name", ""),
                         change.get("source_path", ""),
                         self.format_size_bytes(change.get("size_bytes")),
                         change.get("modified_at", "")
-                    )
+                    ),
+                    tags=self.get_change_tag(action)
                 )
 
         def get_selected_changes():
@@ -1660,6 +2025,223 @@ class BackupGUI:
                     selected_changes.append(current_recoverable_changes[index])
 
             return selected_changes
+
+        def parse_restore_date(value):
+            value = value.strip()
+
+            if not value or value == "Todos":
+                return None
+
+            for date_format in ("%d/%m/%Y", "%d/%m/%Y %H:%M:%S"):
+                try:
+                    return datetime.strptime(value, date_format)
+                except ValueError:
+                    pass
+
+            return None
+
+        def get_restore_date_options():
+            dated_options = {}
+
+            for change in current_recoverable_changes:
+                modified_date = parse_restore_date(change.get("modified_at", ""))
+
+                if modified_date:
+                    dated_options[modified_date.date()] = modified_date.strftime(
+                        "%d/%m/%Y"
+                    )
+
+            return [
+                dated_options[key]
+                for key in sorted(dated_options.keys(), reverse=True)
+            ]
+
+        def change_matches_restore_filters(change):
+            text_checks = {
+                "name": change.get("name", ""),
+                "archive_name": change.get("archive_name", ""),
+                "source_path": change.get("source_path", ""),
+                "size": self.format_size_bytes(change.get("size_bytes")),
+            }
+
+            for key, value in text_checks.items():
+                filter_value = restore_filters[key].strip().lower()
+
+                if filter_value and filter_value not in str(value).lower():
+                    return False
+
+            if (
+                restore_filters["action"] != "Todos"
+                and change.get("action", "") != restore_filters["action"]
+            ):
+                return False
+
+            row_date = parse_restore_date(change.get("modified_at", ""))
+            from_date = parse_restore_date(restore_filters["modified_from"])
+            to_date = parse_restore_date(restore_filters["modified_to"])
+
+            if from_date and (row_date is None or row_date < from_date):
+                return False
+
+            if to_date and (row_date is None or row_date.date() > to_date.date()):
+                return False
+
+            return True
+
+        def open_restore_filter_window():
+            filter_window = tk.Toplevel(window)
+            filter_window.title("Filtrar arquivos recuperaveis")
+            filter_window.geometry("560x430")
+            filter_window.minsize(540, 410)
+            filter_window.configure(bg=BG_COLOR)
+            filter_window.transient(window)
+            filter_window.grab_set()
+
+            tk.Label(
+                filter_window,
+                text="Filtrar Arquivos",
+                bg=BG_COLOR,
+                fg=TITLE_COLOR,
+                font=("Arial Black", 18)
+            ).pack(pady=(18, 12))
+
+            form = tk.Frame(filter_window, bg=BG_COLOR)
+            form.pack(fill="x", padx=28)
+            form.columnconfigure(1, weight=1)
+            form.columnconfigure(3, weight=1)
+
+            date_options = ["Todos"] + get_restore_date_options()
+
+            field_vars = {
+                "name": tk.StringVar(value=restore_filters["name"]),
+                "archive_name": tk.StringVar(value=restore_filters["archive_name"]),
+                "source_path": tk.StringVar(value=restore_filters["source_path"]),
+                "action": tk.StringVar(value=restore_filters["action"]),
+                "modified_from": tk.StringVar(
+                    value=restore_filters["modified_from"] or "Todos"
+                ),
+                "modified_to": tk.StringVar(
+                    value=restore_filters["modified_to"] or "Todos"
+                ),
+                "size": tk.StringVar(value=restore_filters["size"]),
+            }
+
+            def add_entry(label, key, row, column=0, columnspan=1):
+                tk.Label(
+                    form,
+                    text=label,
+                    bg=BG_COLOR,
+                    fg=SUBTLE_TEXT,
+                    font=("Arial", 10, "bold")
+                ).grid(
+                    row=row,
+                    column=column,
+                    sticky="w",
+                    padx=(0 if column == 0 else 14, 0),
+                    pady=(0, 4)
+                )
+
+                entry = tk.Entry(
+                    form,
+                    textvariable=field_vars[key],
+                    font=("Arial", 10),
+                    bg=LIGHT_BUTTON,
+                    fg=TEXT_COLOR,
+                    relief="flat"
+                )
+                entry.grid(
+                    row=row,
+                    column=column + 1,
+                    columnspan=columnspan,
+                    sticky="ew",
+                    padx=(10, 0),
+                    pady=(0, 8)
+                )
+                return entry
+
+            def add_combo(label, key, row, values, column=0, columnspan=1):
+                tk.Label(
+                    form,
+                    text=label,
+                    bg=BG_COLOR,
+                    fg=SUBTLE_TEXT,
+                    font=("Arial", 10, "bold")
+                ).grid(
+                    row=row,
+                    column=column,
+                    sticky="w",
+                    padx=(0 if column == 0 else 14, 0),
+                    pady=(0, 4)
+                )
+
+                combo = ttk.Combobox(
+                    form,
+                    textvariable=field_vars[key],
+                    values=values,
+                    state="readonly"
+                )
+                combo.grid(
+                    row=row,
+                    column=column + 1,
+                    columnspan=columnspan,
+                    sticky="ew",
+                    padx=(10, 0),
+                    pady=(0, 8)
+                )
+                return combo
+
+            add_entry("Nome", "name", 0, columnspan=3)
+            add_entry("Caminho no backup", "archive_name", 1, columnspan=3)
+            add_entry("Local original", "source_path", 2, columnspan=3)
+            add_combo(
+                "Tipo",
+                "action",
+                3,
+                ["Todos", "alterado", "excluido"]
+            )
+            add_combo("Data inicial", "modified_from", 4, date_options)
+            add_combo("Data final", "modified_to", 4, date_options, column=2)
+            add_entry("Tamanho", "size", 5, columnspan=3)
+
+            buttons = tk.Frame(filter_window, bg=BG_COLOR)
+            buttons.pack(pady=(10, 0))
+
+            def apply_filters():
+                from_date = parse_restore_date(field_vars["modified_from"].get())
+                to_date = parse_restore_date(field_vars["modified_to"].get())
+
+                if from_date and to_date and from_date.date() > to_date.date():
+                    messagebox.showwarning(
+                        "Periodo invalido",
+                        "A data inicial nao pode ser maior que a data final.",
+                        parent=filter_window
+                    )
+                    return
+
+                for key, variable in field_vars.items():
+                    value = variable.get().strip()
+
+                    if key in ("modified_from", "modified_to"):
+                        restore_filters[key] = "" if value == "Todos" else value
+                    else:
+                        restore_filters[key] = value
+
+                refresh_recoverable_files()
+                filter_window.destroy()
+
+            def clear_filters():
+                for key in restore_filters:
+                    restore_filters[key] = "Todos" if key == "action" else ""
+
+                refresh_recoverable_files()
+                filter_window.destroy()
+
+            self.create_dialog_button(buttons, "Aplicar", apply_filters).grid(
+                row=0, column=0, padx=5
+            )
+            self.create_dialog_button(buttons, "Limpar", clear_filters).grid(
+                row=0, column=1, padx=5
+            )
 
         def show_restore_results(results):
             if not results:
@@ -1941,6 +2523,12 @@ class BackupGUI:
             button_bar,
             "Recuperar pasta do item",
             restore_selected_folder
+        ).pack(side="left", padx=(0, 8))
+
+        self.create_dialog_button(
+            button_bar,
+            "Filtrar arquivos",
+            lambda: open_restore_filter_window()
         ).pack(side="left")
 
         backup_tree.bind("<<TreeviewSelect>>", refresh_recoverable_files)
@@ -1954,8 +2542,8 @@ class BackupGUI:
 
         window = tk.Toplevel(self.root)
         window.title("Historico de backups")
-        window.geometry("1260x680")
-        window.minsize(980, 520)
+        window.geometry("1280x720")
+        window.minsize(900, 540)
         window.configure(bg=BG_COLOR)
         window.transient(self.root)
 
@@ -1969,12 +2557,8 @@ class BackupGUI:
 
         content = tk.Frame(window, bg=BG_COLOR)
         content.pack(fill="both", expand=True, padx=18, pady=(0, 18))
-        content.columnconfigure(0, weight=1)
-        content.columnconfigure(1, weight=2)
-        content.rowconfigure(1, weight=1)
 
         history_top_bar = tk.Frame(content, bg=BG_COLOR)
-        history_top_bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
 
         history_filter_summary = tk.StringVar(value="Filtros: todos os backups")
         tk.Label(
@@ -1992,8 +2576,6 @@ class BackupGUI:
             "backup_name": "",
             "backup_description": "",
             "trigger": "Todos",
-            "total_files": "",
-            "changes": "",
         }
 
         self.create_dialog_button(
@@ -2003,7 +2585,6 @@ class BackupGUI:
         ).pack(side="right")
 
         filter_frame = tk.Frame(content, bg=BG_COLOR)
-        filter_frame.grid(row=0, column=1, sticky="ew", pady=(0, 6))
 
         tk.Label(
             filter_frame,
@@ -2013,23 +2594,47 @@ class BackupGUI:
             font=("Arial", 10, "bold")
         ).pack(side="left")
 
+        change_filter_controls = tk.Frame(filter_frame, bg=BG_COLOR)
+        change_filter_controls.pack(side="right")
+
+        file_name_var = tk.StringVar()
+
+        tk.Label(
+            change_filter_controls,
+            text="Arquivo:",
+            bg=BG_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Arial", 10)
+        ).grid(row=0, column=0, sticky="e", padx=(0, 6))
+
+        file_name_entry = tk.Entry(
+            change_filter_controls,
+            textvariable=file_name_var,
+            font=("Arial", 10),
+            bg=LIGHT_BUTTON,
+            fg=TEXT_COLOR,
+            relief="flat",
+            width=24
+        )
+        file_name_entry.grid(row=0, column=1, sticky="ew", padx=(0, 12))
+
         action_var = tk.StringVar(value="Todos")
         action_combo = ttk.Combobox(
-            filter_frame,
+            change_filter_controls,
             textvariable=action_var,
             values=["Todos", "adicionado", "alterado", "excluido"],
             state="readonly",
             width=14
         )
-        action_combo.pack(side="right")
+        action_combo.grid(row=0, column=3, sticky="ew")
 
         tk.Label(
-            filter_frame,
-            text="Filtro:",
+            change_filter_controls,
+            text="Tipo:",
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
             font=("Arial", 10)
-        ).pack(side="right", padx=(0, 6))
+        ).grid(row=0, column=2, sticky="e", padx=(0, 6))
 
         backup_columns = (
             "timestamp",
@@ -2040,13 +2645,12 @@ class BackupGUI:
             "total",
             "changes"
         )
-        backup_tree = ttk.Treeview(
-            content,
-            columns=backup_columns,
-            show="headings",
+        backup_frame = tk.Frame(content, bg=BG_COLOR)
+        backup_tree = self.create_scrollable_tree(
+            backup_frame,
+            backup_columns,
             height=15
         )
-        backup_tree.grid(row=1, column=0, sticky="nsew", padx=(0, 14))
 
         backup_headings = {
             "timestamp": "Data",
@@ -2058,21 +2662,37 @@ class BackupGUI:
             "changes": "Mudancas"
         }
 
-        for key, title in backup_headings.items():
-            backup_tree.heading(key, text=title)
-            backup_tree.column(key, width=110, anchor="center")
-
-        backup_tree.column("timestamp", width=135)
-        backup_tree.column("description", width=170, anchor="w")
+        self.configure_tree_columns(
+            backup_tree,
+            backup_headings,
+            {
+                "timestamp": {"width": 135, "minwidth": 120, "weight": 2},
+                "user": {"width": 80, "minwidth": 65, "weight": 1},
+                "backup_name": {
+                    "width": 150,
+                    "minwidth": 120,
+                    "weight": 2,
+                    "anchor": "w",
+                },
+                "description": {
+                    "width": 180,
+                    "minwidth": 130,
+                    "weight": 3,
+                    "anchor": "w",
+                },
+                "trigger": {"width": 80, "minwidth": 70, "weight": 1},
+                "total": {"width": 90, "minwidth": 75, "weight": 1},
+                "changes": {"width": 95, "minwidth": 75, "weight": 1},
+            }
+        )
 
         change_columns = ("action", "name", "archive_name", "size", "modified_at")
-        change_tree = ttk.Treeview(
-            content,
-            columns=change_columns,
-            show="headings",
+        change_frame = tk.Frame(content, bg=BG_COLOR)
+        change_tree = self.create_scrollable_tree(
+            change_frame,
+            change_columns,
             height=15
         )
-        change_tree.grid(row=1, column=1, sticky="nsew")
 
         change_headings = {
             "action": "Acao",
@@ -2082,19 +2702,107 @@ class BackupGUI:
             "modified_at": "Modificado em"
         }
 
-        for key, title in change_headings.items():
-            change_tree.heading(key, text=title)
-            width = 260 if key == "archive_name" else 120
-            change_tree.column(key, width=width, anchor="center")
+        self.configure_tree_columns(
+            change_tree,
+            change_headings,
+            {
+                "action": {"width": 95, "minwidth": 80, "weight": 1},
+                "name": {
+                    "width": 220,
+                    "minwidth": 170,
+                    "weight": 3,
+                    "anchor": "w",
+                },
+                "archive_name": {
+                    "width": 330,
+                    "minwidth": 250,
+                    "weight": 5,
+                    "anchor": "w",
+                },
+                "size": {"width": 100, "minwidth": 85, "weight": 1},
+                "modified_at": {
+                    "width": 155,
+                    "minwidth": 130,
+                    "weight": 2,
+                },
+            }
+        )
+        self.configure_change_tags(change_tree)
 
-        change_tree.column("name", width=180, anchor="w")
-        change_tree.column("archive_name", width=300, anchor="w")
+        history_layout_state = {"mode": None}
+
+        def configure_history_layout(width=None):
+            if width is None:
+                width = window.winfo_width()
+
+            mode = "wide" if width >= 1500 else "stacked"
+
+            if history_layout_state["mode"] == mode:
+                return
+
+            history_layout_state["mode"] = mode
+
+            for widget in (
+                history_top_bar,
+                filter_frame,
+                backup_frame,
+                change_frame,
+            ):
+                widget.grid_forget()
+
+            for column in range(2):
+                content.columnconfigure(column, weight=0)
+
+            for row in range(4):
+                content.rowconfigure(row, weight=0)
+
+            if mode == "wide":
+                content.columnconfigure(0, weight=6)
+                content.columnconfigure(1, weight=7)
+                content.rowconfigure(1, weight=1)
+
+                history_top_bar.grid(
+                    row=0,
+                    column=0,
+                    sticky="ew",
+                    pady=(0, 6),
+                    padx=(0, 14)
+                )
+                filter_frame.grid(row=0, column=1, sticky="ew", pady=(0, 6))
+                backup_frame.grid(
+                    row=1,
+                    column=0,
+                    sticky="nsew",
+                    padx=(0, 14)
+                )
+                change_frame.grid(row=1, column=1, sticky="nsew")
+            else:
+                content.columnconfigure(0, weight=1)
+                content.rowconfigure(1, weight=1)
+                content.rowconfigure(3, weight=2)
+
+                history_top_bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+                backup_frame.grid(row=1, column=0, sticky="nsew")
+                filter_frame.grid(
+                    row=2,
+                    column=0,
+                    sticky="ew",
+                    pady=(10, 6)
+                )
+                change_frame.grid(row=3, column=0, sticky="nsew")
+
+        def on_history_resize(event):
+            if event.widget == window:
+                configure_history_layout(event.width)
+
+        window.bind("<Configure>", on_history_resize, add="+")
+        window.after_idle(configure_history_layout)
 
         if not history:
             backup_tree.insert(
                 "",
                 tk.END,
-                values=("Nenhum backup visivel", "-", "-", "-")
+                values=("Nenhum backup visivel", "-", "-", "-", "-", "-", "-")
             )
             return
 
@@ -2115,7 +2823,7 @@ class BackupGUI:
         def parse_history_date(value):
             value = value.strip()
 
-            if not value:
+            if not value or value == "Todos":
                 return None
 
             for date_format in ("%d/%m/%Y", "%d/%m/%Y %H:%M:%S"):
@@ -2125,6 +2833,20 @@ class BackupGUI:
                     pass
 
             return None
+
+        def get_history_date_options():
+            dated_options = {}
+
+            for entry in history:
+                entry_date = parse_history_date(entry.get("timestamp", ""))
+
+                if entry_date:
+                    dated_options[entry_date.date()] = entry_date.strftime("%d/%m/%Y")
+
+            return [
+                dated_options[key]
+                for key in sorted(dated_options.keys(), reverse=True)
+            ]
 
         def entry_matches_history_filters(entry):
             entry_date = parse_history_date(entry.get("timestamp", ""))
@@ -2141,8 +2863,6 @@ class BackupGUI:
                 "user": entry.get("user", "sistema"),
                 "backup_name": entry.get("backup_name", ""),
                 "backup_description": entry.get("backup_description", ""),
-                "total_files": entry.get("total_files", 0),
-                "changes": len(entry.get("file_changes", [])),
             }
 
             for key, value in text_checks.items():
@@ -2190,21 +2910,21 @@ class BackupGUI:
 
             active_filters = []
 
-            if history_filters["timestamp_from"] or history_filters["timestamp_to"]:
-                active_filters.append("Periodo")
-
             for key, label in (
-                ("user", "Usuario"),
                 ("backup_name", "Nome"),
                 ("backup_description", "Descricao"),
-                ("total_files", "Arquivos"),
-                ("changes", "Mudancas"),
             ):
                 if history_filters[key].strip():
                     active_filters.append(label)
 
             if history_filters["trigger"] != "Todos":
                 active_filters.append("Tipo")
+
+            if history_filters["timestamp_from"] or history_filters["timestamp_to"]:
+                active_filters.append("Periodo")
+
+            if history_filters["user"].strip():
+                active_filters.append("Usuario")
 
             if active_filters:
                 history_filter_summary.set(f"Filtros: {', '.join(active_filters)}")
@@ -2235,6 +2955,7 @@ class BackupGUI:
 
             entry = indexed_history[int(selected[0])]
             selected_action = action_var.get()
+            file_name_filter = file_name_var.get().strip().lower()
             changes = entry.get("file_changes", [])
 
             if not changes:
@@ -2257,16 +2978,27 @@ class BackupGUI:
                 if selected_action != "Todos" and action != selected_action:
                     continue
 
+                file_name = change.get("name", "")
+                archive_name = change.get("archive_name", "")
+
+                if (
+                    file_name_filter
+                    and file_name_filter not in file_name.lower()
+                    and file_name_filter not in archive_name.lower()
+                ):
+                    continue
+
                 change_tree.insert(
                     "",
                     tk.END,
                     values=(
                         action,
-                        change.get("name", ""),
-                        change.get("archive_name", ""),
+                        file_name,
+                        archive_name,
                         format_size(change.get("size_bytes")),
                         change.get("modified_at", "")
-                    )
+                    ),
+                    tags=self.get_change_tag(action)
                 )
 
             if not change_tree.get_children():
@@ -2278,15 +3010,16 @@ class BackupGUI:
 
         backup_tree.bind("<<TreeviewSelect>>", refresh_changes)
         action_combo.bind("<<ComboboxSelected>>", refresh_changes)
+        file_name_var.trace_add("write", lambda *args: refresh_changes())
 
         def open_history_filter_window():
             filter_window = tk.Toplevel(window)
             filter_window.title("Filtrar historico")
-            filter_window.geometry("460x470")
+            filter_window.geometry("520x380")
+            filter_window.minsize(500, 360)
             filter_window.configure(bg=BG_COLOR)
             filter_window.transient(window)
             filter_window.grab_set()
-            filter_window.resizable(False, False)
 
             tk.Label(
                 filter_window,
@@ -2299,26 +3032,37 @@ class BackupGUI:
             form = tk.Frame(filter_window, bg=BG_COLOR)
             form.pack(fill="x", padx=28)
             form.columnconfigure(1, weight=1)
+            form.columnconfigure(3, weight=1)
+
+            date_options = ["Todos"] + get_history_date_options()
 
             field_vars = {
-                "timestamp_from": tk.StringVar(value=history_filters["timestamp_from"]),
-                "timestamp_to": tk.StringVar(value=history_filters["timestamp_to"]),
+                "timestamp_from": tk.StringVar(
+                    value=history_filters["timestamp_from"] or "Todos"
+                ),
+                "timestamp_to": tk.StringVar(
+                    value=history_filters["timestamp_to"] or "Todos"
+                ),
                 "user": tk.StringVar(value=history_filters["user"]),
                 "backup_name": tk.StringVar(value=history_filters["backup_name"]),
                 "backup_description": tk.StringVar(value=history_filters["backup_description"]),
                 "trigger": tk.StringVar(value=history_filters["trigger"]),
-                "total_files": tk.StringVar(value=history_filters["total_files"]),
-                "changes": tk.StringVar(value=history_filters["changes"]),
             }
 
-            def add_entry(label, key, row):
+            def add_entry(label, key, row, column=0, columnspan=1):
                 tk.Label(
                     form,
                     text=label,
                     bg=BG_COLOR,
                     fg=SUBTLE_TEXT,
                     font=("Arial", 10, "bold")
-                ).grid(row=row, column=0, sticky="w", pady=(0, 4))
+                ).grid(
+                    row=row,
+                    column=column,
+                    sticky="w",
+                    padx=(0 if column == 0 else 14, 0),
+                    pady=(0, 4)
+                )
 
                 entry = tk.Entry(
                     form,
@@ -2328,13 +3072,48 @@ class BackupGUI:
                     fg=TEXT_COLOR,
                     relief="flat"
                 )
-                entry.grid(row=row, column=1, sticky="ew", padx=(10, 0), pady=(0, 8))
+                entry.grid(
+                    row=row,
+                    column=column + 1,
+                    columnspan=columnspan,
+                    sticky="ew",
+                    padx=(10, 0),
+                    pady=(0, 8)
+                )
+                return entry
 
-            add_entry("Data inicial", "timestamp_from", 0)
-            add_entry("Data final", "timestamp_to", 1)
-            add_entry("Usuario", "user", 2)
-            add_entry("Nome", "backup_name", 3)
-            add_entry("Descricao", "backup_description", 4)
+            def add_combo(label, key, row, values, column=0):
+                tk.Label(
+                    form,
+                    text=label,
+                    bg=BG_COLOR,
+                    fg=SUBTLE_TEXT,
+                    font=("Arial", 10, "bold")
+                ).grid(
+                    row=row,
+                    column=column,
+                    sticky="w",
+                    padx=(0 if column == 0 else 14, 0),
+                    pady=(0, 4)
+                )
+
+                combo = ttk.Combobox(
+                    form,
+                    textvariable=field_vars[key],
+                    values=values,
+                    state="readonly"
+                )
+                combo.grid(
+                    row=row,
+                    column=column + 1,
+                    sticky="ew",
+                    padx=(10, 0),
+                    pady=(0, 8)
+                )
+                return combo
+
+            add_entry("Nome", "backup_name", 0, columnspan=3)
+            add_entry("Descricao", "backup_description", 1, columnspan=3)
 
             tk.Label(
                 form,
@@ -2342,7 +3121,7 @@ class BackupGUI:
                 bg=BG_COLOR,
                 fg=SUBTLE_TEXT,
                 font=("Arial", 10, "bold")
-            ).grid(row=5, column=0, sticky="w", pady=(0, 4))
+            ).grid(row=2, column=0, sticky="w", pady=(0, 4))
 
             trigger_combo = ttk.Combobox(
                 form,
@@ -2350,36 +3129,43 @@ class BackupGUI:
                 values=["Todos", "manual", "agendado", "sistema"],
                 state="readonly"
             )
-            trigger_combo.grid(row=5, column=1, sticky="ew", padx=(10, 0), pady=(0, 8))
+            trigger_combo.grid(
+                row=2,
+                column=1,
+                columnspan=3,
+                sticky="ew",
+                padx=(10, 0),
+                pady=(0, 8)
+            )
 
-            add_entry("Arquivos", "total_files", 6)
-            add_entry("Mudancas", "changes", 7)
+            add_combo("Data inicial", "timestamp_from", 3, date_options)
+            add_combo("Data final", "timestamp_to", 3, date_options, column=2)
+            add_entry("Usuario", "user", 4, columnspan=3)
 
             buttons = tk.Frame(filter_window, bg=BG_COLOR)
             buttons.pack(pady=(10, 0))
 
             def apply_filters():
-                from_date = parse_history_date(field_vars["timestamp_from"].get())
-                to_date = parse_history_date(field_vars["timestamp_to"].get())
+                selected_from = field_vars["timestamp_from"].get().strip()
+                selected_to = field_vars["timestamp_to"].get().strip()
+                from_date = parse_history_date(selected_from)
+                to_date = parse_history_date(selected_to)
 
-                if field_vars["timestamp_from"].get().strip() and from_date is None:
+                if from_date and to_date and from_date.date() > to_date.date():
                     messagebox.showwarning(
-                        "Data invalida",
-                        "Informe a data inicial no formato DD/MM/AAAA.",
-                        parent=filter_window
-                    )
-                    return
-
-                if field_vars["timestamp_to"].get().strip() and to_date is None:
-                    messagebox.showwarning(
-                        "Data invalida",
-                        "Informe a data final no formato DD/MM/AAAA.",
+                        "Periodo invalido",
+                        "A data inicial nao pode ser maior que a data final.",
                         parent=filter_window
                     )
                     return
 
                 for key, variable in field_vars.items():
-                    history_filters[key] = variable.get().strip()
+                    value = variable.get().strip()
+
+                    if key in ("timestamp_from", "timestamp_to"):
+                        history_filters[key] = "" if value == "Todos" else value
+                    else:
+                        history_filters[key] = value
 
                 refresh_backup_table()
                 filter_window.destroy()
@@ -2439,6 +3225,7 @@ class BackupGUI:
         window = tk.Toplevel(self.root)
         window.title("Gerenciar usuarios")
         window.geometry("820x470")
+        window.minsize(760, 440)
         window.configure(bg=BG_COLOR)
         window.transient(self.root)
 
@@ -2454,9 +3241,11 @@ class BackupGUI:
         content.pack(fill="both", expand=True, padx=18, pady=(0, 18))
 
         columns = ("username", "name", "role")
-        tree = ttk.Treeview(content, columns=columns, show="headings", height=10)
-        tree.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0, 16))
+        tree_frame = tk.Frame(content, bg=BG_COLOR)
+        tree_frame.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0, 16))
+        tree = self.create_scrollable_tree(tree_frame, columns, height=10)
         content.columnconfigure(0, weight=1)
+        content.columnconfigure(1, weight=0)
         content.rowconfigure(0, weight=1)
 
         headings = {
@@ -2465,9 +3254,25 @@ class BackupGUI:
             "role": "Perfil"
         }
 
-        for key, title in headings.items():
-            tree.heading(key, text=title)
-            tree.column(key, width=130, anchor="center")
+        self.configure_tree_columns(
+            tree,
+            headings,
+            {
+                "username": {
+                    "width": 160,
+                    "minwidth": 120,
+                    "weight": 2,
+                    "anchor": "w",
+                },
+                "name": {
+                    "width": 220,
+                    "minwidth": 160,
+                    "weight": 3,
+                    "anchor": "w",
+                },
+                "role": {"width": 150, "minwidth": 130, "weight": 1},
+            }
+        )
 
         form = tk.Frame(content, bg=BG_COLOR)
         form.grid(row=0, column=1, sticky="n")
