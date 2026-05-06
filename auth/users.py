@@ -43,6 +43,10 @@ def normalize_username(username):
     return str(username or "").strip().lower()
 
 
+def normalize_name(name):
+    return " ".join(str(name or "").strip().lower().split())
+
+
 def hash_password(password, salt=None):
     salt = salt or secrets.token_bytes(16)
     password_hash = hashlib.pbkdf2_hmac(
@@ -130,14 +134,19 @@ def validate_user_payload(username, password, role):
 def create_user(username, password, role, name=None):
     normalized_username = validate_user_payload(username, password, role)
     users = load_users()
+    display_name = name.strip() if name and name.strip() else normalized_username
+    normalized_display_name = normalize_name(display_name)
 
     if any(user.get("username") == normalized_username for user in users):
-        raise ValueError("Ja existe um usuario com esse nome.")
+        raise ValueError("Ja existe esse usuario cadastrado.")
+
+    if any(normalize_name(user.get("name")) == normalized_display_name for user in users):
+        raise ValueError("Ja existe um usuario com esse nome de exibicao.")
 
     now = datetime.now().isoformat(timespec="seconds")
     user = {
         "username": normalized_username,
-        "name": name.strip() if name and name.strip() else normalized_username,
+        "name": display_name,
         "role": role,
         "password": hash_password(password),
         "created_at": now,
@@ -168,7 +177,17 @@ def update_user(username, role=None, name=None, password=None):
             user["role"] = role
 
         if name is not None:
-            user["name"] = name.strip() or normalized_username
+            next_name = name.strip() or normalized_username
+            normalized_next_name = normalize_name(next_name)
+
+            for current_user in users:
+                if current_user.get("username") == normalized_username:
+                    continue
+
+                if normalize_name(current_user.get("name")) == normalized_next_name:
+                    raise ValueError("Ja existe um usuario com esse nome de exibicao.")
+
+            user["name"] = next_name
 
         if password:
             user["password"] = hash_password(password)

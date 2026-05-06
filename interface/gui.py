@@ -57,8 +57,8 @@ class BackupGUI:
         self.root = root
         self.current_user = current_user
         self.root.title("Sistema de Backup Inteligente")
-        self.root.geometry("820x520")
-        self.root.minsize(760, 500)
+        self.root.geometry("1180x650")
+        self.root.minsize(980, 560)
         self.root.configure(bg=BG_COLOR)
         self.window_icon_photo = None
 
@@ -195,7 +195,7 @@ class BackupGUI:
         self.outer_frame.pack(fill="both", expand=True)
 
         self.header_frame = tk.Frame(self.outer_frame, bg=BG_COLOR)
-        self.header_frame.pack(fill="x", padx=34, pady=(20, 0))
+        self.header_frame.pack(fill="x", padx=20, pady=(20, 0))
 
         title = tk.Label(
             self.header_frame,
@@ -218,17 +218,33 @@ class BackupGUI:
             justify="right"
         ).pack(fill="x", pady=(0, 8))
 
-        self.menu_frame = tk.Frame(self.outer_frame, bg=BG_COLOR)
-        self.menu_frame.place(relx=0.5, rely=0.55, anchor="center")
+        self.main_frame = tk.Frame(self.outer_frame, bg=BG_COLOR)
+        self.main_frame.pack(
+            fill="both",
+            expand=True,
+            padx=16,
+            pady=(26, 50)
+        )
+        self.main_frame.columnconfigure(0, weight=0)
+        self.main_frame.columnconfigure(1, weight=1)
+        self.main_frame.rowconfigure(0, weight=1)
+
+        self.menu_frame = tk.Frame(self.main_frame, bg=BG_COLOR)
+        self.menu_frame.grid(row=0, column=0, sticky="nw", padx=(0, 18))
+
+        self.content_frame = tk.Frame(self.main_frame, bg=BG_COLOR)
+        self.content_frame.grid(row=0, column=1, sticky="nsew")
+        self.content_frame.columnconfigure(0, weight=1)
+        self.content_frame.rowconfigure(0, weight=1)
 
         self.backup_button = self.create_menu_button(
             "Realizar Backup",
-            self.perform_backup,
+            self.show_backup_panel,
             bg=TITLE_COLOR
         )
         self.schedule_button = self.create_menu_button(
             "Agendar Backup",
-            self.open_schedule_window,
+            self.show_schedule_panel,
             bg=TITLE_COLOR
         )
         self.files_button = self.create_menu_button(
@@ -248,7 +264,7 @@ class BackupGUI:
         )
         self.download_button = self.create_menu_button(
             "Baixar ultimo backup",
-            self.download_latest_backup,
+            self.show_download_panel,
             bg=LIGHT_BUTTON
         )
 
@@ -350,6 +366,7 @@ class BackupGUI:
         self.apply_button_feedback(logout_button)
 
         self.apply_permissions()
+        self.show_welcome_panel()
 
     def create_menu_button(self, text, command, bg):
         button = tk.Button(
@@ -373,6 +390,173 @@ class BackupGUI:
         button.pack(pady=7)
         self.apply_button_feedback(button)
         return button
+
+    def clear_content(self):
+        for widget in self.content_frame.winfo_children():
+            widget.destroy()
+
+    def create_content_shell(self, title):
+        self.clear_content()
+
+        panel = tk.Frame(self.content_frame, bg=BG_COLOR)
+        panel.grid(row=0, column=0, sticky="nsew")
+        panel.columnconfigure(0, weight=1)
+        panel.rowconfigure(1, weight=1)
+
+        tk.Label(
+            panel,
+            text=title,
+            bg=BG_COLOR,
+            fg=TITLE_COLOR,
+            font=TITLE_FONT
+        ).grid(row=0, column=0, sticky="n", pady=(0, 10))
+
+        content = tk.Frame(panel, bg=BG_COLOR)
+        content.grid(row=1, column=0, sticky="nsew")
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(0, weight=1)
+        return panel, content
+
+    def show_message_panel(self, title, message, action_text=None, action=None):
+        _panel, content = self.create_content_shell(title)
+
+        box = tk.Frame(content, bg=BG_COLOR)
+        box.place(relx=0.5, rely=0.45, anchor="center")
+
+        tk.Label(
+            box,
+            text=message,
+            bg=BG_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Segoe UI", 12),
+            justify="center",
+            wraplength=520
+        ).pack(pady=(0, 16))
+
+        if action_text and action:
+            self.create_dialog_button(box, action_text, action).pack()
+
+    def show_welcome_panel(self):
+        self.show_message_panel(
+            "Sistema de Backup",
+            "Escolha uma opcao no menu lateral para comecar."
+        )
+
+    def show_backup_panel(self):
+        if not self.require_permission("run_backup"):
+            return
+
+        self.show_message_panel(
+            "Realizar Backup",
+            "Inicie um backup manual dos diretorios cadastrados.",
+            "Iniciar backup",
+            self.perform_backup
+        )
+
+    def show_download_panel(self):
+        if not self.require_permission("download_backup"):
+            return
+
+        self.show_message_panel(
+            "Baixar ultimo backup",
+            "Exporte uma copia do ultimo backup gerado.",
+            "Baixar backup",
+            self.download_latest_backup
+        )
+
+    def show_schedule_panel(self):
+        if not self.require_permission("schedule_backup"):
+            return
+
+        _panel, content = self.create_content_shell("Agendar Backup")
+
+        form = tk.Frame(content, bg=BG_COLOR)
+        form.place(relx=0.5, rely=0.38, anchor="center")
+        form.columnconfigure(1, weight=1)
+
+        tk.Label(
+            form,
+            text="Horario (HH:MM)",
+            bg=BG_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Arial", 11)
+        ).grid(row=0, column=0, sticky="w", pady=6)
+
+        time_var = tk.StringVar(value=self.load_schedule().get("time", "09:00"))
+        time_entry = tk.Entry(
+            form,
+            textvariable=time_var,
+            font=("Arial", 11),
+            bg=LIGHT_BUTTON,
+            fg=TEXT_COLOR,
+            relief="flat",
+            width=26
+        )
+        time_entry.grid(row=0, column=1, sticky="ew", padx=(10, 0), pady=6)
+
+        tk.Label(
+            form,
+            text="Frequencia",
+            bg=BG_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Arial", 11)
+        ).grid(row=1, column=0, sticky="w", pady=6)
+
+        frequency_var = tk.StringVar(
+            value=self.load_schedule().get("frequency", "Diariamente")
+        )
+        frequency_combo = ttk.Combobox(
+            form,
+            textvariable=frequency_var,
+            values=["Diariamente", "Semanalmente", "Mensalmente"],
+            state="readonly",
+        )
+        frequency_combo.grid(row=1, column=1, sticky="ew", padx=(10, 0), pady=6)
+
+        tk.Label(
+            form,
+            text="O backup sera executado automaticamente no horario escolhido.",
+            bg=BG_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Arial", 10),
+            wraplength=360,
+            justify="center"
+        ).grid(row=2, column=0, columnspan=2, pady=(12, 14))
+
+        def save_schedule():
+            value = time_var.get().strip()
+
+            if not self.is_valid_time(value):
+                messagebox.showwarning(
+                    "Horario invalido",
+                    "Informe o horario no formato HH:MM.",
+                    parent=self.root
+                )
+                return
+
+            payload = {
+                "time": value,
+                "frequency": frequency_var.get(),
+                "updated_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+            }
+
+            os.makedirs("config", exist_ok=True)
+
+            with open(SCHEDULE_PATH, "w", encoding="utf-8") as file:
+                json.dump(payload, file, indent=4, ensure_ascii=False)
+
+            self.refresh_footer()
+            messagebox.showinfo(
+                "Agendamento salvo",
+                "Horario salvo com sucesso.",
+                parent=self.root
+            )
+
+        self.create_dialog_button(
+            form,
+            "Salvar agendamento",
+            save_schedule
+        ).grid(row=3, column=0, columnspan=2)
 
     def apply_button_feedback(self, button):
         default_bg = button.cget("bg")
@@ -515,8 +699,8 @@ class BackupGUI:
 
         window = tk.Toplevel(self.root)
         window.title("Gerenciar diretorios")
-        window.geometry("700x420")
-        window.minsize(560, 360)
+        window.geometry("820x480")
+        window.minsize(680, 400)
         window.configure(bg=BG_COLOR)
         window.transient(self.root)
         self.prepare_window(window)
@@ -527,65 +711,119 @@ class BackupGUI:
             bg=BG_COLOR,
             fg=TITLE_COLOR,
             font=TITLE_FONT
-        ).pack(pady=(20, 12))
+        ).pack(pady=(20, 6))
 
-        list_frame = tk.Frame(window, bg=BG_COLOR)
-        list_frame.pack(padx=20, pady=10, fill="both", expand=True)
-        list_frame.columnconfigure(0, weight=1)
-        list_frame.rowconfigure(0, weight=1)
+        summary_var = tk.StringVar()
+        tk.Label(
+            window,
+            textvariable=summary_var,
+            bg=BG_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Segoe UI", 10)
+        ).pack(pady=(0, 12))
 
-        listbox = tk.Listbox(
-            list_frame,
-            height=12,
-            font=TABLE_FONT,
-            bg=LIGHT_BUTTON,
-            fg=TEXT_COLOR,
-            selectbackground=TITLE_COLOR,
-            selectforeground=TEXT_COLOR
+        content = tk.Frame(window, bg=BG_COLOR)
+        content.pack(padx=20, pady=(0, 20), fill="both", expand=True)
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(0, weight=1)
+        content.rowconfigure(1, weight=0)
+
+        tree_frame = tk.Frame(content, bg=BG_COLOR)
+        tree_frame.grid(row=0, column=0, sticky="nsew")
+
+        columns = ("folder", "status")
+        directory_tree = self.create_scrollable_tree(
+            tree_frame,
+            columns,
+            height=10
         )
-        listbox.grid(row=0, column=0, sticky="nsew")
-
-        list_vertical_scrollbar = ttk.Scrollbar(
-            list_frame,
-            orient="vertical",
-            command=listbox.yview
+        self.configure_tree_columns(
+            directory_tree,
+            {
+                "folder": "Diretorio",
+                "status": "Status"
+            },
+            {
+                "folder": {
+                    "width": 560,
+                    "minwidth": 360,
+                    "weight": 5,
+                    "anchor": "w",
+                },
+                "status": {
+                    "width": 130,
+                    "minwidth": 110,
+                    "weight": 1,
+                },
+            }
         )
-        list_vertical_scrollbar.grid(row=0, column=1, sticky="ns")
+        directory_tree.tag_configure("missing", foreground="#D32F2F")
 
-        list_horizontal_scrollbar = ttk.Scrollbar(
-            list_frame,
-            orient="horizontal",
-            command=listbox.xview
-        )
-        list_horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
+        def get_directory_status(directory):
+            return "OK" if os.path.isdir(directory) else "Nao encontrado"
 
-        listbox.configure(
-            yscrollcommand=list_vertical_scrollbar.set,
-            xscrollcommand=list_horizontal_scrollbar.set
-        )
+        def refresh_directory_table():
+            for item in directory_tree.get_children():
+                directory_tree.delete(item)
 
-        for directory in self.directories:
-            listbox.insert(tk.END, directory)
+            for index, directory in enumerate(self.directories):
+                status = get_directory_status(directory)
+                tags = ("missing",) if status != "OK" else ()
+                directory_tree.insert(
+                    "",
+                    tk.END,
+                    iid=str(index),
+                    values=(directory, status),
+                    tags=tags
+                )
 
-        buttons = tk.Frame(window, bg=BG_COLOR)
-        buttons.pack(pady=(0, 20))
+            total = len(self.directories)
+            active = sum(
+                1
+                for directory in self.directories
+                if os.path.isdir(directory)
+            )
+            summary_var.set(
+                f"{total} diretorio(s) cadastrado(s)  |  {active} disponivel(is)"
+            )
+
+        refresh_directory_table()
+
+        buttons = tk.Frame(content, bg=BG_COLOR)
+        buttons.grid(row=1, column=0, sticky="e", pady=(12, 0))
 
         def add_directory():
             folder = filedialog.askdirectory(parent=window)
 
-            if folder and folder not in self.directories:
-                self.directories.append(folder)
-                listbox.insert(tk.END, folder)
+            if not folder:
+                return
+
+            normalized_folder = os.path.normcase(os.path.abspath(folder))
+            existing_folders = {
+                os.path.normcase(os.path.abspath(directory))
+                for directory in self.directories
+            }
+
+            if normalized_folder in existing_folders:
+                messagebox.showinfo(
+                    "Diretorio ja cadastrado",
+                    "Esse diretorio ja esta na lista.",
+                    parent=window
+                )
+                return
+
+            self.directories.append(folder)
+            refresh_directory_table()
 
         def remove_directory():
-            selected = listbox.curselection()
+            selected = directory_tree.selection()
 
             if not selected:
                 return
 
-            index = selected[0]
-            listbox.delete(index)
+            index = int(selected[0])
             del self.directories[index]
+            refresh_directory_table()
 
         def save_and_close():
             self.save_directories()
@@ -1297,30 +1535,13 @@ class BackupGUI:
         dataset_path = os.path.join("dataset", "files_dataset.csv")
 
         if not os.path.exists(dataset_path):
-            messagebox.showinfo(
+            self.show_message_panel(
                 "Sem arquivos",
                 "Nenhum arquivo foi listado ainda. Execute um backup primeiro."
             )
             return
 
-        window = tk.Toplevel(self.root)
-        window.title("Arquivos analisados")
-        window.geometry("1040x540")
-        window.minsize(840, 420)
-        window.configure(bg=BG_COLOR)
-        window.transient(self.root)
-        self.prepare_window(window)
-
-        tk.Label(
-            window,
-            text="Arquivos analisados",
-            bg=BG_COLOR,
-            fg=TITLE_COLOR,
-            font=TITLE_FONT
-        ).pack(pady=(18, 10))
-
-        content = tk.Frame(window, bg=BG_COLOR)
-        content.pack(fill="both", expand=True, padx=18, pady=(0, 18))
+        _panel, content = self.create_content_shell("Arquivos analisados")
         content.columnconfigure(0, weight=1)
         content.rowconfigure(1, weight=1)
 
@@ -1343,6 +1564,66 @@ class BackupGUI:
 
         top_bar = tk.Frame(content, bg=BG_COLOR)
         top_bar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        top_bar.columnconfigure(1, weight=1)
+
+        file_search_var = tk.StringVar()
+
+        tk.Label(
+            top_bar,
+            text="Buscar arquivo",
+            bg=BG_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Arial", 10, "bold")
+        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
+
+        file_search_entry = tk.Entry(
+            top_bar,
+            textvariable=file_search_var,
+            font=TABLE_FONT,
+            bg=LIGHT_BUTTON,
+            fg=TEXT_COLOR,
+            relief="flat"
+        )
+        file_search_entry.grid(row=0, column=1, sticky="ew")
+
+        file_suggestion_box = tk.Listbox(
+            top_bar,
+            height=4,
+            font=SUGGESTION_FONT,
+            bg="#F2F2F2",
+            fg=TEXT_COLOR,
+            selectbackground="#FFE0B2",
+            selectforeground=TEXT_COLOR,
+            relief="flat",
+            bd=0,
+            highlightthickness=2,
+            highlightbackground=TITLE_COLOR,
+            highlightcolor=TITLE_COLOR,
+            activestyle="none"
+        )
+
+        self.create_dialog_button(
+            top_bar,
+            "Buscar",
+            lambda: apply_file_search()
+        ).grid(row=0, column=2, padx=(10, 0))
+
+        def clear_file_search():
+            file_search_var.set("")
+            hide_file_suggestions()
+            refresh_table()
+
+        self.create_dialog_button(
+            top_bar,
+            "Limpar",
+            clear_file_search
+        ).grid(row=0, column=3, padx=(8, 0))
+
+        self.create_dialog_button(
+            top_bar,
+            "Filtrar",
+            lambda: open_filter_window()
+        ).grid(row=0, column=4, padx=(8, 0))
 
         filter_summary_var = tk.StringVar(value="Filtros: todos os arquivos")
         tk.Label(
@@ -1351,7 +1632,7 @@ class BackupGUI:
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
             font=("Arial", 10)
-        ).pack(side="left")
+        ).grid(row=2, column=1, sticky="w", pady=(4, 0))
 
         filter_state = {
             "name": "",
@@ -1362,12 +1643,6 @@ class BackupGUI:
             "days_since_modified": "",
             "important": "Todos",
         }
-
-        self.create_dialog_button(
-            top_bar,
-            "Filtrar",
-            lambda: open_filter_window()
-        ).pack(side="right")
 
         table_frame = tk.Frame(content, bg=BG_COLOR)
         table_frame.grid(row=1, column=0, sticky="nsew")
@@ -1493,6 +1768,81 @@ class BackupGUI:
 
             return True
 
+        def get_file_search_suggestions():
+            search_text = file_search_var.get().strip().lower()
+
+            if not search_text:
+                return []
+
+            suggestions = []
+            seen = set()
+
+            for row_values in rows:
+                for value in (
+                    row_values.get("name", ""),
+                    row_values.get("extension", "")
+                ):
+                    suggestion = str(value).strip()
+
+                    if not suggestion:
+                        continue
+
+                    suggestion_key = suggestion.lower()
+
+                    if (
+                        search_text in suggestion_key
+                        and suggestion_key not in seen
+                    ):
+                        suggestions.append(suggestion)
+                        seen.add(suggestion_key)
+
+                    if len(suggestions) >= 8:
+                        return suggestions
+
+            return suggestions
+
+        def hide_file_suggestions():
+            file_suggestion_box.grid_forget()
+
+        def update_file_suggestions():
+            file_suggestion_box.delete(0, tk.END)
+            suggestions = get_file_search_suggestions()
+
+            if not suggestions:
+                hide_file_suggestions()
+                return
+
+            for suggestion in suggestions:
+                file_suggestion_box.insert(tk.END, f"  {suggestion}")
+
+            file_suggestion_box.config(height=min(len(suggestions), 5))
+            file_suggestion_box.grid(
+                row=1,
+                column=1,
+                columnspan=4,
+                sticky="ew",
+                pady=(4, 0)
+            )
+
+        def apply_file_search(value=None):
+            if value is not None:
+                file_search_var.set(value)
+
+            filter_state["name"] = file_search_var.get().strip()
+            hide_file_suggestions()
+            refresh_table()
+
+        def select_file_suggestion(_event=None):
+            selection = file_suggestion_box.curselection()
+
+            if selection:
+                apply_file_search(file_suggestion_box.get(selection[0]).strip())
+
+        def on_file_search_changed(*_args):
+            filter_state["name"] = file_search_var.get().strip()
+            update_file_suggestions()
+            refresh_table()
+
         def refresh_table(*args):
             for item in tree.get_children():
                 tree.delete(item)
@@ -1532,12 +1882,12 @@ class BackupGUI:
                 filter_summary_var.set("Filtros: todos os arquivos")
 
         def open_filter_window():
-            filter_window = tk.Toplevel(window)
+            filter_window = tk.Toplevel(self.root)
             filter_window.title("Filtrar arquivos")
             filter_window.geometry("540x390")
             filter_window.minsize(520, 370)
             filter_window.configure(bg=BG_COLOR)
-            filter_window.transient(window)
+            filter_window.transient(self.root)
             self.prepare_window(filter_window)
             filter_window.grab_set()
 
@@ -1693,6 +2043,7 @@ class BackupGUI:
                     else:
                         filter_state[key] = value
 
+                file_search_var.set(filter_state["name"])
                 refresh_table()
                 filter_window.destroy()
 
@@ -1700,6 +2051,7 @@ class BackupGUI:
                 for key in filter_state:
                     filter_state[key] = "Todos" if key == "important" else ""
 
+                file_search_var.set("")
                 refresh_table()
                 filter_window.destroy()
 
@@ -1709,6 +2061,13 @@ class BackupGUI:
             self.create_dialog_button(buttons, "Limpar", clear_filters).grid(
                 row=0, column=1, padx=5
             )
+
+        file_search_var.trace_add("write", on_file_search_changed)
+        file_search_entry.bind("<Return>", lambda _event: apply_file_search())
+        file_search_entry.bind("<Escape>", lambda _event: hide_file_suggestions())
+        file_suggestion_box.bind("<ButtonRelease-1>", select_file_suggestion)
+        file_suggestion_box.bind("<Double-Button-1>", select_file_suggestion)
+        file_suggestion_box.bind("<Return>", select_file_suggestion)
 
         refresh_table()
 
@@ -1828,7 +2187,7 @@ class BackupGUI:
         ]
 
         if not history:
-            messagebox.showinfo(
+            self.show_message_panel(
                 "Sem backups",
                 "Nenhum backup disponivel para recuperacao."
             )
@@ -1845,24 +2204,7 @@ class BackupGUI:
             "modified_to": "",
         }
 
-        window = tk.Toplevel(self.root)
-        window.title("Recuperar arquivos e versoes")
-        window.geometry("1240x700")
-        window.minsize(900, 540)
-        window.configure(bg=BG_COLOR)
-        window.transient(self.root)
-        self.prepare_window(window)
-
-        tk.Label(
-            window,
-            text="Recuperar Arquivos e Versoes",
-            bg=BG_COLOR,
-            fg=TITLE_COLOR,
-            font=TITLE_FONT
-        ).pack(pady=(18, 10))
-
-        content = tk.Frame(window, bg=BG_COLOR)
-        content.pack(fill="both", expand=True, padx=18, pady=(0, 18))
+        window, content = self.create_content_shell("Recuperar Arquivos e Versoes")
 
         search_bar = tk.Frame(content, bg=BG_COLOR)
         search_bar.columnconfigure(1, weight=1)
@@ -2444,12 +2786,12 @@ class BackupGUI:
             return True
 
         def open_restore_filter_window():
-            filter_window = tk.Toplevel(window)
+            filter_window = tk.Toplevel(self.root)
             filter_window.title("Filtrar arquivos recuperaveis")
             filter_window.geometry("560x390")
             filter_window.minsize(540, 370)
             filter_window.configure(bg=BG_COLOR)
-            filter_window.transient(window)
+            filter_window.transient(self.root)
             self.prepare_window(filter_window)
             filter_window.grab_set()
 
@@ -2894,24 +3236,7 @@ class BackupGUI:
 
         history = self.get_visible_history()
 
-        window = tk.Toplevel(self.root)
-        window.title("Historico de backups")
-        window.geometry("1280x720")
-        window.minsize(900, 540)
-        window.configure(bg=BG_COLOR)
-        window.transient(self.root)
-        self.prepare_window(window)
-
-        tk.Label(
-            window,
-            text="Historico de Backups",
-            bg=BG_COLOR,
-            fg=TITLE_COLOR,
-            font=TITLE_FONT
-        ).pack(pady=(18, 10))
-
-        content = tk.Frame(window, bg=BG_COLOR)
-        content.pack(fill="both", expand=True, padx=18, pady=(0, 18))
+        window, content = self.create_content_shell("Historico de Backups")
 
         history_top_bar = tk.Frame(content, bg=BG_COLOR)
         history_top_bar.columnconfigure(1, weight=1)
@@ -3508,12 +3833,12 @@ class BackupGUI:
         history_suggestion_box.bind("<Return>", select_history_suggestion)
 
         def open_history_filter_window():
-            filter_window = tk.Toplevel(window)
+            filter_window = tk.Toplevel(self.root)
             filter_window.title("Filtrar historico")
             filter_window.geometry("520x380")
             filter_window.minsize(500, 360)
             filter_window.configure(bg=BG_COLOR)
-            filter_window.transient(window)
+            filter_window.transient(self.root)
             self.prepare_window(filter_window)
             filter_window.grab_set()
 
@@ -3875,9 +4200,17 @@ class BackupGUI:
         def save_user():
             username = username_var.get()
             username_key = username.strip().lower()
+            name_key = " ".join(name_var.get().strip().lower().split())
+            selected = tree.selection()
+            selected_username = selected[0] if selected else None
+            users = list_public_users()
+            existing_usernames = {
+                user["username"]
+                for user in users
+            }
 
             if (
-                username_key == self.current_user.get("username")
+                (selected_username or username_key) == self.current_user.get("username")
                 and role_var.get() != self.current_user.get("role")
             ):
                 messagebox.showwarning(
@@ -3888,14 +4221,23 @@ class BackupGUI:
                 return
 
             try:
-                if username_key in [user["username"] for user in list_public_users()]:
+                if selected_username:
                     update_user(
-                        username,
+                        selected_username,
                         role=role_var.get(),
                         name=name_var.get(),
                         password=password_var.get() or None
                     )
                 else:
+                    if username_key in existing_usernames:
+                        raise ValueError("Ja existe esse usuario cadastrado.")
+
+                    if name_key and any(
+                        " ".join(user.get("name", "").strip().lower().split()) == name_key
+                        for user in users
+                    ):
+                        raise ValueError("Ja existe um usuario com esse nome.")
+
                     create_user(
                         username,
                         password_var.get(),
