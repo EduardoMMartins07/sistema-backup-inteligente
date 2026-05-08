@@ -1,10 +1,12 @@
 import hashlib
+import csv
 import json
 import os
 import re
 import shutil
 import zipfile
 from datetime import datetime
+from datetime import timedelta
 from utils.file_hash import calculate_file_hash
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -13,8 +15,17 @@ DATASET_PATH = os.path.join(PROJECT_ROOT, "dataset", "files_dataset.csv")
 DEFAULT_BACKUP_DIR = os.path.join(PROJECT_ROOT, "backups")
 HISTORY_PATH = os.path.join(PROJECT_ROOT, "config", "backup_history.json")
 SCHEDULE_PATH = os.path.join(PROJECT_ROOT, "config", "backup_schedule.json")
+PRIORITY_STATE_PATH = os.path.join(PROJECT_ROOT, "config", "priority_backup_state.json")
 ZIP_COMPRESSION_METHOD = zipfile.ZIP_LZMA
 RECOVERABLE_ACTIONS = {"alterado", "excluido"}
+PRIORITY_LOW = "baixa"
+PRIORITY_MEDIUM = "media"
+PRIORITY_HIGH = "alta"
+PRIORITY_INTERVALS = {
+    PRIORITY_LOW: timedelta(days=7),
+    PRIORITY_MEDIUM: timedelta(days=2),
+    PRIORITY_HIGH: timedelta(hours=4),
+}
 
 INTERNAL_IGNORED_PATHS = [
     os.path.join(PROJECT_ROOT, "config"),
@@ -91,6 +102,11 @@ def get_backup_destination(config=None):
 def is_deduplication_enabled(config=None):
     config = config or load_config()
     return bool(config.get("deduplicate_backup", False))
+
+
+def is_priority_backup_policy_enabled(config=None):
+    config = config or load_config()
+    return bool(config.get("priority_backup_policy_enabled", False))
 
 
 def get_ignored_roots(config=None, backup_destination=None):
@@ -245,10 +261,197 @@ def build_file_snapshot(manifest):
     return snapshot
 
 
-def get_latest_history_snapshot():
+def normalize_priority(priority):
+    normalized = str(priority or "").strip().lower()
+
+    if normalized in {PRIORITY_LOW, PRIORITY_MEDIUM, PRIORITY_HIGH}:
+        return normalized
+
+    return PRIORITY_LOW
+
+
+def load_priority_state():
+    return load_json(PRIORITY_STATE_PATH, {})
+
+
+def save_priority_state(state):
+    save_json(PRIORITY_STATE_PATH, state)
+
+
+def parse_iso_datetime(value):
+    if not value:
+        return None
+
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def load_dataset_priority_index():
+    index = {
+        "by_source_path": {},
+        "by_archive_name": {},
+    }
+
+    if not os.path.exists(DATASET_PATH):
+        return index
+
+    with open(DATASET_PATH, "r", encoding="utf-8", newline="") as file:
+        reader = csv.DictReader(file)
+
+        for row in reader:
+            source_path = row.get("source_path")
+            archive_name = row.get("archive_name")
+
+            if source_path:
+                index["by_source_path"][normalize_path(source_path)] = row
+
+            if archive_name:
+                index["by_archive_name"][normalize_archive_name(archive_name)] = row
+
+    return index
+
+
+def find_priority_metadata(source_path, archive_name, priority_index=None):
+    priority_index = priority_index or load_dataset_priority_index()
+    normalized_source = normalize_path(source_path)
+    normalized_archive = normalize_archive_name(archive_name)
+
+    return (
+        priority_index["by_source_path"].get(normalized_source)
+        or priority_index["by_archive_name"].get(normalized_archive)
+        or {}
+    )
+
+
+def get_priority_file_hash(source_path, metadata):
+    file_hash = metadata.get("file_hash")
+
+    if file_hash:
+        return file_hash
+
+    try:
+        return calculate_file_hash(source_path)
+    except OSError:
+        return ""
+
+
+def should_include_priority_file(source_path, archive_name, metadata, state_entry, now):
+    priority = normalize_priority(metadata.get("priority"))
+    last_backup_at = parse_iso_datetime(state_entry.get("last_backup_at"))
+    current_hash = get_priority_file_hash(source_path, metadata)
+    previous_hash = state_entry.get("last_backup_hash", "")
+    hash_changed = not previous_hash or current_hash != previous_hash
+
+    if not last_backup_at:
+        return True, "primeiro backup pela politica de prioridade"
+
+    if priority == PRIORITY_HIGH:
+        today = now.date().isoformat()
+
+        if state_entry.get("last_daily_backup_date") != today:
+            return True, "primeiro backup de alta prioridade no dia"
+
+        if now - last_backup_at >= PRIORITY_INTERVALS[PRIORITY_HIGH] and hash_changed:
+            return True, "arquivo de alta prioridade alterado no intervalo de 4 horas"
+
+        return False, "alta prioridade ainda dentro do intervalo"
+
+    interval = PRIORITY_INTERVALS.get(priority, PRIORITY_INTERVALS[PRIORITY_LOW])
+
+    if now - last_backup_at >= interval:
+        return True, f"intervalo vencido para prioridade {priority}"
+
+    return False, f"prioridade {priority} ainda dentro do intervalo"
+
+
+def build_priority_backup_manifest(
+    directories=None,
+    config=None,
+    backup_destination=None,
+    now=None
+):
+    now = now or datetime.now()
+    config = config or load_config()
+    backup_destination = backup_destination or get_backup_destination(config)
+    full_manifest = build_backup_manifest(
+        directories=directories,
+        config=config,
+        backup_destination=backup_destination
+    )
+    priority_index = load_dataset_priority_index()
+    priority_state = load_priority_state()
+    due_manifest = []
+    decisions = []
+
+    for source_path, archive_name in full_manifest:
+        metadata = find_priority_metadata(source_path, archive_name, priority_index)
+        priority = normalize_priority(metadata.get("priority"))
+        state_key = normalize_path(source_path)
+        include_file, reason = should_include_priority_file(
+            source_path,
+            archive_name,
+            metadata,
+            priority_state.get(state_key, {}),
+            now
+        )
+
+        decisions.append(
+            {
+                "source_path": source_path,
+                "archive_name": archive_name,
+                "priority": priority,
+                "included": include_file,
+                "reason": reason,
+            }
+        )
+
+        if include_file:
+            due_manifest.append((source_path, archive_name))
+
+    return due_manifest, decisions, priority_index
+
+
+def update_priority_state_after_backup(manifest, current_snapshot, now=None, priority_index=None):
+    if not manifest:
+        return
+
+    now = now or datetime.now()
+    priority_index = priority_index or load_dataset_priority_index()
+    state = load_priority_state()
+
+    for source_path, archive_name in manifest:
+        metadata = find_priority_metadata(source_path, archive_name, priority_index)
+        priority = normalize_priority(metadata.get("priority"))
+        snapshot_entry = current_snapshot.get(archive_name, {})
+        state_key = normalize_path(source_path)
+        previous_entry = state.get(state_key, {})
+        next_entry = {
+            "source_path": source_path,
+            "archive_name": archive_name,
+            "priority": priority,
+            "last_backup_at": now.isoformat(timespec="seconds"),
+            "last_backup_hash": snapshot_entry.get("file_hash", ""),
+        }
+
+        if priority == PRIORITY_HIGH:
+            next_entry["last_daily_backup_date"] = now.date().isoformat()
+        elif previous_entry.get("last_daily_backup_date"):
+            next_entry["last_daily_backup_date"] = previous_entry.get("last_daily_backup_date")
+
+        state[state_key] = next_entry
+
+    save_priority_state(state)
+
+
+def get_latest_history_snapshot(include_partial=False):
     history = load_history()
 
     for entry in reversed(history):
+        if entry.get("partial_backup") and not include_partial:
+            continue
+
         snapshot = entry.get("file_snapshot")
 
         if isinstance(snapshot, dict):
@@ -496,9 +699,10 @@ def run_backup_job(
     )
     warnings = pre_backup_warnings + warnings
     backup_folder = os.path.dirname(backup_path)
+    completed_at = datetime.now()
 
     history_entry = {
-        "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        "timestamp": completed_at.strftime("%d/%m/%Y %H:%M:%S"),
         "backup_file": os.path.basename(backup_path),
         "backup_name": backup_name or "",
         "backup_description": backup_description or "",
@@ -514,9 +718,149 @@ def run_backup_job(
         "warnings_count": len(warnings)
     }
     append_history(history_entry)
+    update_priority_state_after_backup(manifest, current_snapshot, completed_at)
 
     if progress_callback:
         progress_callback(100, "Backup concluido.")
+
+    history_entry["warnings"] = warnings
+    history_entry["skipped_duplicates"] = skipped_duplicates
+
+    return history_entry
+
+
+def run_priority_backup_job(
+    directories=None,
+    backup_destination=None,
+    trigger="politica_prioridade",
+    username=None,
+    user_role=None,
+    run_scan_first=True,
+    progress_callback=None,
+    cancel_callback=None
+):
+    config = load_config()
+
+    if not is_priority_backup_policy_enabled(config):
+        return {
+            "skipped": True,
+            "reason": "Politica de backup por prioridade desativada."
+        }
+
+    directories = directories or get_monitored_directories(config)
+    backup_destination = resolve_configured_path(backup_destination or get_backup_destination(config))
+    started_at = datetime.now()
+
+    if progress_callback:
+        progress_callback(0, "Verificando politica de prioridade...")
+
+    ensure_not_cancelled(cancel_callback)
+
+    if run_scan_first:
+        from scanner.scanner import run_scanner
+
+        if progress_callback:
+            progress_callback(5, "Atualizando classificacao dos arquivos...")
+
+        run_scanner(
+            should_cancel=cancel_callback,
+            progress_callback=progress_callback
+        )
+
+    ensure_not_cancelled(cancel_callback)
+
+    manifest, priority_decisions, priority_index = build_priority_backup_manifest(
+        directories=directories,
+        config=config,
+        backup_destination=backup_destination,
+        now=started_at
+    )
+
+    if not manifest:
+        if progress_callback:
+            progress_callback(100, "Nenhum arquivo vencido pela politica de prioridade.")
+
+        return {
+            "skipped": True,
+            "reason": "Nenhum arquivo vencido pela politica de prioridade.",
+            "trigger": trigger,
+            "priority_decisions": priority_decisions,
+        }
+
+    current_snapshot = build_file_snapshot(manifest)
+    previous_snapshot = get_latest_history_snapshot()
+    file_changes = build_file_changes(previous_snapshot, current_snapshot)
+    deduplication_enabled = is_deduplication_enabled(config)
+    skipped_duplicates = []
+    pre_backup_warnings = []
+
+    if deduplication_enabled:
+        manifest, skipped_duplicates, pre_backup_warnings = deduplicate_manifest(manifest)
+
+    total_files = len(manifest)
+
+    if progress_callback:
+        progress_callback(
+            40,
+            f"{total_files} arquivo(s) vencido(s) pela prioridade."
+        )
+
+    def on_zip_progress(processed, total, current_entry):
+        if not progress_callback:
+            return
+
+        if total <= 0:
+            progress_callback(95, "Finalizando backup por prioridade...")
+            return
+
+        percent = 40 + int((processed / total) * 55)
+        progress_callback(
+            min(percent, 95),
+            f"Compactando por prioridade: {processed}/{total}"
+        )
+
+    backup_path, warnings = create_versioned_backup(
+        directories=directories,
+        backup_destination=backup_destination,
+        config=config,
+        manifest=manifest,
+        backup_name="prioridade",
+        progress_callback=on_zip_progress,
+        cancel_callback=cancel_callback
+    )
+    warnings = pre_backup_warnings + warnings
+    backup_folder = os.path.dirname(backup_path)
+    completed_at = datetime.now()
+
+    history_entry = {
+        "timestamp": completed_at.strftime("%d/%m/%Y %H:%M:%S"),
+        "backup_file": os.path.basename(backup_path),
+        "backup_name": "prioridade",
+        "backup_description": "Backup automatico pela politica de prioridade.",
+        "backup_path": backup_path,
+        "backup_folder": backup_folder,
+        "total_files": total_files,
+        "duplicate_files_skipped": len(skipped_duplicates),
+        "trigger": trigger,
+        "user": username or "sistema",
+        "user_role": user_role or "system",
+        "file_changes": file_changes,
+        "file_snapshot": current_snapshot,
+        "warnings_count": len(warnings),
+        "partial_backup": True,
+        "priority_policy": True,
+        "priority_decisions": priority_decisions,
+    }
+    append_history(history_entry)
+    update_priority_state_after_backup(
+        manifest,
+        current_snapshot,
+        completed_at,
+        priority_index=priority_index
+    )
+
+    if progress_callback:
+        progress_callback(100, "Backup por prioridade concluido.")
 
     history_entry["warnings"] = warnings
     history_entry["skipped_duplicates"] = skipped_duplicates

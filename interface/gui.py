@@ -1548,18 +1548,26 @@ class BackupGUI:
         columns = (
             "name",
             "extension",
+            "priority",
+            "priority_score",
             "added_to_backup_at",
             "size_kb",
             "days_since_modified",
-            "important"
+            "classification_source",
+            "important",
+            "priority_reason"
         )
         headings = {
             "name": "Nome",
             "extension": "Extensao",
+            "priority": "Prioridade",
+            "priority_score": "Score",
             "added_to_backup_at": "Adicionado ao backup",
             "size_kb": "Tamanho (KB)",
             "days_since_modified": "Dias sem alterar",
-            "important": "Importante"
+            "classification_source": "Origem",
+            "important": "Importante",
+            "priority_reason": "Motivo"
         }
 
         top_bar = tk.Frame(content, bg=BG_COLOR)
@@ -1641,6 +1649,8 @@ class BackupGUI:
             "added_to": "",
             "size_kb": "",
             "days_since_modified": "",
+            "priority": "Todos",
+            "classification_source": "",
             "important": "Todos",
         }
 
@@ -1653,12 +1663,14 @@ class BackupGUI:
             headings,
             {
                 "name": {
-                    "width": 300,
+                    "width": 260,
                     "minwidth": 220,
                     "weight": 4,
                     "anchor": "w",
                 },
                 "extension": {"width": 100, "minwidth": 80, "weight": 1},
+                "priority": {"width": 115, "minwidth": 95, "weight": 1},
+                "priority_score": {"width": 80, "minwidth": 70, "weight": 1},
                 "added_to_backup_at": {
                     "width": 180,
                     "minwidth": 150,
@@ -1670,7 +1682,18 @@ class BackupGUI:
                     "minwidth": 120,
                     "weight": 1,
                 },
+                "classification_source": {
+                    "width": 130,
+                    "minwidth": 110,
+                    "weight": 1,
+                },
                 "important": {"width": 110, "minwidth": 90, "weight": 1},
+                "priority_reason": {
+                    "width": 360,
+                    "minwidth": 220,
+                    "weight": 4,
+                    "anchor": "w",
+                },
             }
         )
 
@@ -1686,13 +1709,20 @@ class BackupGUI:
                     or "-"
                 )
                 important = "Sim" if row.get("important") == "1" else "Nao"
+                priority = row.get("priority", "").strip() or (
+                    "alta" if important == "Sim" else "baixa"
+                )
                 row_values = {
                     "name": row.get("name", ""),
                     "extension": row.get("extension", ""),
+                    "priority": priority,
+                    "priority_score": row.get("priority_score", ""),
                     "added_to_backup_at": added_to_backup_at,
                     "size_kb": self.format_float(row.get("size_kb", "0")),
                     "days_since_modified": row.get("days_since_modified", ""),
-                    "important": important
+                    "classification_source": row.get("classification_source", ""),
+                    "important": important,
+                    "priority_reason": row.get("priority_reason", "")
                 }
                 rows.append(row_values)
 
@@ -1742,6 +1772,7 @@ class BackupGUI:
                 "extension": filter_state["extension"],
                 "size_kb": filter_state["size_kb"],
                 "days_since_modified": filter_state["days_since_modified"],
+                "classification_source": filter_state["classification_source"],
             }
 
             for key, filter_value in text_filters.items():
@@ -1753,6 +1784,12 @@ class BackupGUI:
             if (
                 filter_state["important"] != "Todos"
                 and row_values["important"] != filter_state["important"]
+            ):
+                return False
+
+            if (
+                filter_state["priority"] != "Todos"
+                and row_values["priority"] != filter_state["priority"]
             ):
                 return False
 
@@ -1780,7 +1817,9 @@ class BackupGUI:
             for row_values in rows:
                 for value in (
                     row_values.get("name", ""),
-                    row_values.get("extension", "")
+                    row_values.get("extension", ""),
+                    row_values.get("priority", ""),
+                    row_values.get("priority_reason", "")
                 ):
                     suggestion = str(value).strip()
 
@@ -1857,18 +1896,31 @@ class BackupGUI:
                     values=(
                         row_values["name"],
                         row_values["extension"],
+                        row_values["priority"],
+                        row_values["priority_score"],
                         row_values["added_to_backup_at"],
                         row_values["size_kb"],
                         row_values["days_since_modified"],
-                        row_values["important"]
+                        row_values["classification_source"],
+                        row_values["important"],
+                        row_values["priority_reason"]
                     )
                 )
 
             active_filters = []
 
-            for key in ("name", "extension", "size_kb", "days_since_modified"):
+            for key in (
+                "name",
+                "extension",
+                "size_kb",
+                "days_since_modified",
+                "classification_source",
+            ):
                 if filter_state[key].strip():
                     active_filters.append(headings[key])
+
+            if filter_state["priority"] != "Todos":
+                active_filters.append("Prioridade")
 
             if filter_state["important"] != "Todos":
                 active_filters.append("Importante")
@@ -1884,8 +1936,8 @@ class BackupGUI:
         def open_filter_window():
             filter_window = tk.Toplevel(self.root)
             filter_window.title("Filtrar arquivos")
-            filter_window.geometry("540x390")
-            filter_window.minsize(520, 370)
+            filter_window.geometry("620x470")
+            filter_window.minsize(600, 450)
             filter_window.configure(bg=BG_COLOR)
             filter_window.transient(self.root)
             self.prepare_window(filter_window)
@@ -1917,6 +1969,8 @@ class BackupGUI:
                 ),
                 "size_kb": tk.StringVar(value=filter_state["size_kb"]),
                 "days_since_modified": tk.StringVar(value=filter_state["days_since_modified"]),
+                "priority": tk.StringVar(value=filter_state["priority"]),
+                "classification_source": tk.StringVar(value=filter_state["classification_source"]),
                 "important": tk.StringVar(value=filter_state["important"]),
             }
 
@@ -1989,19 +2043,19 @@ class BackupGUI:
 
             tk.Label(
                 form,
-                text="Importante",
+                text="Prioridade",
                 bg=BG_COLOR,
                 fg=SUBTLE_TEXT,
                 font=("Arial", 10, "bold")
             ).grid(row=2, column=0, sticky="w", pady=(0, 4))
 
-            important_combo = ttk.Combobox(
+            priority_combo = ttk.Combobox(
                 form,
-                textvariable=field_vars["important"],
-                values=["Todos", "Sim", "Nao"],
+                textvariable=field_vars["priority"],
+                values=["Todos", "baixa", "media", "alta"],
                 state="readonly"
             )
-            important_combo.grid(
+            priority_combo.grid(
                 row=2,
                 column=1,
                 columnspan=3,
@@ -2010,15 +2064,39 @@ class BackupGUI:
                 pady=(0, 8)
             )
 
-            add_combo("Data inicial", "added_from", 3, date_options)
-            add_combo("Data final", "added_to", 3, date_options, column=2)
-            add_entry("Tamanho (KB)", "size_kb", 4)
+            tk.Label(
+                form,
+                text="Importante",
+                bg=BG_COLOR,
+                fg=SUBTLE_TEXT,
+                font=("Arial", 10, "bold")
+            ).grid(row=3, column=0, sticky="w", pady=(0, 4))
+
+            important_combo = ttk.Combobox(
+                form,
+                textvariable=field_vars["important"],
+                values=["Todos", "Sim", "Nao"],
+                state="readonly"
+            )
+            important_combo.grid(
+                row=3,
+                column=1,
+                columnspan=3,
+                sticky="ew",
+                padx=(10, 0),
+                pady=(0, 8)
+            )
+
+            add_combo("Data inicial", "added_from", 4, date_options)
+            add_combo("Data final", "added_to", 4, date_options, column=2)
+            add_entry("Tamanho (KB)", "size_kb", 5)
             add_entry(
                 "Dias sem alterar",
                 "days_since_modified",
-                4,
+                5,
                 column=2
             )
+            add_entry("Origem", "classification_source", 6, columnspan=3)
 
             buttons = tk.Frame(filter_window, bg=BG_COLOR)
             buttons.pack(pady=(10, 0))
@@ -2049,7 +2127,11 @@ class BackupGUI:
 
             def clear_filters():
                 for key in filter_state:
-                    filter_state[key] = "Todos" if key == "important" else ""
+                    filter_state[key] = (
+                        "Todos"
+                        if key in {"important", "priority"}
+                        else ""
+                    )
 
                 file_search_var.set("")
                 refresh_table()

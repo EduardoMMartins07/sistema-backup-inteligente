@@ -16,11 +16,13 @@ Toda alteracao relevante no projeto deve ser refletida neste `README.md`, manten
 - **Bandeja do sistema:** pystray
 - **Imagens/icones:** pillow
 - **Machine Learning preparado no projeto:** scikit-learn / joblib
+- **LLM externa opcional:** Gemini API via REST, usando apenas metadados dos arquivos
 
 ## Requisitos
 - Python 3.13 ou superior
 - pip
 - Ambiente Windows recomendado
+- Chave `GEMINI_API_KEY` opcional para ativar classificacao com Gemini API
 
 ## Instalacao e Execucao
 1. Clone o repositorio
@@ -45,9 +47,13 @@ Toda alteracao relevante no projeto deve ser refletida neste `README.md`, manten
 - [x] Geracao de dataset CSV com nome, extensao, tipo, tamanho, tempo desde a ultima modificacao, hash do arquivo e indicador de relevancia
 - [x] Marcacao de arquivos duplicados no dataset por hash SHA-256
 - [x] Classificacao inicial de arquivos importantes com base em palavras-chave e estrutura preparada para modelo de machine learning
+- [x] Classificacao por prioridade usando arvore de decisao local e Gemini API com metadados dos arquivos
+- [x] Cache local das respostas da LLM para evitar chamadas repetidas para o mesmo arquivo/hash
+- [x] Registro observado de modificacoes e acessos entre varreduras para alimentar a arvore de decisao
 - [x] Treinamento de modelo em `ml/` a partir do dataset gerado pelo scanner
 - [x] Backup manual e backup agendado com compactacao em `.zip` usando `ZIP_LZMA`
 - [x] Deduplicacao opcional no backup por hash do conteudo via `deduplicate_backup`
+- [x] Politica opcional de backup por prioridade: baixa semanal, media a cada 2 dias e alta no inicio do dia + a cada 4 horas quando alterada
 - [x] Versionamento automatico dos backups por dia e horario, com organizacao em pastas por data
 - [x] Definicao de diretorio padrao para armazenamento dos backups
 - [x] Barra de loading / janela de progresso para acompanhamento da execucao do backup
@@ -80,7 +86,7 @@ Toda alteracao relevante no projeto deve ser refletida neste `README.md`, manten
 - [x] Melhor legibilidade nas tabelas e caixa de pre-pesquisa com destaque visual para sugestoes de arquivos e pastas
 - [ ] Visualizacao do tamanho dos backups e status da ultima execucao
 - [ ] Configuracao mais avancada de agendamento
-- [ ] Integracao completa da predicao do modulo `ml/` ao fluxo principal do backup
+- [x] Integracao completa da classificacao do modulo `ml/` ao scanner e ao fluxo opcional de backup por prioridade
 
 ## Exemplos de Uso
 
@@ -102,9 +108,92 @@ backups/
     "C:/Users/super/Documents/Contratos"
   ],
   "backup_destination": "C:/Users/super/Backups/SmartBackup",
-  "deduplicate_backup": true
+  "deduplicate_backup": true,
+  "llm_classification_enabled": true,
+  "llm_cache_enabled": true,
+  "gemini_model": "gemini-2.5-flash",
+  "priority_backup_policy_enabled": false
 }
 ```
+
+### Classificacao LLM com Gemini API
+O sistema usa a LLM somente com metadados, sem enviar o conteudo completo dos arquivos. A chamada inclui dados como nome, extensao, tamanho, caminho/contexto, hash, dias desde a ultima modificacao e contadores observados de modificacao/acesso.
+
+Para pegar a chave:
+1. Acesse a pagina oficial de chaves do Google AI Studio: https://aistudio.google.com/app/apikey
+2. Entre com sua conta Google.
+3. Clique em `Create API key` ou `Criar chave de API`.
+4. Copie a chave gerada e guarde em local seguro.
+
+Referencia oficial do Google: https://ai.google.dev/gemini-api/docs/api-key
+
+Para colocar a chave no projeto, nao salve a chave dentro do codigo. Use uma das duas opcoes abaixo.
+
+Opcao 1: variavel de ambiente do Windows.
+
+No PowerShell, apenas para a sessao atual:
+```powershell
+$env:GEMINI_API_KEY="SUA_CHAVE_AQUI"
+```
+
+No Windows, de forma persistente para o usuario:
+```powershell
+[Environment]::SetEnvironmentVariable("GEMINI_API_KEY", "SUA_CHAVE_AQUI", "User")
+```
+
+Depois de configurar de forma persistente, feche e abra novamente o terminal ou reinicie a aplicacao.
+
+Opcao 2: arquivo `.env` local na raiz do projeto.
+
+1. Copie `.env.example` para `.env`.
+2. Abra o `.env`.
+3. Troque `SUA_CHAVE_AQUI` pela sua chave real:
+   ```text
+   GEMINI_API_KEY=SUA_CHAVE_AQUI
+   GEMINI_MODEL=gemini-2.5-flash
+   SMARTBACKUP_LLM_ENABLED=true
+   ```
+
+O arquivo `.env` fica no `.gitignore` e nao deve ser enviado ao Git. O projeto carrega esse arquivo automaticamente em `ml/llm_classifier.py` sem dependencia extra.
+
+Onde a chave e lida na implementacao:
+- `ml/llm_classifier.py`: carrega `.env` e depois le `GEMINI_API_KEY` ou `GOOGLE_API_KEY` pelas variaveis de ambiente.
+- `config/config.json`: controla se a classificacao LLM fica ativa com `llm_classification_enabled`.
+- `gemini_model`: define o modelo usado. O padrao documentado no projeto e `gemini-2.5-flash`.
+
+Se a chave nao existir, se `llm_classification_enabled` estiver `false` ou se a API falhar, o sistema usa automaticamente a arvore de decisao local como fallback.
+
+### Arvore de Decisao Implementada
+A classificacao combina regras locais e, quando disponivel, Gemini API. A arvore considera:
+- quantidade observada de modificacoes;
+- tipo/extensao do arquivo;
+- quantidade observada de acessos;
+- nome do arquivo;
+- diretorio/contexto onde o arquivo esta inserido.
+
+O resultado gravado em `dataset/files_dataset.csv` inclui:
+- `priority`: `baixa`, `media` ou `alta`;
+- `priority_score`: pontuacao de 0 a 100;
+- `priority_reason`: motivos resumidos da decisao;
+- `classification_source`: `rules`, `rules_fallback`, `gemini_api` ou `gemini_cache`;
+- `llm_confidence`: confianca retornada/normalizada;
+- `backup_policy`: politica derivada da prioridade;
+- `decision_tree`: decisoes estruturadas da arvore.
+
+### Politica de Backup por Prioridade
+A politica por prioridade fica desativada por padrao para evitar backups automaticos inesperados. Para ativar:
+```json
+{
+  "priority_backup_policy_enabled": true
+}
+```
+
+Quando ativada, o agendador em segundo plano verifica a politica periodicamente:
+- **baixa prioridade:** backup a cada 7 dias;
+- **media prioridade:** backup a cada 2 dias;
+- **alta prioridade:** backup no primeiro inicio do programa no dia e novamente a cada 4 horas se o arquivo tiver mudado.
+
+O estado dessa politica fica em `config/priority_backup_state.json`. Backups por prioridade sao marcados como parciais no historico para nao interferirem na comparacao dos backups completos manuais/agendados.
 
 ### Exemplo de Historico de Backup
 ```json
@@ -157,13 +246,14 @@ Cada backup novo registra um snapshot dos arquivos e compara com o snapshot ante
 ### Fluxo Atual da Aplicacao
 1. O usuario seleciona os diretorios na interface.
 2. O sistema monitora alteracoes nesses diretorios.
-3. Quando um arquivo e criado, alterado, removido ou movido, o scanner atualiza o dataset e registra hash e duplicidade.
+3. Quando um arquivo e criado, alterado, removido ou movido, o scanner atualiza o dataset, registra hash, duplicidade, contadores observados e classificacao por prioridade.
 4. Quando o backup e iniciado manualmente ou por agendamento, a aplicacao abre uma janela de progresso sem travar a interface principal.
 5. O usuario pode acompanhar o andamento e cancelar a operacao de forma segura durante o scanner ou a compactacao.
 6. Se `deduplicate_backup` estiver ativado no `config.json`, apenas a primeira ocorrencia de cada hash entra no `.zip`.
-7. O sistema registra o historico da execucao e permite exportar o ultimo backup.
-8. A interface permite consultar arquivos excluidos ou alterados por backup e recuperar itens a partir de backups anteriores.
-9. Ao recuperar, arquivos existentes no destino sao comparados por hash; conflitos podem ser renomeados, usando `_recuperado` como nome padrao.
+7. Se `priority_backup_policy_enabled` estiver ativado, o agendador tambem cria backups parciais conforme a prioridade de cada arquivo.
+8. O sistema registra o historico da execucao e permite exportar o ultimo backup.
+9. A interface permite consultar arquivos excluidos ou alterados por backup e recuperar itens a partir de backups anteriores.
+10. Ao recuperar, arquivos existentes no destino sao comparados por hash; conflitos podem ser renomeados, usando `_recuperado` como nome padrao.
 
 ## Estrutura do Projeto
 - `main.py`: ponto de entrada da aplicacao.
@@ -171,16 +261,17 @@ Cada backup novo registra um snapshot dos arquivos e compara com o snapshot ante
 - `interface/gui.py`: interface principal e janelas auxiliares.
 - `interface/login.py`: login e criacao do primeiro administrador.
 - `scanner/scanner.py`: varredura dos diretorios, calculo de hash e geracao do dataset CSV.
+- `ml/llm_classifier.py`: classificacao por arvore local e Gemini API usando metadados dos arquivos.
 - `monitor/monitor.py`: monitoramento de alteracoes com watchdog.
 - `backup/backup_manager.py`: criacao, versionamento, deduplicacao opcional, historico e restauracao dos backups.
 - `utils/file_hash.py`: calculo de hash SHA-256 para identificacao de duplicados.
 - `scheduler/scheduler.py`: execucao automatica de backups agendados.
 - `tray/tray_icon.py`: integracao com bandeja do sistema.
 - `assets/`: arquivos visuais usados pela interface, como o icone da aplicacao.
-- `config/`: arquivos de configuracao, historico e agendamento.
+- `config/`: arquivos de configuracao, historico, agendamento, cache da LLM e estado da politica por prioridade.
 - `dataset/`: CSV gerado pelo scanner.
 - `backups/`: destino padrao local dos backups.
-- `ml/`: estrutura preparada para inteligencia/classificacao futura.
+- `ml/`: modulos de classificacao local, LLM e treinamento do classificador tradicional.
 
 ## Proximos Passos Sugeridos
 - [x] Adicionar restauracao de backup e versoes anteriores pela interface
@@ -188,12 +279,13 @@ Cada backup novo registra um snapshot dos arquivos e compara com o snapshot ante
 - [ ] Permitir exclusao ou limpeza de backups antigos
 - [ ] Melhorar o menu da bandeja para disparar backup completo e nao apenas scan
 - [ ] Exibir logs mais detalhados na interface
-- [ ] Integrar classificacao de relevancia usando o modulo `ml/`
+- [x] Integrar classificacao de relevancia usando o modulo `ml/`
 - [ ] Adicionar um controle visual na interface para ativar ou desativar `deduplicate_backup`
+- [ ] Adicionar um controle visual na interface para ativar ou desativar `priority_backup_policy_enabled`
 - [ ] Adicionar troca de senha pelo proprio usuario
 
 ## Comandos Uteis
 - `python main.py`: inicia a aplicacao.
-- `python -m py_compile main.py auth/users.py auth/permissions.py monitor/monitor.py interface/login.py interface/gui.py backup/backup_manager.py scheduler/scheduler.py scanner/scanner.py utils/file_hash.py`: valida a sintaxe dos modulos principais.
+- `python -m py_compile main.py auth/users.py auth/permissions.py monitor/monitor.py interface/login.py interface/gui.py backup/backup_manager.py scheduler/scheduler.py scanner/scanner.py utils/file_hash.py ml/llm_classifier.py`: valida a sintaxe dos modulos principais.
 - `python scanner/scanner.py`: executa o scanner manualmente.
 - `pip install -r requirements.txt`: instala as dependencias do projeto.

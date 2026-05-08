@@ -354,5 +354,241 @@
             }
         },
         "warnings_count": 0
+    },
+    {
+        "timestamp": "07/05/2026 21:09:56",
+        "backup_file": "DUDUZIN123_2026-05-07_21-09-17.zip",
+        "backup_name": "DUDUZIN123",
+        "backup_description": "Versão 1.0 duduzin",
+        "backup_path": "C:\\Users\\eduar\\Documents\\sistema-backup-inteligente\\backups\\2026-04-19\\2026-05-07\\DUDUZIN123_2026-05-07_21-09-17.zip",
+        "backup_folder": "C:\\Users\\eduar\\Documents\\sistema-backup-inteligente\\backups\\2026-04-19\\2026-05-07",
+        "total_files": 10,
+        "duplicate_files_skipped": 0,
+        "trigger": "manual",
+        "user": "admin",
+        "user_role": "admin",
+        "file_changes": [
+            {
+                "action": "adicionado",
+                "name": "EDU.sql",
+                "archive_name": "FSC\\EDU.sql",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\EDU.sql",
+                "size_bytes": 0,
+                "modified_at": "2026-05-07T21:07:23"
+            },
+            {
+                "action": "adicionado",
+                "name": "certificado.pdf",
+                "archive_name": "FSC\\certificado.pdf",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\certificado.pdf",
+                "size_bytes": 33181243,
+                "modified_at": "2026-03-16T17:54:44"
+            },
+            {
+                "action": "adicionado",
+                "name": "comandos usados (ordenado)_recuperado.txt",
+                "archive_name": "FSC\\comandos usados (ordenado)_recuperado.txt",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\comandos usados (ordenado)_recuperado.txt",
+                "size_bytes": 2171,
+                "modified_at": "2026-03-10T19:12:02"
+            }
+        ],
+        "file_snapshot": {
+            "FSC\\AULA 2 BACK-END.txt": {
+                "name": "AULA 2 BACK-END.txt",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\AULA 2 BACK-END.txt",
+                "archive_name": "FSC\\AULA 2 BACK-END.txt",
+                "size_bytes": 111,
+                "modified_at": "2026-03-10T19:37:02",
+                "file_hash": "8f5c59fb9e047f89a71eb4161b3084fbe4ccc43cf48ab83d7f1d5617f3b72ed5"
+            },
+            "FSC\\bootcamp-treinos-certificado.pdf": {
+                "name": "bootcamp-treinos-certificado.pdf",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\bootcamp-treinos-certificado.pdf",
+                "archive_name": "FSC\\bootcamp-treinos-certificado.pdf",
+                "size_bytes": 33181243,
+                "modified_at": "2026-03-09T21:30:12",
+                "file_hash": "88f8e754632404f99cdb97e19c1a37ade67a34fd2221b7cd68dfc792672b5ed6"
+            },
+            "FSC\\certificado.pdf": {
+                "name": "certificado.pdf",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\certificado.pdf",
+                "archive_name": "FSC\\certificado.pdf",
+                "size_bytes": 33181243,
+                "modified_at": "2026-03-16T17:54:44",
+                "file_hash": "88dfc1571d990d5cc49e77b81dc6b7c8cda619d4b6f6ff32990a9e01a856fee4"
+            },
+            "FSC\\comandos usados (ordenado).txt": {
+                "name": "comandos usados (ordenado).txt",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\comandos usados (ordenado).txt",
+                "archive_name": "FSC\\comandos usados (ordenado).txt",
+                "size_bytes": 2182,
+                "modified_at": "2026-05-01T21:14:02",
+                "file_hash": "a3926f1406b54f591f408740a48076d8c74d9abd91394011be2e8ecbafd56f14"
+            },
+            "FSC\\comandos usados (ordenado)_recuperado.txt": {
+                "name": "comandos usados (ordenado)_recuperado.txt",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\comandos usados (ordenado)_recuperado.txt",
+                "archive_name": "FSC\\comandos usados (ordenado)_recuperado.txt",
+                "size_bytes": 2171,
+                "modified_at": "2026-03-10T19:12:02",
+                "file_hash": "ef24a023689b89a603607fb7afe903ebeb0e1b0d32f855a1a29664d052c82256"
+            },
+            "FSC\\EDU.sql": {
+                "name": "EDU.sql",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\EDU.sql",
+                "archive_name": "FSC\\EDU.sql",
+                "size_bytes": 0,
+                "modified_at": "2026-05-07T21:07:23",
+                "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "FSC\\Metodologia_SMART.docx": {
+                "name": "Metodologia_SMART.docx",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\Metodologia_SMART.docx",
+                "archive_name": "FSC\\Metodologia_SMART.docx",
+                "size_bytes": 28614,
+                "modified_at": "2026-03-16T22:19:00",
+                "file_hash": "2772b0f343594672742aa619f3faa076de886116ed6c621d4a288877f7159bf8"
+            },
+            "FSC\\Modelo_PDI_DEV.xlsx": {
+                "name": "Modelo_PDI_DEV.xlsx",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\Modelo_PDI_DEV.xlsx",
+                "archive_name": "FSC\\Modelo_PDI_DEV.xlsx",
+                "size_bytes": 10503,
+                "modified_at": "2026-03-16T22:18:59",
+                "file_hash": "9ad2196cba3e8e917e9ba6b80c9a28001b11dc91600e11736dc18e11cbf0ba05"
+            },
+            "FSC\\TemplatesePromptsLinkedIn.pdf": {
+                "name": "TemplatesePromptsLinkedIn.pdf",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\TemplatesePromptsLinkedIn.pdf",
+                "archive_name": "FSC\\TemplatesePromptsLinkedIn.pdf",
+                "size_bytes": 370074,
+                "modified_at": "2026-03-09T23:10:32",
+                "file_hash": "78410ce6db6e055e1bb2cec82b334575d8d114c8fbb14bd2cb50e2410c4e1db1"
+            },
+            "FSC\\workout-plan.json": {
+                "name": "workout-plan.json",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\workout-plan.json",
+                "archive_name": "FSC\\workout-plan.json",
+                "size_bytes": 2607,
+                "modified_at": "2026-03-08T20:40:10",
+                "file_hash": "5813145ff654d49bb9fd4f55f43a3e411b628610c6b4f8d50a929d3a7919133d"
+            }
+        },
+        "warnings_count": 0
+    },
+    {
+        "timestamp": "07/05/2026 21:16:17",
+        "backup_file": "DUDUS_V2_2026-05-07_21-15-38.zip",
+        "backup_name": "DUDUS V2",
+        "backup_description": "Dudu versão 2.zé",
+        "backup_path": "C:\\Users\\eduar\\Documents\\sistema-backup-inteligente\\backups\\2026-04-19\\2026-05-07\\DUDUS_V2_2026-05-07_21-15-38.zip",
+        "backup_folder": "C:\\Users\\eduar\\Documents\\sistema-backup-inteligente\\backups\\2026-04-19\\2026-05-07",
+        "total_files": 11,
+        "duplicate_files_skipped": 0,
+        "trigger": "manual",
+        "user": "admin",
+        "user_role": "admin",
+        "file_changes": [
+            {
+                "action": "adicionado",
+                "name": "DIGAS.sql",
+                "archive_name": "FSC\\DIGAS.sql",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\DIGAS.sql",
+                "size_bytes": 247,
+                "modified_at": "2026-05-07T21:12:26"
+            }
+        ],
+        "file_snapshot": {
+            "FSC\\AULA 2 BACK-END.txt": {
+                "name": "AULA 2 BACK-END.txt",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\AULA 2 BACK-END.txt",
+                "archive_name": "FSC\\AULA 2 BACK-END.txt",
+                "size_bytes": 111,
+                "modified_at": "2026-03-10T19:37:02",
+                "file_hash": "8f5c59fb9e047f89a71eb4161b3084fbe4ccc43cf48ab83d7f1d5617f3b72ed5"
+            },
+            "FSC\\bootcamp-treinos-certificado.pdf": {
+                "name": "bootcamp-treinos-certificado.pdf",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\bootcamp-treinos-certificado.pdf",
+                "archive_name": "FSC\\bootcamp-treinos-certificado.pdf",
+                "size_bytes": 33181243,
+                "modified_at": "2026-03-09T21:30:12",
+                "file_hash": "88f8e754632404f99cdb97e19c1a37ade67a34fd2221b7cd68dfc792672b5ed6"
+            },
+            "FSC\\certificado.pdf": {
+                "name": "certificado.pdf",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\certificado.pdf",
+                "archive_name": "FSC\\certificado.pdf",
+                "size_bytes": 33181243,
+                "modified_at": "2026-03-16T17:54:44",
+                "file_hash": "88dfc1571d990d5cc49e77b81dc6b7c8cda619d4b6f6ff32990a9e01a856fee4"
+            },
+            "FSC\\comandos usados (ordenado).txt": {
+                "name": "comandos usados (ordenado).txt",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\comandos usados (ordenado).txt",
+                "archive_name": "FSC\\comandos usados (ordenado).txt",
+                "size_bytes": 2182,
+                "modified_at": "2026-05-01T21:14:02",
+                "file_hash": "a3926f1406b54f591f408740a48076d8c74d9abd91394011be2e8ecbafd56f14"
+            },
+            "FSC\\comandos usados (ordenado)_recuperado.txt": {
+                "name": "comandos usados (ordenado)_recuperado.txt",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\comandos usados (ordenado)_recuperado.txt",
+                "archive_name": "FSC\\comandos usados (ordenado)_recuperado.txt",
+                "size_bytes": 2171,
+                "modified_at": "2026-03-10T19:12:02",
+                "file_hash": "ef24a023689b89a603607fb7afe903ebeb0e1b0d32f855a1a29664d052c82256"
+            },
+            "FSC\\DIGAS.sql": {
+                "name": "DIGAS.sql",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\DIGAS.sql",
+                "archive_name": "FSC\\DIGAS.sql",
+                "size_bytes": 247,
+                "modified_at": "2026-05-07T21:12:26",
+                "file_hash": "0cfd9f17aea2d755803bc06d739f3bdf0feba5df925eca76353bae21ef7045cb"
+            },
+            "FSC\\EDU.sql": {
+                "name": "EDU.sql",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\EDU.sql",
+                "archive_name": "FSC\\EDU.sql",
+                "size_bytes": 0,
+                "modified_at": "2026-05-07T21:07:23",
+                "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "FSC\\Metodologia_SMART.docx": {
+                "name": "Metodologia_SMART.docx",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\Metodologia_SMART.docx",
+                "archive_name": "FSC\\Metodologia_SMART.docx",
+                "size_bytes": 28614,
+                "modified_at": "2026-03-16T22:19:00",
+                "file_hash": "2772b0f343594672742aa619f3faa076de886116ed6c621d4a288877f7159bf8"
+            },
+            "FSC\\Modelo_PDI_DEV.xlsx": {
+                "name": "Modelo_PDI_DEV.xlsx",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\Modelo_PDI_DEV.xlsx",
+                "archive_name": "FSC\\Modelo_PDI_DEV.xlsx",
+                "size_bytes": 10503,
+                "modified_at": "2026-03-16T22:18:59",
+                "file_hash": "9ad2196cba3e8e917e9ba6b80c9a28001b11dc91600e11736dc18e11cbf0ba05"
+            },
+            "FSC\\TemplatesePromptsLinkedIn.pdf": {
+                "name": "TemplatesePromptsLinkedIn.pdf",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\TemplatesePromptsLinkedIn.pdf",
+                "archive_name": "FSC\\TemplatesePromptsLinkedIn.pdf",
+                "size_bytes": 370074,
+                "modified_at": "2026-03-09T23:10:32",
+                "file_hash": "78410ce6db6e055e1bb2cec82b334575d8d114c8fbb14bd2cb50e2410c4e1db1"
+            },
+            "FSC\\workout-plan.json": {
+                "name": "workout-plan.json",
+                "source_path": "C:\\Users\\eduar\\Downloads\\FSC\\workout-plan.json",
+                "archive_name": "FSC\\workout-plan.json",
+                "size_bytes": 2607,
+                "modified_at": "2026-03-08T20:40:10",
+                "file_hash": "5813145ff654d49bb9fd4f55f43a3e411b628610c6b4f8d50a929d3a7919133d"
+            }
+        },
+        "warnings_count": 0
     }
 ]

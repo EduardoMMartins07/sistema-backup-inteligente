@@ -25,6 +25,9 @@ venv/
 .venv/
 env/
 .env/
+.env
+.env.*
+!.env.example
 
 # Logs e arquivos temporarios
 *.log
