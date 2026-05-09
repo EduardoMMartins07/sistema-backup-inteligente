@@ -7,6 +7,7 @@ config/backup_schedule.json
 # Dados gerados pela aplicacao
 dataset/
 backups/
+backup_storage/
 ml/model.pkl
 *.zip
 
@@ -39,3 +40,6 @@ env/
 Thumbs.db
 .vscode/
 .idea/
+
+# Pasta de tasks
+.tasks/

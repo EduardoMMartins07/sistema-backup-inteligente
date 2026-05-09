@@ -3,6 +3,7 @@ from datetime import datetime
 
 from backup.backup_manager import is_schedule_due
 from backup.backup_manager import is_priority_backup_policy_enabled
+from backup.backup_manager import get_priority_scheduler_check_interval_seconds
 from backup.backup_manager import mark_schedule_executed
 from backup.backup_manager import run_backup_job
 from backup.backup_manager import run_priority_backup_job
@@ -11,10 +12,15 @@ from backup.backup_manager import run_priority_backup_job
 def start_scheduler():
     print("Agendador de backup iniciado.")
     last_priority_check_at = None
-    priority_check_interval_seconds = 600
+    priority_check_interval_seconds = get_priority_scheduler_check_interval_seconds()
+    print(
+        "Intervalo de verificacao da politica de prioridade: "
+        f"{priority_check_interval_seconds}s"
+    )
 
     while True:
         now = datetime.now()
+        priority_check_interval_seconds = get_priority_scheduler_check_interval_seconds()
 
         try:
             if is_schedule_due(now):

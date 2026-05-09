@@ -23,7 +23,9 @@ from backup.backup_manager import build_recovered_folder_path
 from backup.backup_manager import build_restore_target
 from backup.backup_manager import get_latest_backup_path
 from backup.backup_manager import inspect_restore_changes
+from backup.backup_manager import export_snapshot_to_zip
 from backup.backup_manager import restore_recoverable_changes
+from backup.backup_manager import restore_snapshot
 from backup.backup_manager import run_backup_job
 
 CONFIG_PATH = "config/config.json"
@@ -49,6 +51,230 @@ TITLE_FONT = ("Segoe UI Black", 22, "bold")
 MENU_TITLE_FONT = ("Segoe UI Black", 30, "bold")
 MENU_BUTTON_FONT = ("Segoe UI", 13, "bold")
 BUTTON_FONT = ("Segoe UI", 10, "bold")
+
+BACKUP_STATUS_IN_BACKUP = "Em backup"
+BACKUP_STATUS_PENDING = "Fará backup"
+BACKUP_STATUS_PENDING_DELETE = "Será excluído"
+BACKUP_STATUS_OPTIONS = (
+    BACKUP_STATUS_IN_BACKUP,
+    BACKUP_STATUS_PENDING,
+    BACKUP_STATUS_PENDING_DELETE,
+)
+
+
+def normalize_file_source_key(path):
+    if not path:
+        return ""
+
+    return os.path.normcase(os.path.abspath(os.path.normpath(str(path))))
+
+
+def normalize_file_archive_key(archive_name):
+    return str(archive_name or "").replace("\\", "/").strip("/")
+
+
+def get_history_backup_label(entry):
+    return entry.get("backup_name", "") or entry.get("backup_file", "-")
+
+
+def get_file_extension(file_name):
+    return os.path.splitext(str(file_name or ""))[1].lstrip(".").lower()
+
+
+def format_size_kb_to_mb(size_kb):
+    try:
+        size_mb = float(size_kb) / 1024
+    except (TypeError, ValueError):
+        size_mb = 0.0
+
+    return f"{size_mb:.2f}"
+
+
+def format_size_bytes_to_mb(size_bytes):
+    try:
+        size_mb = float(size_bytes) / (1024 * 1024)
+    except (TypeError, ValueError):
+        size_mb = 0.0
+
+    return f"{size_mb:.2f}"
+
+
+def iter_history_snapshot_files(entry):
+    snapshot = entry.get("file_snapshot", {})
+
+    if not isinstance(snapshot, dict):
+        return
+
+    for archive_name, file_data in snapshot.items():
+        if not isinstance(file_data, dict):
+            continue
+
+        yield normalize_file_archive_key(archive_name), file_data
+
+
+def build_history_backup_lookup(history):
+    added_by_source = {}
+    added_by_archive = {}
+    latest_snapshot = {}
+
+    for entry in history:
+        timestamp = entry.get("timestamp", "-")
+        backup_label = get_history_backup_label(entry)
+        backup_info = {
+            "added_to_backup_at": timestamp,
+            "added_in_backup": backup_label,
+        }
+
+        for archive_name, file_data in iter_history_snapshot_files(entry) or []:
+            source_key = normalize_file_source_key(file_data.get("source_path", ""))
+
+            if source_key and source_key not in added_by_source:
+                added_by_source[source_key] = backup_info
+
+            if archive_name and archive_name not in added_by_archive:
+                added_by_archive[archive_name] = backup_info
+
+            latest_snapshot[archive_name] = file_data
+
+        for change in entry.get("file_changes", []):
+            if not isinstance(change, dict) or change.get("action") != "adicionado":
+                continue
+
+            source_key = normalize_file_source_key(change.get("source_path", ""))
+            archive_name = normalize_file_archive_key(change.get("archive_name", ""))
+
+            if source_key and source_key not in added_by_source:
+                added_by_source[source_key] = backup_info
+
+            if archive_name and archive_name not in added_by_archive:
+                added_by_archive[archive_name] = backup_info
+
+    for entry in reversed(history):
+        snapshot = entry.get("file_snapshot", {})
+
+        if isinstance(snapshot, dict):
+            latest_snapshot = {
+                normalize_file_archive_key(archive_name): file_data
+                for archive_name, file_data in snapshot.items()
+                if isinstance(file_data, dict)
+            }
+            break
+
+    latest_by_source = {}
+    latest_by_archive = {}
+
+    for archive_name, file_data in latest_snapshot.items():
+        source_key = normalize_file_source_key(file_data.get("source_path", ""))
+
+        if source_key:
+            latest_by_source[source_key] = file_data
+
+        if archive_name:
+            latest_by_archive[archive_name] = file_data
+
+    return {
+        "added_by_source": added_by_source,
+        "added_by_archive": added_by_archive,
+        "latest_by_source": latest_by_source,
+        "latest_by_archive": latest_by_archive,
+        "latest_snapshot": latest_snapshot,
+    }
+
+
+def get_backup_info_for_file(lookup, source_key, archive_key):
+    return (
+        lookup["added_by_source"].get(source_key)
+        or lookup["added_by_archive"].get(archive_key)
+        or {
+            "added_to_backup_at": "-",
+            "added_in_backup": "-",
+        }
+    )
+
+
+def build_file_status_rows(dataset_rows, history):
+    lookup = build_history_backup_lookup(history)
+    rows = []
+    current_source_keys = set()
+    current_archive_keys = set()
+
+    for row in dataset_rows:
+        important = "Sim" if row.get("important") == "1" else "Nao"
+        priority = row.get("priority", "").strip() or (
+            "alta" if important == "Sim" else "baixa"
+        )
+        source_path = row.get("source_path", "")
+        archive_key = normalize_file_archive_key(row.get("archive_name", ""))
+        source_key = normalize_file_source_key(source_path)
+        snapshot_file = (
+            lookup["latest_by_source"].get(source_key)
+            or lookup["latest_by_archive"].get(archive_key)
+        )
+        current_hash = row.get("file_hash", "")
+        snapshot_hash = snapshot_file.get("file_hash", "") if snapshot_file else ""
+        backup_status = (
+            BACKUP_STATUS_IN_BACKUP
+            if snapshot_file and current_hash and current_hash == snapshot_hash
+            else BACKUP_STATUS_PENDING
+        )
+        backup_info = get_backup_info_for_file(lookup, source_key, archive_key)
+
+        if source_key:
+            current_source_keys.add(source_key)
+
+        if archive_key:
+            current_archive_keys.add(archive_key)
+
+        rows.append(
+            {
+                "name": row.get("name", ""),
+                "extension": row.get("extension", ""),
+                "priority": priority,
+                "priority_score": row.get("priority_score", ""),
+                "added_to_backup_at": backup_info["added_to_backup_at"],
+                "added_in_backup": backup_info["added_in_backup"],
+                "backup_status": backup_status,
+                "size_mb": format_size_kb_to_mb(row.get("size_kb", "0")),
+                "days_since_modified": row.get("days_since_modified", ""),
+                "source_path": source_path,
+                "archive_name": archive_key,
+            }
+        )
+
+    for archive_key, file_data in lookup["latest_snapshot"].items():
+        source_path = file_data.get("source_path", "")
+        source_key = normalize_file_source_key(source_path)
+
+        if (
+            (source_key and source_key in current_source_keys)
+            or (archive_key and archive_key in current_archive_keys)
+        ):
+            continue
+
+        file_name = file_data.get("name", "") or os.path.basename(source_path)
+        backup_info = get_backup_info_for_file(lookup, source_key, archive_key)
+
+        rows.append(
+            {
+                "name": file_name,
+                "extension": get_file_extension(file_name),
+                "priority": file_data.get("priority", "-") or "-",
+                "priority_score": (
+                    file_data.get("priority_score")
+                    or file_data.get("score")
+                    or "-"
+                ),
+                "added_to_backup_at": backup_info["added_to_backup_at"],
+                "added_in_backup": backup_info["added_in_backup"],
+                "backup_status": BACKUP_STATUS_PENDING_DELETE,
+                "size_mb": format_size_bytes_to_mb(file_data.get("size_bytes", 0)),
+                "days_since_modified": "-",
+                "source_path": source_path,
+                "archive_name": archive_key,
+            }
+        )
+
+    return rows
 
 
 class BackupGUI:
@@ -474,48 +700,58 @@ class BackupGUI:
         form.place(relx=0.5, rely=0.38, anchor="center")
         form.columnconfigure(1, weight=1)
 
+        config_data = self.load_config()
+        priority_policy_var = tk.BooleanVar(
+            value=bool(config_data.get("priority_backup_policy_enabled", False))
+        )
         tk.Label(
             form,
-            text="Horario (HH:MM)",
+            text="Horario inicial (HH:MM)",
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
             font=("Arial", 11)
         ).grid(row=0, column=0, sticky="w", pady=6)
 
-        time_var = tk.StringVar(value=self.load_schedule().get("time", "09:00"))
-        time_entry = tk.Entry(
+        schedule_data = self.load_schedule()
+        start_time_var = tk.StringVar(
+            value=schedule_data.get("time_start") or schedule_data.get("time", "09:00")
+        )
+        start_time_entry = tk.Entry(
             form,
-            textvariable=time_var,
+            textvariable=start_time_var,
             font=("Arial", 11),
             bg=LIGHT_BUTTON,
             fg=TEXT_COLOR,
             relief="flat",
             width=26
         )
-        time_entry.grid(row=0, column=1, sticky="ew", padx=(10, 0), pady=6)
+        start_time_entry.grid(row=0, column=1, sticky="ew", padx=(10, 0), pady=6)
 
         tk.Label(
             form,
-            text="Frequencia",
+            text="Horario final (HH:MM)",
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
             font=("Arial", 11)
         ).grid(row=1, column=0, sticky="w", pady=6)
 
-        frequency_var = tk.StringVar(
-            value=self.load_schedule().get("frequency", "Diariamente")
+        end_time_var = tk.StringVar(
+            value=schedule_data.get("time_end", "18:00")
         )
-        frequency_combo = ttk.Combobox(
+        end_time_entry = tk.Entry(
             form,
-            textvariable=frequency_var,
-            values=["Diariamente", "Semanalmente", "Mensalmente"],
-            state="readonly",
+            textvariable=end_time_var,
+            font=("Arial", 11),
+            bg=LIGHT_BUTTON,
+            fg=TEXT_COLOR,
+            relief="flat",
+            width=26
         )
-        frequency_combo.grid(row=1, column=1, sticky="ew", padx=(10, 0), pady=6)
+        end_time_entry.grid(row=1, column=1, sticky="ew", padx=(10, 0), pady=6)
 
         tk.Label(
             form,
-            text="O backup sera executado automaticamente no horario escolhido.",
+            text="O backup sera executado automaticamente uma vez por dia dentro da faixa escolhida.",
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
             font=("Arial", 10),
@@ -523,20 +759,43 @@ class BackupGUI:
             justify="center"
         ).grid(row=2, column=0, columnspan=2, pady=(12, 14))
 
-        def save_schedule():
-            value = time_var.get().strip()
+        priority_policy_check = tk.Checkbutton(
+            form,
+            text="Ativar backup automatico por prioridade",
+            variable=priority_policy_var,
+            bg=BG_COLOR,
+            fg=SUBTLE_TEXT,
+            activebackground=BG_COLOR,
+            activeforeground=SUBTLE_TEXT,
+            selectcolor=PANEL_COLOR,
+            font=("Arial", 10, "bold")
+        )
+        priority_policy_check.grid(
+            row=3,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(0, 14)
+        )
 
-            if not self.is_valid_time(value):
+        def save_schedule():
+            start_value = start_time_var.get().strip()
+            end_value = end_time_var.get().strip()
+
+            if (
+                not self.is_valid_time(start_value)
+                or not self.is_valid_time(end_value)
+            ):
                 messagebox.showwarning(
                     "Horario invalido",
-                    "Informe o horario no formato HH:MM.",
+                    "Informe os horarios no formato HH:MM.",
                     parent=self.root
                 )
                 return
 
             payload = {
-                "time": value,
-                "frequency": frequency_var.get(),
+                "time_start": start_value,
+                "time_end": end_value,
                 "updated_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S")
             }
 
@@ -545,10 +804,16 @@ class BackupGUI:
             with open(SCHEDULE_PATH, "w", encoding="utf-8") as file:
                 json.dump(payload, file, indent=4, ensure_ascii=False)
 
+            config_payload = self.load_config()
+            config_payload["priority_backup_policy_enabled"] = bool(
+                priority_policy_var.get()
+            )
+            self.save_config(config_payload)
+
             self.refresh_footer()
             messagebox.showinfo(
                 "Agendamento salvo",
-                "Horario salvo com sucesso.",
+                "Horario e politica por prioridade salvos com sucesso.",
                 parent=self.root
             )
 
@@ -556,7 +821,7 @@ class BackupGUI:
             form,
             "Salvar agendamento",
             save_schedule
-        ).grid(row=3, column=0, columnspan=2)
+        ).grid(row=4, column=0, columnspan=2)
 
     def apply_button_feedback(self, button):
         default_bg = button.cget("bg")
@@ -941,6 +1206,7 @@ class BackupGUI:
         tree.tag_configure("change_deleted", foreground="#D32F2F")
         tree.tag_configure("change_modified", foreground="#B77900")
         tree.tag_configure("change_added", foreground="#15803D")
+        tree.tag_configure("change_previous", foreground="#101010")
 
     def get_change_tag(self, action):
         normalized_action = str(action).strip().lower()
@@ -953,6 +1219,21 @@ class BackupGUI:
 
         if normalized_action == "adicionado":
             return ("change_added",)
+
+        if normalized_action == "mantido":
+            return ("change_previous",)
+
+        return ()
+
+    def get_file_backup_status_tag(self, status):
+        if status == BACKUP_STATUS_IN_BACKUP:
+            return ("backup_ok",)
+
+        if status == BACKUP_STATUS_PENDING:
+            return ("backup_pending",)
+
+        if status == BACKUP_STATUS_PENDING_DELETE:
+            return ("backup_delete",)
 
         return ()
 
@@ -1344,6 +1625,22 @@ class BackupGUI:
                 f"\n\nArquivos ignorados por erro durante a copia: {warning_count}"
             )
 
+        if result.get("storage_mode") == "incremental":
+            messagebox.showinfo(
+                "Backup concluido",
+                (
+                    "Backup incremental realizado com sucesso.\n\n"
+                    f"Snapshot salvo em:\n{result.get('snapshot_path') or result.get('backup_path')}\n\n"
+                    f"Armazenamento:\n{result.get('backup_storage', '')}\n\n"
+                    f"Arquivos processados: {result.get('total_files', 0)}\n"
+                    f"Novos objetos: {result.get('objects_stored', 0)}\n"
+                    f"Referencias existentes: {result.get('objects_referenced', 0)}\n"
+                    f"Sem alteracao: {result.get('files_unchanged', 0)}"
+                    f"{warning_text}"
+                )
+            )
+            return
+
         messagebox.showinfo(
             "Backup concluido",
             (
@@ -1414,8 +1711,8 @@ class BackupGUI:
 
         window = tk.Toplevel(self.root)
         window.title("Agendar backup")
-        window.geometry("420x260")
-        window.minsize(390, 260)
+        window.geometry("460x320")
+        window.minsize(430, 310)
         window.configure(bg=BG_COLOR)
         window.transient(self.root)
         self.prepare_window(window)
@@ -1431,41 +1728,43 @@ class BackupGUI:
         form = tk.Frame(window, bg=BG_COLOR)
         form.pack(fill="x", padx=28, pady=4)
         form.columnconfigure(1, weight=1)
+        schedule_data = self.load_schedule()
+        config_data = self.load_config()
+        priority_policy_var = tk.BooleanVar(
+            value=bool(config_data.get("priority_backup_policy_enabled", False))
+        )
 
         tk.Label(
             form,
-            text="Horario (HH:MM)",
+            text="Horario inicial (HH:MM)",
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
             font=("Arial", 11)
         ).grid(row=0, column=0, sticky="w", pady=6)
 
-        time_var = tk.StringVar(value=self.load_schedule().get("time", "09:00"))
-        time_entry = tk.Entry(form, textvariable=time_var, font=("Arial", 11))
-        time_entry.grid(row=0, column=1, sticky="ew", padx=(10, 0), pady=6)
+        start_time_var = tk.StringVar(
+            value=schedule_data.get("time_start") or schedule_data.get("time", "09:00")
+        )
+        start_time_entry = tk.Entry(form, textvariable=start_time_var, font=("Arial", 11))
+        start_time_entry.grid(row=0, column=1, sticky="ew", padx=(10, 0), pady=6)
 
         tk.Label(
             form,
-            text="Frequencia",
+            text="Horario final (HH:MM)",
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
             font=("Arial", 11)
         ).grid(row=1, column=0, sticky="w", pady=6)
 
-        frequency_var = tk.StringVar(
-            value=self.load_schedule().get("frequency", "Diariamente")
+        end_time_var = tk.StringVar(
+            value=schedule_data.get("time_end", "18:00")
         )
-        frequency_combo = ttk.Combobox(
-            form,
-            textvariable=frequency_var,
-            values=["Diariamente", "Semanalmente", "Mensalmente"],
-            state="readonly",
-        )
-        frequency_combo.grid(row=1, column=1, sticky="ew", padx=(10, 0), pady=6)
+        end_time_entry = tk.Entry(form, textvariable=end_time_var, font=("Arial", 11))
+        end_time_entry.grid(row=1, column=1, sticky="ew", padx=(10, 0), pady=6)
 
         info = tk.Label(
             window,
-            text="O backup sera executado automaticamente no horario escolhido.",
+            text="O backup sera executado automaticamente uma vez por dia dentro da faixa escolhida.",
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
             font=("Arial", 10),
@@ -1474,20 +1773,37 @@ class BackupGUI:
         )
         info.pack(pady=(12, 14))
 
-        def save_schedule():
-            value = time_var.get().strip()
+        priority_policy_check = tk.Checkbutton(
+            window,
+            text="Ativar backup automatico por prioridade",
+            variable=priority_policy_var,
+            bg=BG_COLOR,
+            fg=SUBTLE_TEXT,
+            activebackground=BG_COLOR,
+            activeforeground=SUBTLE_TEXT,
+            selectcolor=PANEL_COLOR,
+            font=("Arial", 10, "bold")
+        )
+        priority_policy_check.pack(pady=(0, 14))
 
-            if not self.is_valid_time(value):
+        def save_schedule():
+            start_value = start_time_var.get().strip()
+            end_value = end_time_var.get().strip()
+
+            if (
+                not self.is_valid_time(start_value)
+                or not self.is_valid_time(end_value)
+            ):
                 messagebox.showwarning(
                     "Horario invalido",
-                    "Informe o horario no formato HH:MM.",
+                    "Informe os horarios no formato HH:MM.",
                     parent=window
                 )
                 return
 
             payload = {
-                "time": value,
-                "frequency": frequency_var.get(),
+                "time_start": start_value,
+                "time_end": end_value,
                 "updated_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S")
             }
 
@@ -1496,10 +1812,16 @@ class BackupGUI:
             with open(SCHEDULE_PATH, "w", encoding="utf-8") as file:
                 json.dump(payload, file, indent=4, ensure_ascii=False)
 
+            config_payload = self.load_config()
+            config_payload["priority_backup_policy_enabled"] = bool(
+                priority_policy_var.get()
+            )
+            self.save_config(config_payload)
+
             self.refresh_footer()
             messagebox.showinfo(
                 "Agendamento salvo",
-                "Horario salvo com sucesso.",
+                "Horario e politica por prioridade salvos com sucesso.",
                 parent=window
             )
             window.destroy()
@@ -1551,11 +1873,10 @@ class BackupGUI:
             "priority",
             "priority_score",
             "added_to_backup_at",
-            "size_kb",
+            "added_in_backup",
+            "backup_status",
+            "size_mb",
             "days_since_modified",
-            "classification_source",
-            "important",
-            "priority_reason"
         )
         headings = {
             "name": "Nome",
@@ -1563,11 +1884,10 @@ class BackupGUI:
             "priority": "Prioridade",
             "priority_score": "Score",
             "added_to_backup_at": "Adicionado ao backup",
-            "size_kb": "Tamanho (KB)",
+            "added_in_backup": "Backup adicionado",
+            "backup_status": "Status backup",
+            "size_mb": "Tamanho (MB)",
             "days_since_modified": "Dias sem alterar",
-            "classification_source": "Origem",
-            "important": "Importante",
-            "priority_reason": "Motivo"
         }
 
         top_bar = tk.Frame(content, bg=BG_COLOR)
@@ -1647,11 +1967,11 @@ class BackupGUI:
             "extension": "",
             "added_from": "",
             "added_to": "",
-            "size_kb": "",
+            "size_mb": "",
+            "added_in_backup": "",
+            "backup_status": "Todos",
             "days_since_modified": "",
             "priority": "Todos",
-            "classification_source": "",
-            "important": "Todos",
         }
 
         table_frame = tk.Frame(content, bg=BG_COLOR)
@@ -1672,59 +1992,41 @@ class BackupGUI:
                 "priority": {"width": 115, "minwidth": 95, "weight": 1},
                 "priority_score": {"width": 80, "minwidth": 70, "weight": 1},
                 "added_to_backup_at": {
-                    "width": 180,
-                    "minwidth": 150,
+                    "width": 155,
+                    "minwidth": 135,
                     "weight": 2,
                 },
-                "size_kb": {"width": 120, "minwidth": 95, "weight": 1},
-                "days_since_modified": {
-                    "width": 140,
-                    "minwidth": 120,
-                    "weight": 1,
+                "added_in_backup": {
+                    "width": 155,
+                    "minwidth": 130,
+                    "weight": 2,
+                    "anchor": "w",
                 },
-                "classification_source": {
-                    "width": 130,
+                "backup_status": {
+                    "width": 125,
                     "minwidth": 110,
                     "weight": 1,
-                },
-                "important": {"width": 110, "minwidth": 90, "weight": 1},
-                "priority_reason": {
-                    "width": 360,
-                    "minwidth": 220,
-                    "weight": 4,
                     "anchor": "w",
+                },
+                "size_mb": {"width": 110, "minwidth": 90, "weight": 1},
+                "days_since_modified": {
+                    "width": 120,
+                    "minwidth": 105,
+                    "weight": 1,
                 },
             }
         )
 
-        rows = []
+        tree.tag_configure("backup_ok", foreground="#111827")
+        tree.tag_configure("backup_pending", foreground="#B45309")
+        tree.tag_configure("backup_delete", foreground="#B91C1C")
 
+        dataset_rows = []
         with open(dataset_path, "r", encoding="utf-8", newline="") as file:
             reader = csv.DictReader(file)
+            dataset_rows = list(reader)
 
-            for row in reader:
-                added_to_backup_at = (
-                    row.get("added_to_backup_at")
-                    or row.get("created_at")
-                    or "-"
-                )
-                important = "Sim" if row.get("important") == "1" else "Nao"
-                priority = row.get("priority", "").strip() or (
-                    "alta" if important == "Sim" else "baixa"
-                )
-                row_values = {
-                    "name": row.get("name", ""),
-                    "extension": row.get("extension", ""),
-                    "priority": priority,
-                    "priority_score": row.get("priority_score", ""),
-                    "added_to_backup_at": added_to_backup_at,
-                    "size_kb": self.format_float(row.get("size_kb", "0")),
-                    "days_since_modified": row.get("days_since_modified", ""),
-                    "classification_source": row.get("classification_source", ""),
-                    "important": important,
-                    "priority_reason": row.get("priority_reason", "")
-                }
-                rows.append(row_values)
+        rows = build_file_status_rows(dataset_rows, self.load_history())
 
         def parse_date(value):
             value = value.strip()
@@ -1770,9 +2072,9 @@ class BackupGUI:
             text_filters = {
                 "name": filter_state["name"],
                 "extension": filter_state["extension"],
-                "size_kb": filter_state["size_kb"],
+                "size_mb": filter_state["size_mb"],
+                "added_in_backup": filter_state["added_in_backup"],
                 "days_since_modified": filter_state["days_since_modified"],
-                "classification_source": filter_state["classification_source"],
             }
 
             for key, filter_value in text_filters.items():
@@ -1782,14 +2084,14 @@ class BackupGUI:
                     return False
 
             if (
-                filter_state["important"] != "Todos"
-                and row_values["important"] != filter_state["important"]
+                filter_state["priority"] != "Todos"
+                and row_values["priority"] != filter_state["priority"]
             ):
                 return False
 
             if (
-                filter_state["priority"] != "Todos"
-                and row_values["priority"] != filter_state["priority"]
+                filter_state["backup_status"] != "Todos"
+                and row_values["backup_status"] != filter_state["backup_status"]
             ):
                 return False
 
@@ -1819,7 +2121,8 @@ class BackupGUI:
                     row_values.get("name", ""),
                     row_values.get("extension", ""),
                     row_values.get("priority", ""),
-                    row_values.get("priority_reason", "")
+                    row_values.get("added_in_backup", ""),
+                    row_values.get("backup_status", "")
                 ):
                     suggestion = str(value).strip()
 
@@ -1899,11 +2202,13 @@ class BackupGUI:
                         row_values["priority"],
                         row_values["priority_score"],
                         row_values["added_to_backup_at"],
-                        row_values["size_kb"],
+                        row_values["added_in_backup"],
+                        row_values["backup_status"],
+                        row_values["size_mb"],
                         row_values["days_since_modified"],
-                        row_values["classification_source"],
-                        row_values["important"],
-                        row_values["priority_reason"]
+                    ),
+                    tags=self.get_file_backup_status_tag(
+                        row_values["backup_status"]
                     )
                 )
 
@@ -1912,9 +2217,9 @@ class BackupGUI:
             for key in (
                 "name",
                 "extension",
-                "size_kb",
+                "size_mb",
+                "added_in_backup",
                 "days_since_modified",
-                "classification_source",
             ):
                 if filter_state[key].strip():
                     active_filters.append(headings[key])
@@ -1922,8 +2227,8 @@ class BackupGUI:
             if filter_state["priority"] != "Todos":
                 active_filters.append("Prioridade")
 
-            if filter_state["important"] != "Todos":
-                active_filters.append("Importante")
+            if filter_state["backup_status"] != "Todos":
+                active_filters.append("Status backup")
 
             if filter_state["added_from"] or filter_state["added_to"]:
                 active_filters.append("Periodo")
@@ -1936,8 +2241,8 @@ class BackupGUI:
         def open_filter_window():
             filter_window = tk.Toplevel(self.root)
             filter_window.title("Filtrar arquivos")
-            filter_window.geometry("620x470")
-            filter_window.minsize(600, 450)
+            filter_window.geometry("620x520")
+            filter_window.minsize(600, 500)
             filter_window.configure(bg=BG_COLOR)
             filter_window.transient(self.root)
             self.prepare_window(filter_window)
@@ -1967,11 +2272,11 @@ class BackupGUI:
                 "added_to": tk.StringVar(
                     value=filter_state["added_to"] or "Todos"
                 ),
-                "size_kb": tk.StringVar(value=filter_state["size_kb"]),
+                "size_mb": tk.StringVar(value=filter_state["size_mb"]),
+                "added_in_backup": tk.StringVar(value=filter_state["added_in_backup"]),
+                "backup_status": tk.StringVar(value=filter_state["backup_status"]),
                 "days_since_modified": tk.StringVar(value=filter_state["days_since_modified"]),
                 "priority": tk.StringVar(value=filter_state["priority"]),
-                "classification_source": tk.StringVar(value=filter_state["classification_source"]),
-                "important": tk.StringVar(value=filter_state["important"]),
             }
 
             def add_entry(label, key, row, column=0, columnspan=1):
@@ -2064,39 +2369,23 @@ class BackupGUI:
                 pady=(0, 8)
             )
 
-            tk.Label(
-                form,
-                text="Importante",
-                bg=BG_COLOR,
-                fg=SUBTLE_TEXT,
-                font=("Arial", 10, "bold")
-            ).grid(row=3, column=0, sticky="w", pady=(0, 4))
-
-            important_combo = ttk.Combobox(
-                form,
-                textvariable=field_vars["important"],
-                values=["Todos", "Sim", "Nao"],
-                state="readonly"
-            )
-            important_combo.grid(
-                row=3,
-                column=1,
-                columnspan=3,
-                sticky="ew",
-                padx=(10, 0),
-                pady=(0, 8)
-            )
-
             add_combo("Data inicial", "added_from", 4, date_options)
             add_combo("Data final", "added_to", 4, date_options, column=2)
-            add_entry("Tamanho (KB)", "size_kb", 5)
+            add_entry("Tamanho (MB)", "size_mb", 5)
             add_entry(
                 "Dias sem alterar",
                 "days_since_modified",
                 5,
                 column=2
             )
-            add_entry("Origem", "classification_source", 6, columnspan=3)
+            add_entry("Backup adicionado", "added_in_backup", 6, columnspan=3)
+            add_combo(
+                "Status backup",
+                "backup_status",
+                7,
+                ["Todos", *BACKUP_STATUS_OPTIONS],
+                columnspan=3
+            )
 
             buttons = tk.Frame(filter_window, bg=BG_COLOR)
             buttons.pack(pady=(10, 0))
@@ -2129,7 +2418,7 @@ class BackupGUI:
                 for key in filter_state:
                     filter_state[key] = (
                         "Todos"
-                        if key in {"important", "priority"}
+                        if key in {"priority", "backup_status"}
                         else ""
                     )
 
@@ -2195,6 +2484,73 @@ class BackupGUI:
             if change.get("action") == action
         )
 
+    def get_history_entry_files(self, entry):
+        changes = entry.get("file_changes", [])
+        snapshot = entry.get("file_snapshot", {})
+
+        if not isinstance(changes, list):
+            changes = []
+
+        if not isinstance(snapshot, dict):
+            snapshot = {}
+
+        displayed_files = []
+        current_snapshot_names = set(snapshot.keys())
+        changed_snapshot_names = {
+            change.get("archive_name", "")
+            for change in changes
+            if isinstance(change, dict)
+        }
+        action_order = {
+            "adicionado": 0,
+            "alterado": 1,
+            "excluido": 2,
+            "mantido": 3,
+        }
+
+        for change in changes:
+            if not isinstance(change, dict):
+                continue
+
+            displayed_files.append(
+                {
+                    "action": change.get("action", "-"),
+                    "name": change.get("name", ""),
+                    "archive_name": change.get("archive_name", ""),
+                    "size_bytes": change.get("size_bytes", 0),
+                    "modified_at": change.get("modified_at", ""),
+                }
+            )
+
+        for archive_name in sorted(current_snapshot_names):
+            if archive_name in changed_snapshot_names:
+                continue
+
+            file_data = snapshot.get(archive_name, {})
+
+            if not isinstance(file_data, dict):
+                continue
+
+            displayed_files.append(
+                {
+                    "action": "mantido",
+                    "name": file_data.get("name", ""),
+                    "archive_name": archive_name,
+                    "size_bytes": file_data.get("size_bytes", 0),
+                    "modified_at": file_data.get("modified_at", ""),
+                }
+            )
+
+        displayed_files.sort(
+            key=lambda item: (
+                action_order.get(str(item.get("action", "")).strip().lower(), 99),
+                str(item.get("name", "")).lower(),
+                str(item.get("archive_name", "")).lower(),
+            )
+        )
+
+        return displayed_files
+
     def get_change_folder(self, change):
         target_path = build_restore_target(change)
 
@@ -2258,6 +2614,104 @@ class BackupGUI:
 
         return False
 
+    def restore_incremental_snapshot_from_file(self, parent=None):
+        parent = parent or self.root
+        snapshots_directory = os.path.join(
+            self.get_backup_destination(),
+            "backup_storage",
+            "snapshots"
+        )
+        initial_directory = (
+            snapshots_directory
+            if os.path.isdir(snapshots_directory)
+            else self.get_backup_destination()
+        )
+        snapshot_path = filedialog.askopenfilename(
+            title="Escolher snapshot incremental",
+            initialdir=initial_directory,
+            filetypes=[
+                ("Snapshot JSON", "*.json"),
+                ("Todos os arquivos", "*.*"),
+            ],
+            parent=parent
+        )
+
+        if not snapshot_path:
+            return
+
+        restore_destination = filedialog.askdirectory(
+            title="Escolher pasta de restauracao",
+            parent=parent
+        )
+
+        if not restore_destination:
+            return
+
+        if not messagebox.askyesno(
+            "Confirmar restauracao",
+            (
+                "Restaurar todos os arquivos do snapshot selecionado?\n\n"
+                "Arquivos existentes com conteudo diferente serao restaurados "
+                "com sufixo, sem sobrescrever o original."
+            ),
+            parent=parent
+        ):
+            return
+
+        try:
+            results = restore_snapshot(
+                snapshot_path,
+                restore_destination,
+                conflict_strategy="rename"
+            )
+        except Exception as error:
+            messagebox.showerror("Erro", str(error), parent=parent)
+            return
+
+        restored = [item for item in results if item["status"] == "restored"]
+        renamed = [
+            item for item in results
+            if item["status"] == "restored_renamed"
+        ]
+        identical = [
+            item for item in results
+            if item["status"] == "identical_existing"
+        ]
+        skipped = [
+            item for item in results
+            if item["status"] == "skipped_existing"
+        ]
+        missing = [item for item in results if item["status"] == "not_found"]
+        errors = [item for item in results if item["status"] == "error"]
+
+        lines = [
+            f"Restaurados: {len(restored)}",
+            f"Restaurados com outro nome: {len(renamed)}",
+            f"Ja existiam com mesmo conteudo: {len(identical)}",
+            f"Ignorados por conflito: {len(skipped)}",
+            f"Objetos nao encontrados: {len(missing)}",
+            f"Com erro: {len(errors)}",
+            "",
+            f"Destino:\n{restore_destination}",
+        ]
+        problem_items = (missing + errors)[:5]
+
+        if problem_items:
+            lines.append("")
+            lines.append("Detalhes:")
+
+            for item in problem_items:
+                lines.append(
+                    f"- {item.get('archive_name', '')}: "
+                    f"{item.get('message', '')}"
+                )
+
+        messagebox.showinfo(
+            "Snapshot restaurado",
+            "\n".join(lines),
+            parent=parent
+        )
+
     def show_restore_window(self):
         if not self.require_permission("restore_backup"):
             return
@@ -2271,7 +2725,9 @@ class BackupGUI:
         if not history:
             self.show_message_panel(
                 "Sem backups",
-                "Nenhum backup disponivel para recuperacao."
+                "Nenhum backup disponivel no historico.",
+                "Restaurar snapshot",
+                self.restore_incremental_snapshot_from_file
             )
             return
 
@@ -3307,6 +3763,12 @@ class BackupGUI:
             button_bar,
             "Filtrar arquivos",
             lambda: open_restore_filter_window()
+        ).pack(side="left", padx=(0, 8))
+
+        self.create_dialog_button(
+            button_bar,
+            "Restaurar snapshot",
+            lambda: self.restore_incremental_snapshot_from_file(window)
         ).pack(side="left")
 
         backup_tree.bind("<<TreeviewSelect>>", refresh_recoverable_files)
@@ -3417,7 +3879,7 @@ class BackupGUI:
         action_combo = ttk.Combobox(
             change_filter_controls,
             textvariable=action_var,
-            values=["Todos", "adicionado", "alterado", "excluido"],
+            values=["Todos", "adicionado", "alterado", "excluido", "mantido"],
             state="readonly",
             width=14
         )
@@ -3672,7 +4134,7 @@ class BackupGUI:
 
             return any(
                 change_matches_history_search(change, search_text)
-                for change in entry.get("file_changes", [])
+                for change in self.get_history_entry_files(entry)
             )
 
         def get_history_search_suggestions():
@@ -3685,11 +4147,10 @@ class BackupGUI:
             seen = set()
 
             for entry in history:
-                for change in entry.get("file_changes", []):
+                for change in self.get_history_entry_files(entry):
                     for value in (
                         change.get("name", ""),
                         change.get("archive_name", ""),
-                        change.get("source_path", "")
                     ):
                         suggestion = str(value).strip()
 
@@ -3854,7 +4315,7 @@ class BackupGUI:
             entry = indexed_history[int(selected[0])]
             selected_action = action_var.get()
             file_name_filter = file_name_var.get().strip().lower()
-            changes = entry.get("file_changes", [])
+            changes = self.get_history_entry_files(entry)
 
             if not changes:
                 change_tree.insert(
@@ -3862,8 +4323,8 @@ class BackupGUI:
                     tk.END,
                     values=(
                         "-",
-                        "Nenhuma mudanca registrada",
-                        "Backups antigos podem nao ter esse detalhe",
+                        "Nenhum arquivo registrado",
+                        "Backups antigos podem nao ter snapshot ou mudancas detalhadas",
                         "-",
                         "-"
                     )
@@ -4102,21 +4563,56 @@ class BackupGUI:
             )
             return
 
+        extension = os.path.splitext(latest_backup)[1].lower()
+        filetypes = [("Arquivo ZIP", "*.zip"), ("Todos os arquivos", "*.*")]
+        defaultextension = ".zip"
+        initial_name = os.path.splitext(os.path.basename(latest_backup))[0] + ".zip"
+
+        if extension == ".zip":
+            initial_name = os.path.basename(latest_backup)
+
         destination = filedialog.asksaveasfilename(
             title="Salvar copia do ultimo backup",
-            defaultextension=".zip",
-            initialfile=os.path.basename(latest_backup),
-            filetypes=[("Arquivo ZIP", "*.zip"), ("Todos os arquivos", "*.*")]
+            defaultextension=defaultextension,
+            initialfile=initial_name,
+            filetypes=filetypes
         )
 
         if not destination:
             return
 
-        shutil.copy2(latest_backup, destination)
-        messagebox.showinfo(
-            "Backup exportado",
-            f"Ultimo backup copiado para:\n{destination}"
-        )
+        try:
+            if extension == ".json":
+                export_result = export_snapshot_to_zip(latest_backup, destination)
+                warning_count = len(export_result.get("warnings", []))
+                warning_text = ""
+
+                if warning_count:
+                    warning_text = (
+                        "\n\nArquivos ignorados durante a exportacao: "
+                        f"{warning_count}"
+                    )
+
+                messagebox.showinfo(
+                    "Backup exportado",
+                    (
+                        "ZIP gerado a partir do ultimo snapshot incremental.\n\n"
+                        f"Arquivo salvo em:\n{destination}\n\n"
+                        f"Arquivos exportados: {export_result.get('files_exported', 0)}"
+                        f"{warning_text}"
+                    )
+                )
+            else:
+                shutil.copy2(latest_backup, destination)
+                messagebox.showinfo(
+                    "Backup exportado",
+                    f"Ultimo backup copiado para:\n{destination}"
+                )
+        except Exception as error:
+            messagebox.showerror(
+                "Erro ao exportar backup",
+                str(error)
+            )
 
     def get_latest_backup(self):
         return get_latest_backup_path(self.get_backup_destination())

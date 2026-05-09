@@ -1,6 +1,6 @@
 # Sistema de Backup Inteligente
 
-Aplicacao desktop para acompanhar diretorios importantes, identificar alteracoes nos arquivos e centralizar a rotina de backup em uma interface simples. O sistema combina monitoramento continuo, geracao de dataset com metadados dos arquivos e criacao de backups versionados em `.zip`, organizados por data e horario.
+Aplicacao desktop para acompanhar diretorios importantes, identificar alteracoes nos arquivos e centralizar a rotina de backup em uma interface simples. O sistema combina monitoramento continuo, geracao de dataset com metadados dos arquivos e criacao de backups incrementais com deduplicacao por hash SHA-256, snapshots JSON e restauracao por manifesto.
 
 ## Objetivo
 Oferecer uma base para backup automatizado e inteligente de arquivos relevantes, permitindo que o usuario configure os diretorios de interesse, acompanhe mudancas no sistema, mantenha um historico das execucoes e tenha copias de seguranca organizadas para consulta e recuperacao futura.
@@ -51,16 +51,17 @@ Toda alteracao relevante no projeto deve ser refletida neste `README.md`, manten
 - [x] Cache local das respostas da LLM para evitar chamadas repetidas para o mesmo arquivo/hash
 - [x] Registro observado de modificacoes e acessos entre varreduras para alimentar a arvore de decisao
 - [x] Treinamento de modelo em `ml/` a partir do dataset gerado pelo scanner
-- [x] Backup manual e backup agendado com compactacao em `.zip` usando `ZIP_LZMA`
-- [x] Deduplicacao opcional no backup por hash do conteudo via `deduplicate_backup`
+- [x] Backup manual e backup agendado com armazenamento incremental em `backup_storage/`
+- [x] Deduplicacao persistente por hash SHA-256, evitando salvar o mesmo conteudo mais de uma vez
+- [x] Snapshots JSON restauraveis para representar o estado logico de cada execucao
 - [x] Politica opcional de backup por prioridade: baixa semanal, media a cada 2 dias e alta no inicio do dia + a cada 4 horas quando alterada
 - [x] Versionamento automatico dos backups por dia e horario, com organizacao em pastas por data
 - [x] Definicao de diretorio padrao para armazenamento dos backups
 - [x] Barra de loading / janela de progresso para acompanhamento da execucao do backup
 - [x] Execucao do backup em segundo plano para manter a interface responsiva
 - [x] Cancelamento seguro da operacao de backup pela interface
-- [x] Historico das execucoes de backup e exportacao do backup mais recente
-- [x] Tratamento de falhas parciais durante a compactacao, ignorando arquivos problematicos sem derrubar toda a execucao
+- [x] Historico das execucoes de backup e exportacao do artefato mais recente
+- [x] Tratamento de falhas parciais durante a copia incremental, ignorando arquivos problematicos sem derrubar toda a execucao
 - [x] Protecao contra recursao, ignorando pastas internas do sistema e a propria area de backup
 - [x] Interface grafica principal com menu central e suporte por icone na bandeja do sistema
 - [x] Icone personalizado aplicado na janela principal, barra de tarefas e bandeja do sistema
@@ -79,9 +80,10 @@ Toda alteracao relevante no projeto deve ser refletida neste `README.md`, manten
 - [x] Administrador pode nomear o backup e adicionar descricao antes da execucao manual
 - [x] Filtros avancados por janela nas telas de arquivos analisados e historico de backups
 - [x] Clique esquerdo no icone da bandeja abre o painel; clique direito mantem o menu de opcoes
-- [x] Restauracao de arquivos excluidos e versoes anteriores pela interface
+- [x] Restauracao de arquivos excluidos, versoes anteriores e snapshots incrementais pela interface
 - [x] Busca por nome de arquivo na tela de recuperacao para localizar rapidamente backups relacionados
 - [x] Busca com sugestoes de arquivos nas telas de recuperacao e historico de backups
+- [x] Tela de arquivos mostra o status de cobertura do backup: em backup, fara backup ou sera excluido no proximo backup
 - [x] Refinamento de UI/UX com fontes padronizadas, botoes com profundidade, scrollbars estilizados, campos mais destacados e abertura suave de janelas
 - [x] Melhor legibilidade nas tabelas e caixa de pre-pesquisa com destaque visual para sugestoes de arquivos e pastas
 - [ ] Visualizacao do tamanho dos backups e status da ultima execucao
@@ -93,12 +95,17 @@ Toda alteracao relevante no projeto deve ser refletida neste `README.md`, manten
 ### Estrutura dos Backups Gerados
 ```text
 backups/
-  2026-04-08/
-    backup_2026-04-08_19-30-39.zip
-    backup_2026-04-08_21-10-15.zip
-  2026-04-09/
-    backup_2026-04-09_09-00-00.zip
+  backup_storage/
+    objects/
+      <hash_sha256_1>
+      <hash_sha256_2>
+    snapshots/
+      snapshot_2026-05-08_08-00-00.json
+      snapshot_2026-05-08_12-00-00.json
+    index.json
 ```
+
+Os ZIPs gerados por versoes anteriores continuam legiveis para restauracao de historico, mas novas execucoes usam snapshots incrementais como artefato principal.
 
 ### Exemplo de Configuracao
 ```json
@@ -115,6 +122,8 @@ backups/
   "priority_backup_policy_enabled": false
 }
 ```
+
+`deduplicate_backup` e mantido por compatibilidade com configuracoes antigas; no fluxo incremental novo a deduplicacao por hash e sempre aplicada.
 
 ### Classificacao LLM com Gemini API
 O sistema usa a LLM somente com metadados, sem enviar o conteudo completo dos arquivos. A chamada inclui dados como nome, extensao, tamanho, caminho/contexto, hash, dias desde a ultima modificacao e contadores observados de modificacao/acesso.
@@ -152,6 +161,7 @@ Opcao 2: arquivo `.env` local na raiz do projeto.
    GEMINI_API_KEY=SUA_CHAVE_AQUI
    GEMINI_MODEL=gemini-2.5-flash
    SMARTBACKUP_LLM_ENABLED=true
+   BACKUP_DEV_MODE=false
    ```
 
 O arquivo `.env` fica no `.gitignore` e nao deve ser enviado ao Git. O projeto carrega esse arquivo automaticamente em `ml/llm_classifier.py` sem dependencia extra.
@@ -193,18 +203,78 @@ Quando ativada, o agendador em segundo plano verifica a politica periodicamente:
 - **media prioridade:** backup a cada 2 dias;
 - **alta prioridade:** backup no primeiro inicio do programa no dia e novamente a cada 4 horas se o arquivo tiver mudado.
 
-O estado dessa politica fica em `config/priority_backup_state.json`. Backups por prioridade sao marcados como parciais no historico para nao interferirem na comparacao dos backups completos manuais/agendados.
+Em producao, o agendador checa a politica de prioridade a cada 10 minutos. Com `BACKUP_DEV_MODE=true`, essa checagem passa para 1 minuto para respeitar janelas curtas como `alta = 5 minutos`.
+
+O estado persistente dessa politica fica em `<backup_destination>/backup_storage/index.json`. Backups manuais e agendados avaliam todos os arquivos; backups automaticos por prioridade respeitam as janelas de tempo e registram `skipped_not_eligible` no snapshot quando um arquivo ainda nao deve ser reavaliado.
+
+### DEV MODE para Testes Locais
+O projeto aceita um modo de desenvolvimento controlado exclusivamente pela variavel de ambiente `BACKUP_DEV_MODE`. Quando desativado, a politica usa os intervalos reais de producao. Quando ativado, apenas os intervalos de tempo sao reduzidos para facilitar testes locais.
+
+Intervalos usados:
+- **producao:** baixa = 7 dias, media = 2 dias, alta = primeiro inicio do dia + a cada 4 horas
+- **DEV MODE:** baixa = 30 minutos, media = 15 minutos, alta = 5 minutos
+
+Como ativar no PowerShell:
+```powershell
+$env:BACKUP_DEV_MODE="true"
+python main.py
+```
+
+Como desativar no PowerShell:
+```powershell
+$env:BACKUP_DEV_MODE="false"
+python main.py
+```
+
+Como ativar no Linux/macOS:
+```bash
+export BACKUP_DEV_MODE=true
+python main.py
+```
+
+Como usar no `.env`:
+```text
+BACKUP_DEV_MODE=true
+```
+
+Exemplos de logs:
+```text
+[DEV MODE] Intervalos reduzidos ativos
+[DEV MODE] baixa=30min media=15min alta=5min
+[DEV MODE] Arquivo elegivel em intervalo reduzido: contrato.pdf
+```
+
+O DEV MODE nao altera prioridade, score, LLM, hash, snapshots, armazenamento incremental, deduplicacao ou restauracao. Ele afeta somente a janela temporal da politica por prioridade.
+
+### Backup Incremental e Restauracao por Snapshot
+Cada execucao cria um snapshot JSON em `backup_storage/snapshots/` e salva conteudo fisico apenas quando o hash SHA-256 ainda nao existe em `backup_storage/objects/`. Arquivos inalterados ou duplicados ficam apenas referenciados no snapshot, sem novo objeto fisico.
+
+Para validar a deduplicacao, execute dois backups sem alterar os arquivos e compare a quantidade de arquivos em `backup_storage/objects/`: ela deve permanecer igual enquanto novos snapshots aparecem em `backup_storage/snapshots/`.
+
+Para restaurar um snapshot pela interface, acesse **Recuperar arquivos** e use **Restaurar snapshot**. Pelo codigo, use:
+```python
+from backup.backup_manager import restore_snapshot
+
+restore_snapshot(
+    "C:/Backups/SmartBackup/backup_storage/snapshots/snapshot_2026-05-08_12-00-00.json",
+    "C:/Restauracao"
+)
+```
 
 ### Exemplo de Historico de Backup
 ```json
 [
   {
     "timestamp": "08/04/2026 19:50:00",
-    "backup_file": "backup_2026-04-08_19-50-00.zip",
-    "backup_path": "C:/Users/super/Backups/SmartBackup/2026-04-08/backup_2026-04-08_19-50-00.zip",
-    "backup_folder": "C:/Users/super/Backups/SmartBackup/2026-04-08",
+    "backup_file": "snapshot_2026-04-08_19-50-00.json",
+    "backup_path": "C:/Users/super/Backups/SmartBackup/backup_storage/snapshots/snapshot_2026-04-08_19-50-00.json",
+    "snapshot_path": "C:/Users/super/Backups/SmartBackup/backup_storage/snapshots/snapshot_2026-04-08_19-50-00.json",
+    "backup_storage": "C:/Users/super/Backups/SmartBackup/backup_storage",
+    "storage_mode": "incremental",
     "total_files": 128,
-    "duplicate_files_skipped": 12,
+    "objects_stored": 8,
+    "objects_referenced": 12,
+    "files_unchanged": 108,
     "trigger": "manual",
     "user": "admin",
     "user_role": "admin",
@@ -240,7 +310,7 @@ Cada backup novo registra um snapshot dos arquivos e compara com o snapshot ante
 ### Execucao do Backup na Interface
 - Ao iniciar um backup manual, a aplicacao abre uma barra de loading para acompanhar o progresso da operacao.
 - O processamento acontece em segundo plano para evitar que a interface principal fique travada.
-- O usuario pode cancelar a operacao durante o scanner ou durante a compactacao do `.zip`.
+- O usuario pode cancelar a operacao durante o scanner ou durante a copia dos objetos incrementais.
 - Se o cancelamento ocorrer no meio da execucao, o sistema encerra o processo com seguranca e remove arquivos parciais de backup.
 
 ### Fluxo Atual da Aplicacao
@@ -248,12 +318,13 @@ Cada backup novo registra um snapshot dos arquivos e compara com o snapshot ante
 2. O sistema monitora alteracoes nesses diretorios.
 3. Quando um arquivo e criado, alterado, removido ou movido, o scanner atualiza o dataset, registra hash, duplicidade, contadores observados e classificacao por prioridade.
 4. Quando o backup e iniciado manualmente ou por agendamento, a aplicacao abre uma janela de progresso sem travar a interface principal.
-5. O usuario pode acompanhar o andamento e cancelar a operacao de forma segura durante o scanner ou a compactacao.
-6. Se `deduplicate_backup` estiver ativado no `config.json`, apenas a primeira ocorrencia de cada hash entra no `.zip`.
-7. Se `priority_backup_policy_enabled` estiver ativado, o agendador tambem cria backups parciais conforme a prioridade de cada arquivo.
-8. O sistema registra o historico da execucao e permite exportar o ultimo backup.
-9. A interface permite consultar arquivos excluidos ou alterados por backup e recuperar itens a partir de backups anteriores.
-10. Ao recuperar, arquivos existentes no destino sao comparados por hash; conflitos podem ser renomeados, usando `_recuperado` como nome padrao.
+5. O usuario pode acompanhar o andamento e cancelar a operacao de forma segura durante o scanner ou a copia de objetos.
+6. O sistema calcula o SHA-256 de cada arquivo avaliado e copia para `objects/` somente hashes ainda inexistentes.
+7. Cada execucao cria um snapshot em `snapshots/` e atualiza `index.json` com o ultimo hash, prioridade e data de backup de cada arquivo.
+8. Se `priority_backup_policy_enabled` estiver ativado, o agendador cria snapshots respeitando as janelas de prioridade.
+9. O sistema registra o historico da execucao e permite exportar o ultimo artefato de backup.
+10. A interface permite consultar arquivos excluidos ou alterados por backup, recuperar itens a partir de backups anteriores e restaurar snapshots completos.
+11. Ao recuperar, arquivos existentes no destino sao comparados por hash; conflitos podem ser renomeados, usando `_recuperado` como nome padrao.
 
 ## Estrutura do Projeto
 - `main.py`: ponto de entrada da aplicacao.
@@ -263,14 +334,14 @@ Cada backup novo registra um snapshot dos arquivos e compara com o snapshot ante
 - `scanner/scanner.py`: varredura dos diretorios, calculo de hash e geracao do dataset CSV.
 - `ml/llm_classifier.py`: classificacao por arvore local e Gemini API usando metadados dos arquivos.
 - `monitor/monitor.py`: monitoramento de alteracoes com watchdog.
-- `backup/backup_manager.py`: criacao, versionamento, deduplicacao opcional, historico e restauracao dos backups.
+- `backup/backup_manager.py`: criacao incremental, deduplicacao persistente, snapshots, historico e restauracao dos backups.
 - `utils/file_hash.py`: calculo de hash SHA-256 para identificacao de duplicados.
 - `scheduler/scheduler.py`: execucao automatica de backups agendados.
 - `tray/tray_icon.py`: integracao com bandeja do sistema.
 - `assets/`: arquivos visuais usados pela interface, como o icone da aplicacao.
 - `config/`: arquivos de configuracao, historico, agendamento, cache da LLM e estado da politica por prioridade.
 - `dataset/`: CSV gerado pelo scanner.
-- `backups/`: destino padrao local dos backups.
+- `backups/`: destino padrao local dos backups; novas execucoes criam `backup_storage/` dentro dele.
 - `ml/`: modulos de classificacao local, LLM e treinamento do classificador tradicional.
 
 ## Proximos Passos Sugeridos
@@ -280,12 +351,13 @@ Cada backup novo registra um snapshot dos arquivos e compara com o snapshot ante
 - [ ] Melhorar o menu da bandeja para disparar backup completo e nao apenas scan
 - [ ] Exibir logs mais detalhados na interface
 - [x] Integrar classificacao de relevancia usando o modulo `ml/`
-- [ ] Adicionar um controle visual na interface para ativar ou desativar `deduplicate_backup`
-- [ ] Adicionar um controle visual na interface para ativar ou desativar `priority_backup_policy_enabled`
+- [x] Deduplicacao persistente no fluxo incremental
+- [x] Adicionar um controle visual na interface para ativar ou desativar `priority_backup_policy_enabled`
 - [ ] Adicionar troca de senha pelo proprio usuario
 
 ## Comandos Uteis
 - `python main.py`: inicia a aplicacao.
 - `python -m py_compile main.py auth/users.py auth/permissions.py monitor/monitor.py interface/login.py interface/gui.py backup/backup_manager.py scheduler/scheduler.py scanner/scanner.py utils/file_hash.py ml/llm_classifier.py`: valida a sintaxe dos modulos principais.
+- `python -m unittest discover -s tests`: executa os testes automatizados do backup incremental.
 - `python scanner/scanner.py`: executa o scanner manualmente.
 - `pip install -r requirements.txt`: instala as dependencias do projeto.

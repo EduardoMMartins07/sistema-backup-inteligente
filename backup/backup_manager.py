@@ -18,13 +18,25 @@ SCHEDULE_PATH = os.path.join(PROJECT_ROOT, "config", "backup_schedule.json")
 PRIORITY_STATE_PATH = os.path.join(PROJECT_ROOT, "config", "priority_backup_state.json")
 ZIP_COMPRESSION_METHOD = zipfile.ZIP_LZMA
 RECOVERABLE_ACTIONS = {"alterado", "excluido"}
+INCREMENTAL_STORAGE_DIRNAME = "backup_storage"
+OBJECTS_DIRNAME = "objects"
+SNAPSHOTS_DIRNAME = "snapshots"
+INDEX_FILENAME = "index.json"
+INDEX_VERSION = 1
 PRIORITY_LOW = "baixa"
 PRIORITY_MEDIUM = "media"
 PRIORITY_HIGH = "alta"
+ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
+_BACKUP_ENV_FILE_LOADED = False
 PRIORITY_INTERVALS = {
     PRIORITY_LOW: timedelta(days=7),
     PRIORITY_MEDIUM: timedelta(days=2),
     PRIORITY_HIGH: timedelta(hours=4),
+}
+DEV_PRIORITY_INTERVALS = {
+    PRIORITY_LOW: timedelta(minutes=30),
+    PRIORITY_MEDIUM: timedelta(minutes=15),
+    PRIORITY_HIGH: timedelta(minutes=5),
 }
 
 INTERNAL_IGNORED_PATHS = [
@@ -78,6 +90,42 @@ def save_json(path, data):
 
     with open(path, "w", encoding="utf-8") as file:
         json.dump(data, file, indent=4, ensure_ascii=False)
+
+
+def save_json_atomic(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temporary_path = f"{path}.tmp"
+
+    with open(temporary_path, "w", encoding="utf-8") as file:
+        json.dump(data, file, indent=4, ensure_ascii=False)
+
+    os.replace(temporary_path, path)
+
+
+def load_backup_env_file(path=ENV_PATH):
+    global _BACKUP_ENV_FILE_LOADED
+
+    if _BACKUP_ENV_FILE_LOADED:
+        return
+
+    _BACKUP_ENV_FILE_LOADED = True
+
+    if not os.path.exists(path):
+        return
+
+    with open(path, "r", encoding="utf-8") as file:
+        for raw_line in file:
+            line = raw_line.strip()
+
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip("\"'")
+
+            if key and key not in os.environ:
+                os.environ[key] = value
 
 
 def load_config():
@@ -343,45 +391,50 @@ def should_include_priority_file(source_path, archive_name, metadata, state_entr
     current_hash = get_priority_file_hash(source_path, metadata)
     previous_hash = state_entry.get("last_backup_hash", "")
     hash_changed = not previous_hash or current_hash != previous_hash
+    interval = get_backup_interval(priority)
+    dev_mode = is_dev_mode_enabled()
 
     if not last_backup_at:
         return True, "primeiro backup pela politica de prioridade"
 
-    if priority == PRIORITY_HIGH:
+    if priority == PRIORITY_HIGH and not dev_mode:
         today = now.date().isoformat()
 
         if state_entry.get("last_daily_backup_date") != today:
             return True, "primeiro backup de alta prioridade no dia"
 
-        if now - last_backup_at >= PRIORITY_INTERVALS[PRIORITY_HIGH] and hash_changed:
+        if now - last_backup_at >= interval and hash_changed:
             return True, "arquivo de alta prioridade alterado no intervalo de 4 horas"
 
         return False, "alta prioridade ainda dentro do intervalo"
 
-    interval = PRIORITY_INTERVALS.get(priority, PRIORITY_INTERVALS[PRIORITY_LOW])
-
     if now - last_backup_at >= interval:
+        if dev_mode:
+            return True, "arquivo elegivel em intervalo reduzido de DEV MODE"
         return True, f"intervalo vencido para prioridade {priority}"
 
     return False, f"prioridade {priority} ainda dentro do intervalo"
 
 
-def build_priority_backup_manifest(
+def build_priority_eligible_manifest(
     directories=None,
     config=None,
     backup_destination=None,
-    now=None
+    now=None,
+    priority_index=None,
+    index=None
 ):
     now = now or datetime.now()
     config = config or load_config()
     backup_destination = backup_destination or get_backup_destination(config)
+    log_dev_mode_intervals()
     full_manifest = build_backup_manifest(
         directories=directories,
         config=config,
         backup_destination=backup_destination
     )
-    priority_index = load_dataset_priority_index()
-    priority_state = load_priority_state()
+    priority_index = priority_index or load_dataset_priority_index()
+    index = index or load_incremental_index(backup_destination)
     due_manifest = []
     decisions = []
 
@@ -389,13 +442,22 @@ def build_priority_backup_manifest(
         metadata = find_priority_metadata(source_path, archive_name, priority_index)
         priority = normalize_priority(metadata.get("priority"))
         state_key = normalize_path(source_path)
-        include_file, reason = should_include_priority_file(
-            source_path,
-            archive_name,
-            metadata,
-            priority_state.get(state_key, {}),
-            now
-        )
+        index_entry = index.get("files", {}).get(state_key, {})
+        last_backup_at = parse_iso_datetime(index_entry.get("last_backup_at"))
+        include_file = is_file_eligible_for_backup(metadata, index_entry, now)
+
+        if include_file:
+            reason = "arquivo elegivel pela politica de prioridade"
+
+            if is_dev_mode_enabled() and last_backup_at:
+                reason = "arquivo elegivel em intervalo reduzido de DEV MODE"
+                log_backup_decision(
+                    "DEV MODE",
+                    f"Arquivo elegivel em intervalo reduzido: {os.path.basename(source_path)}"
+                )
+        else:
+            reason = f"prioridade {priority} ainda dentro do intervalo"
+            log_dev_mode_not_eligible(source_path, priority, last_backup_at, now)
 
         decisions.append(
             {
@@ -404,6 +466,8 @@ def build_priority_backup_manifest(
                 "priority": priority,
                 "included": include_file,
                 "reason": reason,
+                "last_backup_at": index_entry.get("last_backup_at", ""),
+                "required_interval": format_interval_for_log(get_backup_interval(priority)),
             }
         )
 
@@ -411,6 +475,20 @@ def build_priority_backup_manifest(
             due_manifest.append((source_path, archive_name))
 
     return due_manifest, decisions, priority_index
+
+
+def build_priority_backup_manifest(
+    directories=None,
+    config=None,
+    backup_destination=None,
+    now=None
+):
+    return build_priority_eligible_manifest(
+        directories=directories,
+        config=config,
+        backup_destination=backup_destination,
+        now=now,
+    )
 
 
 def update_priority_state_after_backup(manifest, current_snapshot, now=None, priority_index=None):
@@ -475,6 +553,10 @@ def build_file_changes(previous_snapshot, current_snapshot):
                 "source_path": file_data.get("source_path", ""),
                 "size_bytes": file_data.get("size_bytes", 0),
                 "modified_at": file_data.get("modified_at", ""),
+                "file_hash": file_data.get("file_hash", ""),
+                "object_path": file_data.get("object_path", ""),
+                "snapshot_path": file_data.get("snapshot_path", ""),
+                "storage_mode": file_data.get("storage_mode", ""),
             }
         )
 
@@ -493,6 +575,10 @@ def build_file_changes(previous_snapshot, current_snapshot):
                 "source_path": current_file.get("source_path", ""),
                 "size_bytes": current_file.get("size_bytes", 0),
                 "modified_at": current_file.get("modified_at", ""),
+                "file_hash": current_file.get("file_hash", ""),
+                "object_path": current_file.get("object_path", ""),
+                "snapshot_path": current_file.get("snapshot_path", ""),
+                "storage_mode": current_file.get("storage_mode", ""),
             }
         )
 
@@ -506,6 +592,10 @@ def build_file_changes(previous_snapshot, current_snapshot):
                 "source_path": file_data.get("source_path", ""),
                 "size_bytes": file_data.get("size_bytes", 0),
                 "modified_at": file_data.get("modified_at", ""),
+                "file_hash": file_data.get("file_hash", ""),
+                "object_path": file_data.get("object_path", ""),
+                "snapshot_path": file_data.get("snapshot_path", ""),
+                "storage_mode": file_data.get("storage_mode", ""),
             }
         )
 
@@ -520,6 +610,621 @@ def sanitize_backup_name(name):
     sanitized = re.sub(r"\s+", "_", sanitized)
     sanitized = sanitized.strip("._- ")
     return sanitized[:60]
+
+
+def log_backup_decision(level, message):
+    print(f"[{level}] {message}")
+
+
+def is_dev_mode_enabled():
+    load_backup_env_file()
+    value = os.getenv("BACKUP_DEV_MODE", "false").strip().lower()
+    return value == "true"
+
+
+def get_backup_intervals():
+    if is_dev_mode_enabled():
+        return DEV_PRIORITY_INTERVALS.copy()
+
+    return PRIORITY_INTERVALS.copy()
+
+
+def get_backup_interval(priority):
+    normalized_priority = normalize_priority(priority)
+    return get_backup_intervals().get(normalized_priority)
+
+
+def get_priority_scheduler_check_interval_seconds():
+    return 60 if is_dev_mode_enabled() else 600
+
+
+def format_interval_for_log(interval):
+    if interval is None:
+        return "desconhecido"
+
+    total_seconds = int(interval.total_seconds())
+
+    if total_seconds % 86400 == 0:
+        days = total_seconds // 86400
+        return f"{days}d"
+
+    if total_seconds % 3600 == 0:
+        hours = total_seconds // 3600
+        return f"{hours}h"
+
+    if total_seconds % 60 == 0:
+        minutes = total_seconds // 60
+        return f"{minutes}min"
+
+    return f"{total_seconds}s"
+
+
+def log_dev_mode_intervals():
+    if not is_dev_mode_enabled():
+        return
+
+    intervals = get_backup_intervals()
+    log_backup_decision("DEV MODE", "Intervalos reduzidos ativos")
+    log_backup_decision(
+        "DEV MODE",
+        (
+            f"baixa={format_interval_for_log(intervals.get(PRIORITY_LOW))} "
+            f"media={format_interval_for_log(intervals.get(PRIORITY_MEDIUM))} "
+            f"alta={format_interval_for_log(intervals.get(PRIORITY_HIGH))}"
+        )
+    )
+
+
+def log_dev_mode_not_eligible(source_path, priority, last_backup_at, now):
+    if not is_dev_mode_enabled() or not last_backup_at:
+        return
+
+    interval = get_backup_interval(priority)
+    elapsed = now - last_backup_at
+    log_backup_decision(
+        "DEV MODE",
+        (
+            f"Arquivo ainda nao elegivel: {os.path.basename(source_path)} | "
+            f"prioridade={priority} | "
+            f"ultimo_backup={last_backup_at.isoformat(timespec='seconds')} | "
+            f"decorrido={format_interval_for_log(elapsed)} | "
+            f"necessario={format_interval_for_log(interval)}"
+        )
+    )
+
+
+def parse_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def get_incremental_storage_paths(backup_destination=None):
+    destination = resolve_configured_path(backup_destination or get_backup_destination())
+    storage_root = os.path.join(destination, INCREMENTAL_STORAGE_DIRNAME)
+
+    return {
+        "root": storage_root,
+        "objects": os.path.join(storage_root, OBJECTS_DIRNAME),
+        "snapshots": os.path.join(storage_root, SNAPSHOTS_DIRNAME),
+        "index": os.path.join(storage_root, INDEX_FILENAME),
+    }
+
+
+def ensure_incremental_storage(backup_destination=None):
+    paths = get_incremental_storage_paths(backup_destination)
+    os.makedirs(paths["objects"], exist_ok=True)
+    os.makedirs(paths["snapshots"], exist_ok=True)
+    return paths
+
+
+def build_default_incremental_index():
+    return {
+        "version": INDEX_VERSION,
+        "files": {},
+        "objects": {},
+    }
+
+
+def normalize_incremental_index(index):
+    if not isinstance(index, dict):
+        index = build_default_incremental_index()
+
+    if not isinstance(index.get("files"), dict):
+        index["files"] = {}
+
+    if not isinstance(index.get("objects"), dict):
+        index["objects"] = {}
+
+    index["version"] = parse_int(index.get("version"), INDEX_VERSION) or INDEX_VERSION
+    return index
+
+
+def load_incremental_index(backup_destination=None):
+    paths = get_incremental_storage_paths(backup_destination)
+    return normalize_incremental_index(
+        load_json(paths["index"], build_default_incremental_index())
+    )
+
+
+def save_incremental_index(backup_destination, index):
+    paths = get_incremental_storage_paths(backup_destination)
+    save_json_atomic(paths["index"], normalize_incremental_index(index))
+
+
+def build_object_relative_path(file_hash):
+    return f"{OBJECTS_DIRNAME}/{file_hash}"
+
+
+def resolve_storage_relative_path(storage_root, relative_path):
+    normalized_relative = str(relative_path or "").replace("\\", "/").strip("/")
+    return os.path.join(storage_root, *normalized_relative.split("/"))
+
+
+def build_unique_snapshot_path(snapshots_directory, now):
+    base_snapshot_id = f"snapshot_{now.strftime('%Y-%m-%d_%H-%M-%S')}"
+    snapshot_id = base_snapshot_id
+    counter = 2
+
+    while True:
+        snapshot_path = os.path.join(snapshots_directory, f"{snapshot_id}.json")
+
+        if not os.path.exists(snapshot_path):
+            return snapshot_id, snapshot_path
+
+        snapshot_id = f"{base_snapshot_id}_{counter}"
+        counter += 1
+
+
+def get_metadata_priority_score(metadata):
+    if not isinstance(metadata, dict):
+        return ""
+
+    return metadata.get("priority_score", metadata.get("score", ""))
+
+
+def format_stat_modified_at(stat_result):
+    return datetime.fromtimestamp(stat_result.st_mtime).isoformat(timespec="seconds")
+
+
+def build_incremental_snapshot_entry(
+    source_path,
+    archive_name,
+    file_hash,
+    object_path,
+    priority,
+    score,
+    size,
+    modified_at,
+    status,
+    error=""
+):
+    return {
+        "original_path": source_path,
+        "source_path": source_path,
+        "archive_name": normalize_archive_name(archive_name),
+        "file_name": os.path.basename(source_path),
+        "hash": file_hash,
+        "file_hash": file_hash,
+        "object_path": object_path,
+        "priority": priority,
+        "score": score,
+        "size": size,
+        "size_bytes": size,
+        "modified_at": modified_at,
+        "status": status,
+        "error": error,
+    }
+
+
+def build_history_snapshot_from_incremental_files(files, snapshot_path):
+    snapshot = {}
+
+    for file_data in files:
+        archive_name = normalize_archive_name(file_data.get("archive_name", ""))
+        file_hash = file_data.get("hash") or file_data.get("file_hash")
+
+        if not archive_name or not file_hash:
+            continue
+
+        if file_data.get("status") == "error":
+            continue
+
+        snapshot[archive_name] = {
+            "name": file_data.get("file_name", ""),
+            "source_path": file_data.get("original_path", ""),
+            "archive_name": archive_name,
+            "size_bytes": file_data.get("size", 0),
+            "modified_at": file_data.get("modified_at", ""),
+            "file_hash": file_hash,
+            "object_path": file_data.get("object_path", ""),
+            "snapshot_path": snapshot_path,
+            "storage_mode": "incremental",
+        }
+
+    return snapshot
+
+
+def increment_status_count(counts, status):
+    counts[status] = counts.get(status, 0) + 1
+
+
+def update_object_index_entry(index, file_hash, object_path, source_path, size, now):
+    objects = index.setdefault("objects", {})
+    object_entry = objects.get(file_hash, {})
+    original_names = object_entry.get("original_names", [])
+
+    if not isinstance(original_names, list):
+        original_names = []
+
+    file_name = os.path.basename(source_path)
+
+    if file_name and file_name not in original_names:
+        original_names.append(file_name)
+
+    object_entry.update(
+        {
+            "object_path": object_path,
+            "original_names": original_names,
+            "size": size,
+            "created_at": object_entry.get("created_at")
+            or now.isoformat(timespec="seconds"),
+            "reference_count": parse_int(object_entry.get("reference_count")),
+        }
+    )
+    objects[file_hash] = object_entry
+
+
+def update_file_index_entry(
+    index,
+    source_path,
+    archive_name,
+    file_hash,
+    object_path,
+    priority,
+    stat_result,
+    now
+):
+    files = index.setdefault("files", {})
+    state_key = normalize_path(source_path)
+    previous_entry = files.get(state_key, {})
+    backup_count = parse_int(previous_entry.get("backup_count")) + 1
+    next_entry = {
+        "source_path": source_path,
+        "archive_name": normalize_archive_name(archive_name),
+        "last_hash": file_hash,
+        "last_priority": priority,
+        "last_backup_at": now.isoformat(timespec="seconds"),
+        "last_modified_at": format_stat_modified_at(stat_result),
+        "object_path": object_path,
+        "size": stat_result.st_size,
+        "backup_count": backup_count,
+    }
+
+    if priority == PRIORITY_HIGH:
+        next_entry["last_daily_backup_date"] = now.date().isoformat()
+
+    files[state_key] = next_entry
+    return next_entry
+
+
+def refresh_object_reference_counts(index):
+    references = {}
+
+    for file_entry in index.get("files", {}).values():
+        file_hash = file_entry.get("last_hash")
+
+        if file_hash:
+            references[file_hash] = references.get(file_hash, 0) + 1
+
+    for file_hash, object_entry in index.get("objects", {}).items():
+        object_entry["reference_count"] = references.get(file_hash, 0)
+
+
+def is_file_eligible_for_backup(file_metadata, index_entry, now):
+    file_metadata = file_metadata or {}
+    index_entry = index_entry or {}
+    priority = normalize_priority(
+        file_metadata.get("priority") or index_entry.get("last_priority")
+    )
+    last_backup_at = parse_iso_datetime(index_entry.get("last_backup_at"))
+    interval = get_backup_interval(priority)
+    dev_mode = is_dev_mode_enabled()
+
+    if not last_backup_at:
+        return True
+
+    if priority == PRIORITY_HIGH and not dev_mode:
+        today = now.date().isoformat()
+
+        if index_entry.get("last_daily_backup_date") != today:
+            return True
+
+        return now - last_backup_at >= interval
+
+    return now - last_backup_at >= interval
+
+
+def store_incremental_object(source_path, object_path):
+    temporary_path = f"{object_path}.{os.getpid()}.tmp"
+
+    try:
+        shutil.copy2(source_path, temporary_path)
+        os.replace(temporary_path, object_path)
+    except OSError:
+        if os.path.exists(temporary_path):
+            try:
+                os.remove(temporary_path)
+            except OSError:
+                pass
+        raise
+
+
+def build_not_eligible_snapshot_entry(
+    source_path,
+    archive_name,
+    metadata,
+    index_entry
+):
+    file_hash = index_entry.get("last_hash", "")
+    object_path = index_entry.get("object_path", "")
+    priority = normalize_priority(
+        metadata.get("priority") or index_entry.get("last_priority")
+    )
+    score = get_metadata_priority_score(metadata)
+
+    return build_incremental_snapshot_entry(
+        source_path=source_path,
+        archive_name=archive_name,
+        file_hash=file_hash,
+        object_path=object_path,
+        priority=priority,
+        score=score,
+        size=parse_int(index_entry.get("size")),
+        modified_at=index_entry.get("last_modified_at", ""),
+        status="skipped_not_eligible",
+    )
+
+
+def run_incremental_backup(
+    directories=None,
+    backup_destination=None,
+    config=None,
+    now=None,
+    manifest=None,
+    priority_policy=False,
+    priority_index=None,
+    trigger="manual",
+    progress_callback=None,
+    cancel_callback=None
+):
+    config = config or load_config()
+    directories = directories or get_monitored_directories(config)
+    backup_destination = resolve_configured_path(
+        backup_destination or get_backup_destination(config)
+    )
+    now = now or datetime.now()
+
+    if not directories and manifest is None:
+        raise ValueError("Adicione ao menos um diretorio antes de iniciar o backup.")
+
+    storage_paths = ensure_incremental_storage(backup_destination)
+    index = load_incremental_index(backup_destination)
+    priority_index = priority_index or load_dataset_priority_index()
+    manifest = manifest if manifest is not None else build_backup_manifest(
+        directories=directories,
+        config=config,
+        backup_destination=backup_destination
+    )
+    snapshot_id, snapshot_path = build_unique_snapshot_path(
+        storage_paths["snapshots"],
+        now
+    )
+    files = []
+    warnings = []
+    skipped_duplicates = []
+    status_counts = {}
+    total_entries = len(manifest)
+
+    if progress_callback:
+        progress_callback(0, total_entries, "Preparando backup incremental...")
+
+    if priority_policy:
+        log_dev_mode_intervals()
+
+    for item_index, (source_path, archive_name) in enumerate(manifest, start=1):
+        ensure_not_cancelled(cancel_callback)
+        metadata = find_priority_metadata(source_path, archive_name, priority_index)
+        priority = normalize_priority(metadata.get("priority"))
+        score = get_metadata_priority_score(metadata)
+        state_key = normalize_path(source_path)
+        index_entry = index.get("files", {}).get(state_key, {})
+
+        if priority_policy and not is_file_eligible_for_backup(metadata, index_entry, now):
+            entry = build_not_eligible_snapshot_entry(
+                source_path,
+                archive_name,
+                metadata,
+                index_entry
+            )
+            files.append(entry)
+            increment_status_count(status_counts, entry["status"])
+            log_backup_decision(
+                "INFO",
+                f"Arquivo ignorado, ainda nao elegivel pela politica: {source_path}"
+            )
+
+            if progress_callback:
+                progress_callback(item_index, total_entries, archive_name)
+
+            continue
+
+        if priority_policy and is_dev_mode_enabled() and index_entry.get("last_backup_at"):
+            log_backup_decision(
+                "DEV MODE",
+                f"Arquivo elegivel em intervalo reduzido: {os.path.basename(source_path)}"
+            )
+
+        try:
+            stat_result = os.stat(source_path)
+            file_hash = calculate_file_hash(source_path)
+        except OSError as error:
+            entry = build_incremental_snapshot_entry(
+                source_path=source_path,
+                archive_name=archive_name,
+                file_hash="",
+                object_path="",
+                priority=priority,
+                score=score,
+                size=0,
+                modified_at="",
+                status="error",
+                error=str(error)
+            )
+            files.append(entry)
+            warnings.append({"path": source_path, "error": str(error)})
+            increment_status_count(status_counts, "error")
+            log_backup_decision(
+                "ERROR",
+                f"Falha ao calcular hash: {source_path} ({error})"
+            )
+
+            if progress_callback:
+                progress_callback(item_index, total_entries, archive_name)
+
+            continue
+
+        object_path = build_object_relative_path(file_hash)
+        object_abs_path = resolve_storage_relative_path(
+            storage_paths["root"],
+            object_path
+        )
+        previous_hash = index_entry.get("last_hash")
+
+        if previous_hash == file_hash and os.path.exists(object_abs_path):
+            status = "skipped_unchanged"
+            log_backup_decision(
+                "INFO",
+                f"Arquivo sem alteracao, mantendo referencia: {source_path}"
+            )
+        elif os.path.exists(object_abs_path):
+            status = "referenced_existing_object"
+            skipped_duplicates.append(
+                {
+                    "path": source_path,
+                    "hash": file_hash,
+                    "reason": "Hash ja existente no armazenamento incremental."
+                }
+            )
+            log_backup_decision(
+                "INFO",
+                f"Hash ja existente, criando apenas referencia: {source_path}"
+            )
+        else:
+            try:
+                store_incremental_object(source_path, object_abs_path)
+                status = "stored_new_object"
+                log_backup_decision("INFO", f"Novo objeto armazenado: {source_path}")
+            except OSError as error:
+                entry = build_incremental_snapshot_entry(
+                    source_path=source_path,
+                    archive_name=archive_name,
+                    file_hash=file_hash,
+                    object_path=object_path,
+                    priority=priority,
+                    score=score,
+                    size=stat_result.st_size,
+                    modified_at=format_stat_modified_at(stat_result),
+                    status="error",
+                    error=str(error)
+                )
+                files.append(entry)
+                warnings.append({"path": source_path, "error": str(error)})
+                increment_status_count(status_counts, "error")
+                log_backup_decision(
+                    "ERROR",
+                    f"Falha ao armazenar objeto: {source_path} ({error})"
+                )
+
+                if progress_callback:
+                    progress_callback(item_index, total_entries, archive_name)
+
+                continue
+
+        update_object_index_entry(
+            index,
+            file_hash,
+            object_path,
+            source_path,
+            stat_result.st_size,
+            now
+        )
+        update_file_index_entry(
+            index,
+            source_path,
+            archive_name,
+            file_hash,
+            object_path,
+            priority,
+            stat_result,
+            now
+        )
+        entry = build_incremental_snapshot_entry(
+            source_path=source_path,
+            archive_name=archive_name,
+            file_hash=file_hash,
+            object_path=object_path,
+            priority=priority,
+            score=score,
+            size=stat_result.st_size,
+            modified_at=format_stat_modified_at(stat_result),
+            status=status,
+        )
+        files.append(entry)
+        increment_status_count(status_counts, status)
+
+        if progress_callback:
+            progress_callback(item_index, total_entries, archive_name)
+
+    refresh_object_reference_counts(index)
+    snapshot = {
+        "snapshot_id": snapshot_id,
+        "created_at": now.isoformat(timespec="seconds"),
+        "trigger": trigger,
+        "storage_root": storage_paths["root"],
+        "index_path": storage_paths["index"],
+        "total_files": len(files),
+        "status_counts": status_counts,
+        "files": files,
+    }
+
+    save_json_atomic(snapshot_path, snapshot)
+    save_incremental_index(backup_destination, index)
+
+    return {
+        "storage_mode": "incremental",
+        "snapshot_id": snapshot_id,
+        "snapshot_path": snapshot_path,
+        "backup_path": snapshot_path,
+        "backup_folder": os.path.dirname(snapshot_path),
+        "backup_storage": storage_paths["root"],
+        "index_path": storage_paths["index"],
+        "files": files,
+        "file_snapshot": build_history_snapshot_from_incremental_files(
+            files,
+            snapshot_path
+        ),
+        "status_counts": status_counts,
+        "warnings": warnings,
+        "skipped_duplicates": skipped_duplicates,
+        "total_files": len(files),
+        "objects_stored": status_counts.get("stored_new_object", 0),
+        "objects_referenced": status_counts.get("referenced_existing_object", 0),
+        "files_unchanged": status_counts.get("skipped_unchanged", 0),
+        "files_not_eligible": status_counts.get("skipped_not_eligible", 0),
+        "errors": status_counts.get("error", 0),
+    }
 
 
 def create_versioned_backup(
@@ -645,86 +1350,69 @@ def run_backup_job(
 
     ensure_not_cancelled(cancel_callback)
 
-    manifest = build_backup_manifest(
-        directories=directories,
-        backup_destination=backup_destination,
-        config=config
-    )
-    current_snapshot = build_file_snapshot(manifest)
     previous_snapshot = get_latest_history_snapshot()
-    file_changes = build_file_changes(previous_snapshot, current_snapshot)
-    deduplication_enabled = is_deduplication_enabled(config)
-    skipped_duplicates = []
-    pre_backup_warnings = []
-
-    if deduplication_enabled:
-        manifest, skipped_duplicates, pre_backup_warnings = deduplicate_manifest(manifest)
-
-    total_files = len(manifest)
 
     if progress_callback:
-        if deduplication_enabled:
-            progress_callback(
-                40,
-                (
-                    f"{total_files} arquivo(s) unicos prontos para compactacao. "
-                    f"{len(skipped_duplicates)} duplicado(s) ignorado(s)."
-                )
-            )
-        else:
-            progress_callback(40, f"{total_files} arquivo(s) prontos para compactacao.")
+        progress_callback(40, "Criando snapshot incremental...")
 
-    def on_zip_progress(processed, total, current_entry):
+    def on_incremental_progress(processed, total, current_entry):
         if not progress_callback:
             return
 
         if total <= 0:
-            progress_callback(95, "Finalizando backup...")
+            progress_callback(95, "Finalizando backup incremental...")
             return
 
         percent = 40 + int((processed / total) * 55)
         progress_callback(
             min(percent, 95),
-            f"Compactando: {processed}/{total}"
+            f"Processando objetos: {processed}/{total}"
         )
 
-    backup_path, warnings = create_versioned_backup(
+    incremental_result = run_incremental_backup(
         directories=directories,
         backup_destination=backup_destination,
         config=config,
-        manifest=manifest,
-        backup_name=backup_name,
-        progress_callback=on_zip_progress,
+        trigger=trigger,
+        progress_callback=on_incremental_progress,
         cancel_callback=cancel_callback
     )
-    warnings = pre_backup_warnings + warnings
-    backup_folder = os.path.dirname(backup_path)
+    current_snapshot = incremental_result["file_snapshot"]
+    file_changes = build_file_changes(previous_snapshot, current_snapshot)
     completed_at = datetime.now()
 
     history_entry = {
         "timestamp": completed_at.strftime("%d/%m/%Y %H:%M:%S"),
-        "backup_file": os.path.basename(backup_path),
+        "backup_file": os.path.basename(incremental_result["snapshot_path"]),
         "backup_name": backup_name or "",
         "backup_description": backup_description or "",
-        "backup_path": backup_path,
-        "backup_folder": backup_folder,
-        "total_files": total_files,
-        "duplicate_files_skipped": len(skipped_duplicates),
+        "backup_path": incremental_result["snapshot_path"],
+        "backup_folder": incremental_result["backup_folder"],
+        "snapshot_id": incremental_result["snapshot_id"],
+        "snapshot_path": incremental_result["snapshot_path"],
+        "backup_storage": incremental_result["backup_storage"],
+        "storage_mode": "incremental",
+        "total_files": incremental_result["total_files"],
+        "objects_stored": incremental_result["objects_stored"],
+        "objects_referenced": incremental_result["objects_referenced"],
+        "files_unchanged": incremental_result["files_unchanged"],
+        "files_not_eligible": incremental_result["files_not_eligible"],
+        "duplicate_files_skipped": len(incremental_result["skipped_duplicates"]),
         "trigger": trigger,
         "user": username or "sistema",
         "user_role": user_role or "system",
         "file_changes": file_changes,
         "file_snapshot": current_snapshot,
-        "warnings_count": len(warnings)
+        "status_counts": incremental_result["status_counts"],
+        "warnings_count": len(incremental_result["warnings"])
     }
     append_history(history_entry)
-    update_priority_state_after_backup(manifest, current_snapshot, completed_at)
 
     if progress_callback:
-        progress_callback(100, "Backup concluido.")
+        progress_callback(100, "Backup incremental concluido.")
 
-    history_entry["warnings"] = warnings
-    history_entry["skipped_duplicates"] = skipped_duplicates
+    history_entry["warnings"] = incremental_result["warnings"]
+    history_entry["skipped_duplicates"] = incremental_result["skipped_duplicates"]
 
     return history_entry
 
@@ -769,101 +1457,96 @@ def run_priority_backup_job(
 
     ensure_not_cancelled(cancel_callback)
 
-    manifest, priority_decisions, priority_index = build_priority_backup_manifest(
+    previous_snapshot = get_latest_history_snapshot()
+    priority_index = load_dataset_priority_index()
+    incremental_index = load_incremental_index(backup_destination)
+    eligible_manifest, priority_decisions, priority_index = build_priority_eligible_manifest(
         directories=directories,
         config=config,
         backup_destination=backup_destination,
-        now=started_at
+        now=started_at,
+        priority_index=priority_index,
+        index=incremental_index,
     )
 
-    if not manifest:
+    if not eligible_manifest:
         if progress_callback:
-            progress_callback(100, "Nenhum arquivo vencido pela politica de prioridade.")
+            progress_callback(100, "Nenhum arquivo elegivel pela politica de prioridade.")
 
         return {
             "skipped": True,
-            "reason": "Nenhum arquivo vencido pela politica de prioridade.",
+            "reason": "Nenhum arquivo elegivel pela politica de prioridade.",
             "trigger": trigger,
             "priority_decisions": priority_decisions,
         }
 
-    current_snapshot = build_file_snapshot(manifest)
-    previous_snapshot = get_latest_history_snapshot()
-    file_changes = build_file_changes(previous_snapshot, current_snapshot)
-    deduplication_enabled = is_deduplication_enabled(config)
-    skipped_duplicates = []
-    pre_backup_warnings = []
-
-    if deduplication_enabled:
-        manifest, skipped_duplicates, pre_backup_warnings = deduplicate_manifest(manifest)
-
-    total_files = len(manifest)
-
     if progress_callback:
-        progress_callback(
-            40,
-            f"{total_files} arquivo(s) vencido(s) pela prioridade."
-        )
+        progress_callback(40, "Criando snapshot incremental por prioridade.")
 
-    def on_zip_progress(processed, total, current_entry):
+    def on_incremental_progress(processed, total, current_entry):
         if not progress_callback:
             return
 
         if total <= 0:
-            progress_callback(95, "Finalizando backup por prioridade...")
+            progress_callback(95, "Finalizando snapshot por prioridade...")
             return
 
         percent = 40 + int((processed / total) * 55)
         progress_callback(
             min(percent, 95),
-            f"Compactando por prioridade: {processed}/{total}"
+            f"Avaliando prioridade: {processed}/{total}"
         )
 
-    backup_path, warnings = create_versioned_backup(
+    incremental_result = run_incremental_backup(
         directories=directories,
         backup_destination=backup_destination,
         config=config,
-        manifest=manifest,
-        backup_name="prioridade",
-        progress_callback=on_zip_progress,
+        now=started_at,
+        manifest=eligible_manifest,
+        priority_policy=True,
+        priority_index=priority_index,
+        trigger=trigger,
+        progress_callback=on_incremental_progress,
         cancel_callback=cancel_callback
     )
-    warnings = pre_backup_warnings + warnings
-    backup_folder = os.path.dirname(backup_path)
+    current_snapshot = incremental_result["file_snapshot"]
+    file_changes = build_file_changes(previous_snapshot, current_snapshot)
     completed_at = datetime.now()
 
     history_entry = {
         "timestamp": completed_at.strftime("%d/%m/%Y %H:%M:%S"),
-        "backup_file": os.path.basename(backup_path),
+        "backup_file": os.path.basename(incremental_result["snapshot_path"]),
         "backup_name": "prioridade",
         "backup_description": "Backup automatico pela politica de prioridade.",
-        "backup_path": backup_path,
-        "backup_folder": backup_folder,
-        "total_files": total_files,
-        "duplicate_files_skipped": len(skipped_duplicates),
+        "backup_path": incremental_result["snapshot_path"],
+        "backup_folder": incremental_result["backup_folder"],
+        "snapshot_id": incremental_result["snapshot_id"],
+        "snapshot_path": incremental_result["snapshot_path"],
+        "backup_storage": incremental_result["backup_storage"],
+        "storage_mode": "incremental",
+        "total_files": incremental_result["total_files"],
+        "objects_stored": incremental_result["objects_stored"],
+        "objects_referenced": incremental_result["objects_referenced"],
+        "files_unchanged": incremental_result["files_unchanged"],
+        "files_not_eligible": incremental_result["files_not_eligible"],
+        "duplicate_files_skipped": len(incremental_result["skipped_duplicates"]),
         "trigger": trigger,
         "user": username or "sistema",
         "user_role": user_role or "system",
         "file_changes": file_changes,
         "file_snapshot": current_snapshot,
-        "warnings_count": len(warnings),
-        "partial_backup": True,
+        "status_counts": incremental_result["status_counts"],
+        "warnings_count": len(incremental_result["warnings"]),
         "priority_policy": True,
         "priority_decisions": priority_decisions,
     }
     append_history(history_entry)
-    update_priority_state_after_backup(
-        manifest,
-        current_snapshot,
-        completed_at,
-        priority_index=priority_index
-    )
 
     if progress_callback:
-        progress_callback(100, "Backup por prioridade concluido.")
+        progress_callback(100, "Backup incremental por prioridade concluido.")
 
-    history_entry["warnings"] = warnings
-    history_entry["skipped_duplicates"] = skipped_duplicates
+    history_entry["warnings"] = incremental_result["warnings"]
+    history_entry["skipped_duplicates"] = incremental_result["skipped_duplicates"]
 
     return history_entry
 
@@ -876,14 +1559,41 @@ def save_schedule(schedule):
     save_json(SCHEDULE_PATH, schedule)
 
 
+def parse_schedule_time(value):
+    if not value:
+        return None
+
+    try:
+        return datetime.strptime(str(value).strip(), "%H:%M").time()
+    except ValueError:
+        return None
+
+
+def is_time_within_window(current_time, start_time, end_time):
+    if start_time is None or end_time is None:
+        return False
+
+    if start_time <= end_time:
+        return start_time <= current_time <= end_time
+
+    return current_time >= start_time or current_time <= end_time
+
+
 def is_schedule_due(now=None):
     now = now or datetime.now()
     schedule = load_schedule()
 
-    if not schedule or not schedule.get("time"):
+    if not schedule:
         return False
 
-    if now.strftime("%H:%M") != schedule.get("time"):
+    start_time = parse_schedule_time(
+        schedule.get("time_start") or schedule.get("time")
+    )
+    end_time = parse_schedule_time(
+        schedule.get("time_end") or schedule.get("time")
+    )
+
+    if not is_time_within_window(now.time(), start_time, end_time):
         return False
 
     last_run_at = schedule.get("last_run_at")
@@ -895,14 +1605,6 @@ def is_schedule_due(now=None):
         last_run = datetime.fromisoformat(last_run_at)
     except ValueError:
         return True
-
-    frequency = schedule.get("frequency", "Diariamente")
-
-    if frequency == "Semanalmente":
-        return last_run.isocalendar()[:2] != now.isocalendar()[:2]
-
-    if frequency == "Mensalmente":
-        return (last_run.year, last_run.month) != (now.year, now.month)
 
     return last_run.date() != now.date()
 
@@ -979,6 +1681,272 @@ def build_recovered_folder_path(path):
         counter += 1
 
     return candidate_path
+
+
+def get_snapshot_storage_root(snapshot_path, snapshot):
+    storage_root = snapshot.get("storage_root", "")
+
+    if storage_root:
+        if os.path.isabs(storage_root):
+            return normalize_path(storage_root)
+
+        return normalize_path(os.path.join(os.path.dirname(snapshot_path), storage_root))
+
+    snapshots_directory = os.path.dirname(normalize_path(snapshot_path))
+    return os.path.dirname(snapshots_directory)
+
+
+def build_safe_restore_path(restore_destination, archive_name, fallback_name):
+    parts = [
+        part
+        for part in normalize_archive_name(archive_name).split("/")
+        if part and part not in {".", ".."}
+    ]
+
+    if not parts:
+        parts = [fallback_name or "arquivo_restaurado"]
+
+    parts = [part.replace(":", "") for part in parts]
+    destination = normalize_path(restore_destination)
+    target_path = normalize_path(os.path.join(destination, *parts))
+
+    try:
+        if os.path.commonpath([destination, target_path]) != destination:
+            return os.path.join(destination, parts[-1])
+    except ValueError:
+        return os.path.join(destination, parts[-1])
+
+    return target_path
+
+
+def restore_snapshot(
+    snapshot_path,
+    restore_destination,
+    overwrite=False,
+    conflict_strategy="rename"
+):
+    snapshot_path = normalize_path(snapshot_path)
+    restore_destination = normalize_path(restore_destination)
+    snapshot = load_json(snapshot_path, {})
+
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("files"), list):
+        raise ValueError("Snapshot incremental invalido.")
+
+    storage_root = get_snapshot_storage_root(snapshot_path, snapshot)
+    results = []
+
+    for file_data in snapshot.get("files", []):
+        archive_name = file_data.get("archive_name", "")
+        object_path = file_data.get("object_path", "")
+        file_hash = file_data.get("hash") or file_data.get("file_hash", "")
+        target_path = build_safe_restore_path(
+            restore_destination,
+            archive_name,
+            file_data.get("file_name", "")
+        )
+        original_target_path = target_path
+        result = {
+            "name": file_data.get("file_name", ""),
+            "archive_name": archive_name,
+            "target_path": target_path,
+            "status": "error",
+            "message": "",
+            "backup_path": snapshot_path,
+            "object_path": object_path,
+        }
+
+        if file_data.get("status") == "error" or not object_path or not file_hash:
+            result["status"] = "not_found"
+            result["message"] = "Entrada sem objeto restauravel no snapshot."
+            results.append(result)
+            continue
+
+        object_abs_path = resolve_storage_relative_path(storage_root, object_path)
+
+        if not os.path.exists(object_abs_path):
+            result["status"] = "not_found"
+            result["message"] = "Objeto nao encontrado no armazenamento incremental."
+            results.append(result)
+            log_backup_decision("ERROR", f"Objeto nao encontrado: {object_abs_path}")
+            continue
+
+        try:
+            if os.path.exists(target_path):
+                is_identical = (
+                    os.path.isfile(target_path)
+                    and calculate_file_hash(target_path) == file_hash
+                )
+
+                if is_identical and not overwrite:
+                    result["status"] = "identical_existing"
+                    result["message"] = "Arquivo existente tem o mesmo conteudo."
+                    results.append(result)
+                    continue
+
+                if not overwrite:
+                    if conflict_strategy == "rename":
+                        target_path = build_recovered_file_path(target_path)
+                        result["target_path"] = target_path
+                    else:
+                        result["status"] = "skipped_existing"
+                        result["message"] = "Destino ja existe."
+                        results.append(result)
+                        continue
+
+            target_directory = os.path.dirname(target_path)
+
+            if target_directory:
+                os.makedirs(target_directory, exist_ok=True)
+
+            shutil.copy2(object_abs_path, target_path)
+            modified_at = parse_iso_datetime(file_data.get("modified_at", ""))
+
+            if modified_at:
+                timestamp = modified_at.timestamp()
+                os.utime(target_path, (timestamp, timestamp))
+
+            if target_path != original_target_path:
+                result["status"] = "restored_renamed"
+                result["message"] = "Arquivo restaurado com outro nome."
+            else:
+                result["status"] = "restored"
+                result["message"] = "Arquivo restaurado."
+
+            log_backup_decision("INFO", f"Arquivo restaurado do snapshot: {target_path}")
+        except OSError as error:
+            result["message"] = str(error)
+            log_backup_decision(
+                "ERROR",
+                f"Falha ao restaurar {archive_name}: {error}"
+            )
+
+        results.append(result)
+
+    return results
+
+
+def export_snapshot_to_zip(snapshot_path, destination_zip_path):
+    snapshot_path = normalize_path(snapshot_path)
+    destination_zip_path = normalize_path(destination_zip_path)
+    snapshot = load_json(snapshot_path, {})
+
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("files"), list):
+        raise ValueError("Snapshot incremental invalido.")
+
+    storage_root = get_snapshot_storage_root(snapshot_path, snapshot)
+    destination_directory = os.path.dirname(destination_zip_path)
+
+    if destination_directory:
+        os.makedirs(destination_directory, exist_ok=True)
+
+    warnings = []
+    exported_count = 0
+
+    with zipfile.ZipFile(destination_zip_path, "w", compression=ZIP_COMPRESSION_METHOD) as archive:
+        for file_data in snapshot.get("files", []):
+            archive_name = normalize_archive_name(file_data.get("archive_name", ""))
+            object_path = file_data.get("object_path", "")
+            file_hash = file_data.get("hash") or file_data.get("file_hash", "")
+
+            if not archive_name or not object_path or not file_hash:
+                continue
+
+            if file_data.get("status") == "error":
+                continue
+
+            object_abs_path = resolve_storage_relative_path(storage_root, object_path)
+
+            if not os.path.exists(object_abs_path):
+                warnings.append(
+                    {
+                        "archive_name": archive_name,
+                        "error": "Objeto nao encontrado no armazenamento incremental."
+                    }
+                )
+                log_backup_decision(
+                    "ERROR",
+                    f"Objeto ausente durante exportacao do ZIP: {object_abs_path}"
+                )
+                continue
+
+            try:
+                archive.write(object_abs_path, arcname=archive_name)
+                exported_count += 1
+            except OSError as error:
+                warnings.append(
+                    {
+                        "archive_name": archive_name,
+                        "error": str(error)
+                    }
+                )
+                log_backup_decision(
+                    "ERROR",
+                    f"Falha ao adicionar arquivo ao ZIP exportado: {archive_name} ({error})"
+                )
+
+    return {
+        "zip_path": destination_zip_path,
+        "files_exported": exported_count,
+        "warnings": warnings,
+    }
+
+
+def find_snapshot_file_entry(file_snapshot, archive_name):
+    target_name = normalize_archive_name(archive_name)
+
+    if not target_name or not isinstance(file_snapshot, dict):
+        return None
+
+    direct_entry = file_snapshot.get(target_name)
+
+    if direct_entry:
+        return direct_entry
+
+    target_name_lower = target_name.lower()
+
+    for current_name, file_data in file_snapshot.items():
+        if normalize_archive_name(current_name).lower() == target_name_lower:
+            return file_data
+
+    return None
+
+
+def find_incremental_history_object(entry, archive_name):
+    if not isinstance(entry, dict) or entry.get("storage_mode") != "incremental":
+        return None
+
+    file_data = find_snapshot_file_entry(entry.get("file_snapshot", {}), archive_name)
+
+    if not file_data:
+        return None
+
+    object_path = file_data.get("object_path", "")
+
+    if not object_path:
+        return None
+
+    storage_root = entry.get("backup_storage", "")
+    snapshot_path = entry.get("snapshot_path") or entry.get("backup_path", "")
+
+    if not storage_root and snapshot_path:
+        snapshot = load_json(snapshot_path, {})
+        storage_root = get_snapshot_storage_root(snapshot_path, snapshot)
+
+    if not storage_root:
+        return None
+
+    object_abs_path = resolve_storage_relative_path(storage_root, object_path)
+
+    if not os.path.exists(object_abs_path):
+        return None
+
+    return {
+        "storage_mode": "incremental",
+        "object_path": object_abs_path,
+        "snapshot_path": snapshot_path,
+        "history_entry": entry,
+        "file_data": file_data,
+    }
 
 
 def iter_history_backup_paths(entry, backup_destination=None):
@@ -1076,6 +2044,12 @@ def find_backup_containing_archive(
         ]
 
     for history_index, entry in reversed(indexed_history):
+        incremental_source = find_incremental_history_object(entry, archive_name)
+
+        if incremental_source:
+            incremental_source["history_index"] = history_index
+            return incremental_source
+
         for backup_path in iter_history_backup_paths(entry, backup_destination):
             try:
                 with zipfile.ZipFile(backup_path, "r") as archive:
@@ -1143,7 +2117,41 @@ def inspect_restore_change(
         result["message"] = "Arquivo nao encontrado em backups anteriores."
         return result
 
-    result["backup_path"] = backup_source["backup_path"]
+    result["backup_path"] = (
+        backup_source.get("backup_path")
+        or backup_source.get("snapshot_path")
+        or backup_source.get("object_path", "")
+    )
+
+    if backup_source.get("storage_mode") == "incremental":
+        if not os.path.exists(target_path):
+            result["status"] = "target_missing"
+            result["message"] = "Destino livre."
+            return result
+
+        if not os.path.isfile(target_path):
+            result["status"] = "different_existing"
+            result["message"] = "Ja existe um item no destino com este nome."
+            return result
+
+        try:
+            backup_hash = (
+                backup_source.get("file_data", {}).get("file_hash")
+                or calculate_file_hash(backup_source["object_path"])
+            )
+            existing_hash = calculate_file_hash(target_path)
+        except OSError as error:
+            result["message"] = str(error)
+            return result
+
+        if backup_hash == existing_hash:
+            result["status"] = "identical_existing"
+            result["message"] = "Arquivo existente tem o mesmo conteudo."
+        else:
+            result["status"] = "different_existing"
+            result["message"] = "Arquivo existente tem conteudo diferente."
+
+        return result
 
     if not os.path.exists(target_path):
         result["status"] = "target_missing"
@@ -1231,7 +2239,66 @@ def restore_recoverable_change(
         result["message"] = "Arquivo nao encontrado em backups anteriores."
         return result
 
-    result["backup_path"] = backup_source["backup_path"]
+    result["backup_path"] = (
+        backup_source.get("backup_path")
+        or backup_source.get("snapshot_path")
+        or backup_source.get("object_path", "")
+    )
+
+    if backup_source.get("storage_mode") == "incremental":
+        object_path = backup_source["object_path"]
+
+        try:
+            if os.path.exists(target_path):
+                is_identical = False
+
+                if os.path.isfile(target_path):
+                    existing_hash = calculate_file_hash(target_path)
+                    backup_hash = (
+                        backup_source.get("file_data", {}).get("file_hash")
+                        or calculate_file_hash(object_path)
+                    )
+                    is_identical = existing_hash == backup_hash
+
+                if is_identical and not overwrite:
+                    result["status"] = "identical_existing"
+                    result["message"] = "Arquivo existente tem o mesmo conteudo."
+                    return result
+
+                if not overwrite:
+                    if conflict_strategy == "rename":
+                        target_path = build_recovered_file_path(target_path)
+                        result["target_path"] = target_path
+                    else:
+                        result["status"] = "skipped_existing"
+                        result["message"] = "Destino ja existe."
+                        return result
+
+            target_directory = os.path.dirname(target_path)
+
+            if target_directory:
+                os.makedirs(target_directory, exist_ok=True)
+
+            shutil.copy2(object_path, target_path)
+            modified_at = parse_iso_datetime(
+                backup_source.get("file_data", {}).get("modified_at", "")
+            )
+
+            if modified_at:
+                timestamp = modified_at.timestamp()
+                os.utime(target_path, (timestamp, timestamp))
+        except OSError as error:
+            result["message"] = str(error)
+            return result
+
+        if target_path != original_target_path:
+            result["status"] = "restored_renamed"
+            result["message"] = "Arquivo recuperado com outro nome."
+        else:
+            result["status"] = "restored"
+            result["message"] = "Arquivo recuperado."
+
+        return result
 
     try:
         with zipfile.ZipFile(backup_source["backup_path"], "r") as archive:
@@ -1333,6 +2400,12 @@ def restore_deleted_changes(*args, **kwargs):
 def get_latest_backup_path(backup_destination=None):
     base_directory = resolve_configured_path(backup_destination or get_backup_destination())
 
+    for entry in reversed(load_history()):
+        backup_path = entry.get("backup_path") or entry.get("snapshot_path")
+
+        if backup_path and os.path.exists(backup_path):
+            return normalize_path(backup_path)
+
     if not os.path.exists(base_directory):
         return None
 
@@ -1340,7 +2413,12 @@ def get_latest_backup_path(backup_destination=None):
 
     for root, _, names in os.walk(base_directory):
         for name in names:
-            if name.lower().endswith(".zip"):
+            lower_name = name.lower()
+
+            if lower_name.endswith(".zip") or (
+                lower_name.endswith(".json")
+                and os.path.basename(root).lower() == SNAPSHOTS_DIRNAME
+            ):
                 files.append(os.path.join(root, name))
 
     if not files:
