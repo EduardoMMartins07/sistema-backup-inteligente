@@ -1074,5 +1074,385 @@
             "llm_confidence": 0.9,
             "decision_tree": "{\"frequent_access\": false, \"frequent_modifications\": false, \"high_value_extension\": true, \"important_context\": false, \"important_name\": false, \"llm_acessos_relevantes\": false, \"llm_contexto_critico\": false, \"llm_modificacoes_relevantes\": false, \"llm_nome_critico\": false, \"llm_tipo_critico\": true, \"low_value_context\": false, \"low_value_extension\": false, \"system_or_program_extension\": false}"
         }
+    },
+    "03d06e35b137a01eb0dd276977c8f69a5ec0d1378eb5efebf79b7f06a46d6f51": {
+        "created_at": "2026-05-10T15:21:08",
+        "result": {
+            "priority": "media",
+            "priority_score": 55,
+            "confidence": 0.8,
+            "reasons": [
+                "extensao com valor potencial para backup",
+                "Extensão de arquivo classificada como de alto valor.",
+                "Poucas modificações observadas.",
+                "Poucos acessos observados.",
+                "Nome e contexto do diretório não classificados como críticos."
+            ],
+            "decisions": {
+                "frequent_modifications": false,
+                "high_value_extension": true,
+                "system_or_program_extension": false,
+                "frequent_access": false,
+                "important_name": false,
+                "important_context": false,
+                "low_value_extension": false,
+                "low_value_context": false,
+                "llm_modificacoes_relevantes": false,
+                "llm_tipo_critico": true,
+                "llm_acessos_relevantes": false,
+                "llm_nome_critico": false,
+                "llm_contexto_critico": false
+            },
+            "classification_source": "gemini_api",
+            "llm_model": "gemini-2.5-flash",
+            "llm_error": "",
+            "priority_reason": "extensao com valor potencial para backup; Extensão de arquivo classificada como de alto valor.; Poucas modificações observadas.; Poucos acessos observados.; Nome e contexto do diretório não classificados como críticos.",
+            "important": 1,
+            "backup_policy": "backup_a_cada_2_dias",
+            "llm_confidence": 0.8,
+            "decision_tree": "{\"frequent_access\": false, \"frequent_modifications\": false, \"high_value_extension\": true, \"important_context\": false, \"important_name\": false, \"llm_acessos_relevantes\": false, \"llm_contexto_critico\": false, \"llm_modificacoes_relevantes\": false, \"llm_nome_critico\": false, \"llm_tipo_critico\": true, \"low_value_context\": false, \"low_value_extension\": false, \"system_or_program_extension\": false}"
+        }
+    },
+    "7f6eeebf89726b1bec457f15b9c877dfb96a13da87800d5029ad3f018c579e4c": {
+        "created_at": "2026-05-10T15:21:25",
+        "result": {
+            "priority": "media",
+            "priority_score": 55,
+            "confidence": 0.95,
+            "reasons": [
+                "extensao com valor potencial para backup",
+                "arquivo acessado varias vezes entre varreduras",
+                "Arquivo não modificado recentemente.",
+                "Nome indica arquivo temporário/saída.",
+                "Baixa quantidade de acessos.",
+                "Localizado em diretório de Downloads."
+            ],
+            "decisions": {
+                "frequent_modifications": false,
+                "high_value_extension": true,
+                "system_or_program_extension": false,
+                "frequent_access": true,
+                "important_name": false,
+                "important_context": false,
+                "low_value_extension": false,
+                "low_value_context": false,
+                "llm_modificacoes_relevantes": false,
+                "llm_tipo_critico": false,
+                "llm_acessos_relevantes": false,
+                "llm_nome_critico": false,
+                "llm_contexto_critico": false
+            },
+            "classification_source": "gemini_api",
+            "llm_model": "gemini-2.5-flash",
+            "llm_error": "",
+            "priority_reason": "extensao com valor potencial para backup; arquivo acessado varias vezes entre varreduras; Arquivo não modificado recentemente.; Nome indica arquivo temporário/saída.; Baixa quantidade de acessos.; Localizado em diretório de Downloads.",
+            "important": 1,
+            "backup_policy": "backup_a_cada_2_dias",
+            "llm_confidence": 0.95,
+            "decision_tree": "{\"frequent_access\": true, \"frequent_modifications\": false, \"high_value_extension\": true, \"important_context\": false, \"important_name\": false, \"llm_acessos_relevantes\": false, \"llm_contexto_critico\": false, \"llm_modificacoes_relevantes\": false, \"llm_nome_critico\": false, \"llm_tipo_critico\": false, \"low_value_context\": false, \"low_value_extension\": false, \"system_or_program_extension\": false}"
+        }
+    },
+    "32a08a8d27c3fa60df1744131275b2605de97a859ad1ed7c584728dc11f1e0d5": {
+        "created_at": "2026-05-10T15:21:44",
+        "result": {
+            "priority": "media",
+            "priority_score": 55,
+            "confidence": 0.75,
+            "reasons": [
+                "extensao com valor potencial para backup",
+                "O tipo de arquivo (PDF) é geralmente associado a documentos importantes.",
+                "O nome do arquivo contém 'certificado', indicando alta relevância.",
+                "A baixa quantidade de modificações e acessos, e o contexto de 'Downloads', moderam a prioridade."
+            ],
+            "decisions": {
+                "frequent_modifications": false,
+                "high_value_extension": true,
+                "system_or_program_extension": false,
+                "frequent_access": false,
+                "important_name": false,
+                "important_context": false,
+                "low_value_extension": false,
+                "low_value_context": false,
+                "llm_modificacoes_relevantes": false,
+                "llm_tipo_critico": true,
+                "llm_acessos_relevantes": false,
+                "llm_nome_critico": true,
+                "llm_contexto_critico": false
+            },
+            "classification_source": "gemini_api",
+            "llm_model": "gemini-2.5-flash",
+            "llm_error": "",
+            "priority_reason": "extensao com valor potencial para backup; O tipo de arquivo (PDF) é geralmente associado a documentos importantes.; O nome do arquivo contém 'certificado', indicando alta relevância.; A baixa quantidade de modificações e acessos, e o contexto de 'Downloads', moderam a prioridade.",
+            "important": 1,
+            "backup_policy": "backup_a_cada_2_dias",
+            "llm_confidence": 0.75,
+            "decision_tree": "{\"frequent_access\": false, \"frequent_modifications\": false, \"high_value_extension\": true, \"important_context\": false, \"important_name\": false, \"llm_acessos_relevantes\": false, \"llm_contexto_critico\": false, \"llm_modificacoes_relevantes\": false, \"llm_nome_critico\": true, \"llm_tipo_critico\": true, \"low_value_context\": false, \"low_value_extension\": false, \"system_or_program_extension\": false}"
+        }
+    },
+    "2822520b3739b95851dcc20e0503c97482c4860f26fcdd0d0a4b70bc90ea8762": {
+        "created_at": "2026-05-10T15:22:27",
+        "result": {
+            "priority": "media",
+            "priority_score": 55,
+            "confidence": 0.76,
+            "reasons": [
+                "arquivo modificado recentemente ou varias vezes",
+                "extensao com valor potencial para backup",
+                "Tipo de arquivo (PDF) é crítico.",
+                "Nome do arquivo sugere importância.",
+                "Diretório 'Downloads' reduz a prioridade.",
+                "Sem modificações ou acessos recentes observados."
+            ],
+            "decisions": {
+                "frequent_modifications": true,
+                "high_value_extension": true,
+                "system_or_program_extension": false,
+                "frequent_access": false,
+                "important_name": false,
+                "important_context": false,
+                "low_value_extension": false,
+                "low_value_context": false,
+                "llm_modificacoes_relevantes": false,
+                "llm_tipo_critico": true,
+                "llm_acessos_relevantes": false,
+                "llm_nome_critico": true,
+                "llm_contexto_critico": false
+            },
+            "classification_source": "gemini_api",
+            "llm_model": "gemini-2.5-flash",
+            "llm_error": "",
+            "priority_reason": "arquivo modificado recentemente ou varias vezes; extensao com valor potencial para backup; Tipo de arquivo (PDF) é crítico.; Nome do arquivo sugere importância.; Diretório 'Downloads' reduz a prioridade.; Sem modificações ou acessos recentes observados.",
+            "important": 1,
+            "backup_policy": "backup_a_cada_2_dias",
+            "llm_confidence": 0.76,
+            "decision_tree": "{\"frequent_access\": false, \"frequent_modifications\": true, \"high_value_extension\": true, \"important_context\": false, \"important_name\": false, \"llm_acessos_relevantes\": false, \"llm_contexto_critico\": false, \"llm_modificacoes_relevantes\": false, \"llm_nome_critico\": true, \"llm_tipo_critico\": true, \"low_value_context\": false, \"low_value_extension\": false, \"system_or_program_extension\": false}"
+        }
+    },
+    "c9ee82629666d9f02cb82959698a68a2c257ecec25f636df324193fbe52b0050": {
+        "created_at": "2026-05-10T15:22:45",
+        "result": {
+            "priority": "baixa",
+            "priority_score": 28,
+            "confidence": 0.69,
+            "reasons": [
+                "arquivo modificado recentemente ou varias vezes",
+                "Tipo de arquivo (imagem) é considerado importante.",
+                "Nome do arquivo sugere conteúdo específico do usuário.",
+                "Baixa quantidade de modificações e acessos recentes.",
+                "Contexto de 'Downloads' pode indicar menor criticidade."
+            ],
+            "decisions": {
+                "frequent_modifications": true,
+                "high_value_extension": false,
+                "system_or_program_extension": false,
+                "frequent_access": false,
+                "important_name": false,
+                "important_context": false,
+                "low_value_extension": false,
+                "low_value_context": false,
+                "llm_modificacoes_relevantes": false,
+                "llm_tipo_critico": true,
+                "llm_acessos_relevantes": false,
+                "llm_nome_critico": true,
+                "llm_contexto_critico": false
+            },
+            "classification_source": "gemini_api",
+            "llm_model": "gemini-2.5-flash",
+            "llm_error": "",
+            "priority_reason": "arquivo modificado recentemente ou varias vezes; Tipo de arquivo (imagem) é considerado importante.; Nome do arquivo sugere conteúdo específico do usuário.; Baixa quantidade de modificações e acessos recentes.; Contexto de 'Downloads' pode indicar menor criticidade.",
+            "important": 0,
+            "backup_policy": "backup_semanal_7_dias",
+            "llm_confidence": 0.69,
+            "decision_tree": "{\"frequent_access\": false, \"frequent_modifications\": true, \"high_value_extension\": false, \"important_context\": false, \"important_name\": false, \"llm_acessos_relevantes\": false, \"llm_contexto_critico\": false, \"llm_modificacoes_relevantes\": false, \"llm_nome_critico\": true, \"llm_tipo_critico\": true, \"low_value_context\": false, \"low_value_extension\": false, \"system_or_program_extension\": false}"
+        }
+    },
+    "69e2fe9bb28d52c8cf70d5cefad9a55d6a7cec137caca6d1650d8806a802fb75": {
+        "created_at": "2026-05-10T15:22:57",
+        "result": {
+            "priority": "baixa",
+            "priority_score": 28,
+            "confidence": 0.9,
+            "reasons": [
+                "extensao com valor potencial para backup",
+                "Tipo de arquivo (spreadsheet) e nome ('Modelo') sugerem valor.",
+                "Poucas modificações e acessos recentes.",
+                "Diretório 'Downloads' indica arquivo temporário ou de menor prioridade."
+            ],
+            "decisions": {
+                "frequent_modifications": false,
+                "high_value_extension": true,
+                "system_or_program_extension": false,
+                "frequent_access": false,
+                "important_name": false,
+                "important_context": false,
+                "low_value_extension": false,
+                "low_value_context": false,
+                "llm_modificacoes_relevantes": false,
+                "llm_tipo_critico": true,
+                "llm_acessos_relevantes": false,
+                "llm_nome_critico": true,
+                "llm_contexto_critico": false
+            },
+            "classification_source": "gemini_api",
+            "llm_model": "gemini-2.5-flash",
+            "llm_error": "",
+            "priority_reason": "extensao com valor potencial para backup; Tipo de arquivo (spreadsheet) e nome ('Modelo') sugerem valor.; Poucas modificações e acessos recentes.; Diretório 'Downloads' indica arquivo temporário ou de menor prioridade.",
+            "important": 0,
+            "backup_policy": "backup_semanal_7_dias",
+            "llm_confidence": 0.9,
+            "decision_tree": "{\"frequent_access\": false, \"frequent_modifications\": false, \"high_value_extension\": true, \"important_context\": false, \"important_name\": false, \"llm_acessos_relevantes\": false, \"llm_contexto_critico\": false, \"llm_modificacoes_relevantes\": false, \"llm_nome_critico\": true, \"llm_tipo_critico\": true, \"low_value_context\": false, \"low_value_extension\": false, \"system_or_program_extension\": false}"
+        }
+    },
+    "f9e083853c0413ba7929afed132c6ee2d1aed52acc6da6eb52f9f925f5c0da9d": {
+        "created_at": "2026-05-10T15:23:08",
+        "result": {
+            "priority": "baixa",
+            "priority_score": 28,
+            "confidence": 0.69,
+            "reasons": [
+                "extensao com valor potencial para backup",
+                "Tipo de arquivo (PDF) é relevante",
+                "Diretório de Downloads sugere baixa prioridade",
+                "Nenhuma modificação ou acesso recente"
+            ],
+            "decisions": {
+                "frequent_modifications": false,
+                "high_value_extension": true,
+                "system_or_program_extension": false,
+                "frequent_access": false,
+                "important_name": false,
+                "important_context": false,
+                "low_value_extension": false,
+                "low_value_context": false,
+                "llm_modificacoes_relevantes": false,
+                "llm_tipo_critico": true,
+                "llm_acessos_relevantes": false,
+                "llm_nome_critico": false,
+                "llm_contexto_critico": false
+            },
+            "classification_source": "gemini_api",
+            "llm_model": "gemini-2.5-flash",
+            "llm_error": "",
+            "priority_reason": "extensao com valor potencial para backup; Tipo de arquivo (PDF) é relevante; Diretório de Downloads sugere baixa prioridade; Nenhuma modificação ou acesso recente",
+            "important": 0,
+            "backup_policy": "backup_semanal_7_dias",
+            "llm_confidence": 0.69,
+            "decision_tree": "{\"frequent_access\": false, \"frequent_modifications\": false, \"high_value_extension\": true, \"important_context\": false, \"important_name\": false, \"llm_acessos_relevantes\": false, \"llm_contexto_critico\": false, \"llm_modificacoes_relevantes\": false, \"llm_nome_critico\": false, \"llm_tipo_critico\": true, \"low_value_context\": false, \"low_value_extension\": false, \"system_or_program_extension\": false}"
+        }
+    },
+    "e17cc17a9f539fc1834e65b2a209b018387c5115eb2f27e165b0a5e2d3ae4073": {
+        "created_at": "2026-05-10T15:23:21",
+        "result": {
+            "priority": "baixa",
+            "priority_score": 28,
+            "confidence": 0.7,
+            "reasons": [
+                "extensao com valor potencial para backup",
+                "Arquivo do tipo documento (PDF).",
+                "Não modificado recentemente.",
+                "Poucos acessos observados.",
+                "Localizado na pasta Downloads, que geralmente contém arquivos temporários ou de menor prioridade."
+            ],
+            "decisions": {
+                "frequent_modifications": false,
+                "high_value_extension": true,
+                "system_or_program_extension": false,
+                "frequent_access": false,
+                "important_name": false,
+                "important_context": false,
+                "low_value_extension": false,
+                "low_value_context": false,
+                "llm_modificacoes_relevantes": false,
+                "llm_tipo_critico": true,
+                "llm_acessos_relevantes": false,
+                "llm_nome_critico": false,
+                "llm_contexto_critico": false
+            },
+            "classification_source": "gemini_api",
+            "llm_model": "gemini-2.5-flash",
+            "llm_error": "",
+            "priority_reason": "extensao com valor potencial para backup; Arquivo do tipo documento (PDF).; Não modificado recentemente.; Poucos acessos observados.; Localizado na pasta Downloads, que geralmente contém arquivos temporários ou de menor prioridade.",
+            "important": 0,
+            "backup_policy": "backup_semanal_7_dias",
+            "llm_confidence": 0.7,
+            "decision_tree": "{\"frequent_access\": false, \"frequent_modifications\": false, \"high_value_extension\": true, \"important_context\": false, \"important_name\": false, \"llm_acessos_relevantes\": false, \"llm_contexto_critico\": false, \"llm_modificacoes_relevantes\": false, \"llm_nome_critico\": false, \"llm_tipo_critico\": true, \"low_value_context\": false, \"low_value_extension\": false, \"system_or_program_extension\": false}"
+        }
+    },
+    "79f57f19c6a7a427d9ea83ee5b97ae99ab3fdab6f135c3e2858dc4c90c25e644": {
+        "created_at": "2026-05-10T15:23:40",
+        "result": {
+            "priority": "baixa",
+            "priority_score": 28,
+            "confidence": 0.8,
+            "reasons": [
+                "extensao com valor potencial para backup",
+                "Tipo de arquivo (PDF) é geralmente importante.",
+                "Nenhuma modificação observada recentemente.",
+                "Baixa quantidade de acessos.",
+                "Diretório 'Downloads' sugere menor criticidade."
+            ],
+            "decisions": {
+                "frequent_modifications": false,
+                "high_value_extension": true,
+                "system_or_program_extension": false,
+                "frequent_access": false,
+                "important_name": false,
+                "important_context": false,
+                "low_value_extension": false,
+                "low_value_context": false,
+                "llm_modificacoes_relevantes": false,
+                "llm_tipo_critico": true,
+                "llm_acessos_relevantes": false,
+                "llm_nome_critico": false,
+                "llm_contexto_critico": false
+            },
+            "classification_source": "gemini_api",
+            "llm_model": "gemini-2.5-flash",
+            "llm_error": "",
+            "priority_reason": "extensao com valor potencial para backup; Tipo de arquivo (PDF) é geralmente importante.; Nenhuma modificação observada recentemente.; Baixa quantidade de acessos.; Diretório 'Downloads' sugere menor criticidade.",
+            "important": 0,
+            "backup_policy": "backup_semanal_7_dias",
+            "llm_confidence": 0.8,
+            "decision_tree": "{\"frequent_access\": false, \"frequent_modifications\": false, \"high_value_extension\": true, \"important_context\": false, \"important_name\": false, \"llm_acessos_relevantes\": false, \"llm_contexto_critico\": false, \"llm_modificacoes_relevantes\": false, \"llm_nome_critico\": false, \"llm_tipo_critico\": true, \"low_value_context\": false, \"low_value_extension\": false, \"system_or_program_extension\": false}"
+        }
+    },
+    "1638438715aee9e56556470509b71e2cc26006bfe6372476f2d7747a3f1945e9": {
+        "created_at": "2026-05-10T15:24:04",
+        "result": {
+            "priority": "alta",
+            "priority_score": 85,
+            "confidence": 0.95,
+            "reasons": [
+                "arquivo modificado recentemente ou varias vezes",
+                "extensao com valor potencial para backup",
+                "tipo/extensao relevante para sistema ou programa",
+                "arquivo acessado varias vezes entre varreduras",
+                "Modificações recentes e frequentes",
+                "Extensão JSON (dados/configurações)"
+            ],
+            "decisions": {
+                "frequent_modifications": true,
+                "high_value_extension": true,
+                "system_or_program_extension": true,
+                "frequent_access": true,
+                "important_name": false,
+                "important_context": false,
+                "low_value_extension": false,
+                "low_value_context": false,
+                "llm_modificacoes_relevantes": true,
+                "llm_tipo_critico": true,
+                "llm_acessos_relevantes": true,
+                "llm_nome_critico": true,
+                "llm_contexto_critico": true
+            },
+            "classification_source": "gemini_api",
+            "llm_model": "gemini-2.5-flash",
+            "llm_error": "",
+            "priority_reason": "arquivo modificado recentemente ou varias vezes; extensao com valor potencial para backup; tipo/extensao relevante para sistema ou programa; arquivo acessado varias vezes entre varreduras; Modificações recentes e frequentes; Extensão JSON (dados/configurações)",
+            "important": 1,
+            "backup_policy": "backup_inicio_do_dia_e_a_cada_4_horas",
+            "llm_confidence": 0.95,
+            "decision_tree": "{\"frequent_access\": true, \"frequent_modifications\": true, \"high_value_extension\": true, \"important_context\": false, \"important_name\": false, \"llm_acessos_relevantes\": true, \"llm_contexto_critico\": true, \"llm_modificacoes_relevantes\": true, \"llm_nome_critico\": true, \"llm_tipo_critico\": true, \"low_value_context\": false, \"low_value_extension\": false, \"system_or_program_extension\": true}"
+        }
     }
 }

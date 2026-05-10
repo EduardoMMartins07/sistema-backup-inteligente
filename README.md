@@ -1,4 +1,4 @@
-# Sistema de Backup Inteligente
+﻿# Sistema de Backup Inteligente
 
 Aplicacao desktop para acompanhar diretorios importantes, identificar alteracoes nos arquivos e centralizar a rotina de backup em uma interface simples. O sistema combina monitoramento continuo, geracao de dataset com metadados dos arquivos e criacao de backups incrementais com deduplicacao por hash SHA-256, snapshots JSON e restauracao por manifesto.
 
@@ -15,7 +15,7 @@ Toda alteracao relevante no projeto deve ser refletida neste `README.md`, manten
 - **Manipulacao de dados:** pandas
 - **Bandeja do sistema:** pystray
 - **Imagens/icones:** pillow
-- **Machine Learning preparado no projeto:** scikit-learn / joblib
+- **Classificacao inteligente:** arvore de decisao local com integracao opcional via Gemini API
 - **LLM externa opcional:** Gemini API via REST, usando apenas metadados dos arquivos
 
 ## Requisitos
@@ -46,11 +46,10 @@ Toda alteracao relevante no projeto deve ser refletida neste `README.md`, manten
 - [x] Scanner automatico para varredura dos diretorios monitorados sempre que ha mudancas relevantes
 - [x] Geracao de dataset CSV com nome, extensao, tipo, tamanho, tempo desde a ultima modificacao, hash do arquivo e indicador de relevancia
 - [x] Marcacao de arquivos duplicados no dataset por hash SHA-256
-- [x] Classificacao inicial de arquivos importantes com base em palavras-chave e estrutura preparada para modelo de machine learning
+- [x] Classificacao inicial de arquivos importantes com base em metadados, palavras-chave e contexto do arquivo
 - [x] Classificacao por prioridade usando arvore de decisao local e Gemini API com metadados dos arquivos
 - [x] Cache local das respostas da LLM para evitar chamadas repetidas para o mesmo arquivo/hash
 - [x] Registro observado de modificacoes e acessos entre varreduras para alimentar a arvore de decisao
-- [x] Treinamento de modelo em `ml/` a partir do dataset gerado pelo scanner
 - [x] Backup manual e backup agendado com armazenamento incremental em `backup_storage/`
 - [x] Deduplicacao persistente por hash SHA-256, evitando salvar o mesmo conteudo mais de uma vez
 - [x] Snapshots JSON restauraveis para representar o estado logico de cada execucao
@@ -342,7 +341,7 @@ Cada backup novo registra um snapshot dos arquivos e compara com o snapshot ante
 - `config/`: arquivos de configuracao, historico, agendamento, cache da LLM e estado da politica por prioridade.
 - `dataset/`: CSV gerado pelo scanner.
 - `backups/`: destino padrao local dos backups; novas execucoes criam `backup_storage/` dentro dele.
-- `ml/`: modulos de classificacao local, LLM e treinamento do classificador tradicional.
+- `ml/`: modulos de classificacao local e integracao opcional com Gemini API.
 
 ## Proximos Passos Sugeridos
 - [x] Adicionar restauracao de backup e versoes anteriores pela interface
@@ -361,3 +360,4 @@ Cada backup novo registra um snapshot dos arquivos e compara com o snapshot ante
 - `python -m unittest discover -s tests`: executa os testes automatizados do backup incremental.
 - `python scanner/scanner.py`: executa o scanner manualmente.
 - `pip install -r requirements.txt`: instala as dependencias do projeto.
+
