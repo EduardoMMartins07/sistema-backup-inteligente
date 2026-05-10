@@ -1,4 +1,5 @@
 import json
+import json
 import os
 import tempfile
 import unittest
@@ -75,6 +76,25 @@ class IncrementalBackupTests(unittest.TestCase):
         by_archive_name = {}
 
         for source_path, archive_name in manifest:
+            row = {
+                "source_path": source_path,
+                "archive_name": archive_name,
+                "priority": priority,
+                "priority_score": "80" if priority == "alta" else "20",
+            }
+            by_source_path[normalize_path(source_path)] = row
+            by_archive_name[normalize_archive_name(archive_name)] = row
+
+        return {
+            "by_source_path": by_source_path,
+            "by_archive_name": by_archive_name,
+        }
+
+    def mixed_priority_index_for(self, priority_by_archive_name):
+        by_source_path = {}
+        by_archive_name = {}
+
+        for source_path, archive_name, priority in priority_by_archive_name:
             row = {
                 "source_path": source_path,
                 "archive_name": archive_name,
@@ -545,6 +565,48 @@ class IncrementalBackupTests(unittest.TestCase):
         self.assertEqual(1, len(backup_manager.load_history()))
         self.assertEqual(1, len(result["priority_decisions"]))
         self.assertTrue(result["priority_decisions"][0]["included"])
+
+    def test_priority_job_marks_partial_backup_without_false_deletions(self):
+        high_file = self.write_file("A.txt", "high")
+        low_file = self.write_file("B.txt", "low")
+        manifest = self.manifest_for(high_file, low_file)
+        mixed_priority_index = self.mixed_priority_index_for(
+            [
+                (manifest[0][0], manifest[0][1], "alta"),
+                (manifest[1][0], manifest[1][1], "baixa"),
+            ]
+        )
+        self.configure_priority_job_environment([high_file, low_file], "alta")
+        dataset_path = Path(backup_manager.DATASET_PATH)
+        dataset_path.write_text(
+            (
+                "name,source_path,archive_name,priority,priority_score,file_hash\n"
+                f"{high_file.name},{manifest[0][0]},{manifest[0][1]},alta,80,\n"
+                f"{low_file.name},{manifest[1][0]},{manifest[1][1]},baixa,20,\n"
+            ),
+            encoding="utf-8"
+        )
+
+        run_incremental_backup(
+            directories=[str(self.source)],
+            backup_destination=str(self.destination),
+            manifest=manifest,
+            now=self.now,
+            priority_index=mixed_priority_index,
+        )
+
+        result = run_priority_backup_job(
+            run_scan_first=False,
+            username="sistema",
+            user_role="system"
+        )
+
+        self.assertFalse(result.get("skipped", False))
+        self.assertTrue(result.get("partial_backup"))
+        self.assertEqual([], result["file_changes"])
+
+        latest_full_snapshot = backup_manager.get_latest_history_snapshot()
+        self.assertEqual(2, len(latest_full_snapshot))
 
     def test_incremental_deduplication_still_works_in_dev_mode(self):
         os.environ["BACKUP_DEV_MODE"] = "true"

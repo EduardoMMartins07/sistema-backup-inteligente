@@ -41,6 +41,10 @@ LIGHT_BUTTON = "#D9D9D9"
 TEXT_COLOR = "#101010"
 SUBTLE_TEXT = "#E7EAF0"
 BORDER_COLOR = "#3A4657"
+CARD_COLOR = "#344153"
+CARD_ACCENT = "#3F5067"
+HOME_PANEL_COLOR = "#2E3949"
+MUTED_PANEL_COLOR = "#25303F"
 DEFAULT_FONT = ("Segoe UI", 10)
 BODY_FONT = ("Segoe UI", 10)
 BODY_BOLD_FONT = ("Segoe UI", 10, "bold")
@@ -51,6 +55,10 @@ TITLE_FONT = ("Segoe UI Black", 22, "bold")
 MENU_TITLE_FONT = ("Segoe UI Black", 30, "bold")
 MENU_BUTTON_FONT = ("Segoe UI", 13, "bold")
 BUTTON_FONT = ("Segoe UI", 10, "bold")
+HOME_TITLE_FONT = ("Segoe UI Black", 28, "bold")
+HOME_SUBTITLE_FONT = ("Segoe UI", 12)
+CARD_VALUE_FONT = ("Segoe UI Black", 24, "bold")
+CARD_LABEL_FONT = ("Segoe UI", 11, "bold")
 
 BACKUP_STATUS_IN_BACKUP = "Em backup"
 BACKUP_STATUS_PENDING = "Fará backup"
@@ -304,6 +312,11 @@ class BackupGUI:
         self.restore_button = None
         self.manage_button = None
         self.destination_button = None
+        self.users_button = None
+        self.sidebar_button_frame = None
+        self.sidebar_footer_frame = None
+        self.content_panel = None
+        self.current_view = "home"
         self.logout_requested = False
         self.pending_backup_name = ""
         self.pending_backup_description = ""
@@ -420,45 +433,51 @@ class BackupGUI:
         )
         self.outer_frame.pack(fill="both", expand=True)
 
-        self.header_frame = tk.Frame(self.outer_frame, bg=BG_COLOR)
-        self.header_frame.pack(fill="x", padx=20, pady=(20, 0))
-
-        title = tk.Label(
-            self.header_frame,
-            text="MENU",
-            bg=BG_COLOR,
-            fg=TITLE_COLOR,
-            font=MENU_TITLE_FONT
-        )
-        title.pack(side="left", anchor="nw")
-
-        self.utility_frame = tk.Frame(self.header_frame, bg=BG_COLOR)
-        self.utility_frame.pack(side="right", anchor="ne")
-
-        tk.Label(
-            self.utility_frame,
-            text=self.build_user_label(),
-            bg=BG_COLOR,
-            fg=SUBTLE_TEXT,
-            font=BODY_FONT,
-            justify="right"
-        ).pack(fill="x", pady=(0, 8))
-
         self.main_frame = tk.Frame(self.outer_frame, bg=BG_COLOR)
         self.main_frame.pack(
             fill="both",
             expand=True,
-            padx=16,
-            pady=(26, 50)
+            padx=18,
+            pady=(18, 54)
         )
         self.main_frame.columnconfigure(0, weight=0)
         self.main_frame.columnconfigure(1, weight=1)
         self.main_frame.rowconfigure(0, weight=1)
 
-        self.menu_frame = tk.Frame(self.main_frame, bg=BG_COLOR)
-        self.menu_frame.grid(row=0, column=0, sticky="nw", padx=(0, 18))
+        self.menu_frame = tk.Frame(
+            self.main_frame,
+            bg=PANEL_COLOR,
+            highlightbackground=BORDER_COLOR,
+            highlightthickness=1,
+            padx=14,
+            pady=16
+        )
+        self.menu_frame.grid(row=0, column=0, sticky="nsw", padx=(0, 20))
+        self.menu_frame.grid_propagate(False)
+        self.menu_frame.configure(width=250)
+        self.menu_frame.rowconfigure(2, weight=1)
 
-        self.content_frame = tk.Frame(self.main_frame, bg=BG_COLOR)
+        tk.Label(
+            self.menu_frame,
+            text="MENU",
+            bg=PANEL_COLOR,
+            fg=TITLE_COLOR,
+            font=MENU_TITLE_FONT,
+            anchor="w"
+        ).grid(row=0, column=0, sticky="ew", pady=(2, 18))
+
+        self.sidebar_button_frame = tk.Frame(self.menu_frame, bg=PANEL_COLOR)
+        self.sidebar_button_frame.grid(row=1, column=0, sticky="new")
+
+        self.sidebar_footer_frame = tk.Frame(self.menu_frame, bg=PANEL_COLOR)
+        self.sidebar_footer_frame.grid(row=3, column=0, sticky="sew", pady=(18, 0))
+
+        self.content_frame = tk.Frame(
+            self.main_frame,
+            bg=HOME_PANEL_COLOR,
+            highlightbackground=BORDER_COLOR,
+            highlightthickness=1
+        )
         self.content_frame.grid(row=0, column=1, sticky="nsew")
         self.content_frame.columnconfigure(0, weight=1)
         self.content_frame.rowconfigure(0, weight=1)
@@ -494,26 +513,23 @@ class BackupGUI:
             bg=LIGHT_BUTTON
         )
 
-        footer = tk.Label(
-            self.outer_frame,
-            text=self.build_footer_text(),
-            bg=BG_COLOR,
+        tk.Label(
+            self.sidebar_footer_frame,
+            text=self.build_user_label(),
+            bg=PANEL_COLOR,
             fg=SUBTLE_TEXT,
-            font=("Segoe UI", 9),
-            justify="center",
-            wraplength=720
-        )
-        footer.place(relx=0.5, rely=1.0, anchor="s", y=-18)
-        self.footer_label = footer
+            font=BODY_FONT,
+            justify="center"
+        ).pack(fill="x", pady=(0, 10))
 
         self.manage_button = tk.Button(
-            self.utility_frame,
+            self.sidebar_footer_frame,
             text="Gerenciar diretorios",
             command=self.open_directory_manager,
             font=BUTTON_FONT,
-            bg=PANEL_COLOR,
+            bg=MUTED_PANEL_COLOR,
             fg="white",
-            activebackground=PANEL_COLOR,
+            activebackground=MUTED_PANEL_COLOR,
             activeforeground="white",
             relief="flat",
             bd=0,
@@ -522,19 +538,19 @@ class BackupGUI:
             highlightcolor="#101722",
             cursor="hand2",
             padx=10,
-            pady=5
+            pady=6
         )
-        self.manage_button.pack(fill="x", pady=(0, 10))
+        self.manage_button.pack(fill="x", pady=(0, 8))
         self.apply_button_feedback(self.manage_button)
 
         self.destination_button = tk.Button(
-            self.utility_frame,
+            self.sidebar_footer_frame,
             text="Diretorio padrao de backup",
             command=self.choose_backup_destination,
             font=BUTTON_FONT,
-            bg=PANEL_COLOR,
+            bg=MUTED_PANEL_COLOR,
             fg="white",
-            activebackground=PANEL_COLOR,
+            activebackground=MUTED_PANEL_COLOR,
             activeforeground="white",
             relief="flat",
             bd=0,
@@ -543,20 +559,20 @@ class BackupGUI:
             highlightcolor="#101722",
             cursor="hand2",
             padx=10,
-            pady=5
+            pady=6
         )
-        self.destination_button.pack(fill="x", pady=(0, 10))
+        self.destination_button.pack(fill="x", pady=(0, 8))
         self.apply_button_feedback(self.destination_button)
 
         if can(self.current_user, "manage_users"):
-            users_button = tk.Button(
-                self.utility_frame,
+            self.users_button = tk.Button(
+                self.sidebar_footer_frame,
                 text="Gerenciar usuarios",
                 command=self.open_user_manager,
                 font=BUTTON_FONT,
-                bg=PANEL_COLOR,
+                bg=MUTED_PANEL_COLOR,
                 fg="white",
-                activebackground=PANEL_COLOR,
+                activebackground=MUTED_PANEL_COLOR,
                 activeforeground="white",
                 relief="flat",
                 bd=0,
@@ -565,13 +581,13 @@ class BackupGUI:
                 highlightcolor="#101722",
                 cursor="hand2",
                 padx=10,
-                pady=5
+                pady=6
             )
-            users_button.pack(fill="x")
-            self.apply_button_feedback(users_button)
+            self.users_button.pack(fill="x", pady=(0, 8))
+            self.apply_button_feedback(self.users_button)
 
         logout_button = tk.Button(
-            self.utility_frame,
+            self.sidebar_footer_frame,
             text="Sair da conta",
             command=self.logout,
             font=BUTTON_FONT,
@@ -586,17 +602,29 @@ class BackupGUI:
             highlightcolor="#101722",
             cursor="hand2",
             padx=10,
-            pady=5
+            pady=6
         )
-        logout_button.pack(fill="x", pady=(10, 0))
+        logout_button.pack(fill="x", pady=(6, 0))
         self.apply_button_feedback(logout_button)
+
+        footer = tk.Label(
+            self.outer_frame,
+            text=self.build_footer_text(),
+            bg=BG_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Segoe UI", 9),
+            justify="center",
+            wraplength=720
+        )
+        footer.place(relx=0.5, rely=1.0, anchor="s", y=-18)
+        self.footer_label = footer
 
         self.apply_permissions()
         self.show_welcome_panel()
 
     def create_menu_button(self, text, command, bg):
         button = tk.Button(
-            self.menu_frame,
+            self.sidebar_button_frame,
             text=text,
             command=command,
             font=MENU_BUTTON_FONT,
@@ -610,10 +638,12 @@ class BackupGUI:
             highlightbackground="#101722",
             highlightcolor="#101722",
             cursor="hand2",
-            width=20,
-            pady=5
+            width=22,
+            anchor="w",
+            padx=14,
+            pady=8
         )
-        button.pack(pady=7)
+        button.pack(fill="x", pady=6)
         self.apply_button_feedback(button)
         return button
 
@@ -621,52 +651,345 @@ class BackupGUI:
         for widget in self.content_frame.winfo_children():
             widget.destroy()
 
-    def create_content_shell(self, title):
-        self.clear_content()
+    def navigate_home(self):
+        self.show_welcome_panel()
 
-        panel = tk.Frame(self.content_frame, bg=BG_COLOR)
+    def set_current_view(self, view_name):
+        self.current_view = view_name
+
+    def create_content_shell(self, title, show_back_button=True, subtitle=None):
+        self.clear_content()
+        self.set_current_view("section" if show_back_button else "home")
+
+        panel = tk.Frame(self.content_frame, bg=HOME_PANEL_COLOR)
         panel.grid(row=0, column=0, sticky="nsew")
         panel.columnconfigure(0, weight=1)
         panel.rowconfigure(1, weight=1)
 
-        tk.Label(
-            panel,
-            text=title,
-            bg=BG_COLOR,
-            fg=TITLE_COLOR,
-            font=TITLE_FONT
-        ).grid(row=0, column=0, sticky="n", pady=(0, 10))
+        header = tk.Frame(panel, bg=HOME_PANEL_COLOR, padx=22, pady=18)
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(1, weight=1)
 
-        content = tk.Frame(panel, bg=BG_COLOR)
+        if show_back_button:
+            back_button = tk.Button(
+                header,
+                text="< Voltar",
+                command=self.navigate_home,
+                font=BUTTON_FONT,
+                bg=TITLE_COLOR,
+                fg=TEXT_COLOR,
+                activebackground=TITLE_COLOR,
+                activeforeground=TEXT_COLOR,
+                relief="flat",
+                bd=0,
+                highlightthickness=1,
+                highlightbackground="#101722",
+                highlightcolor="#101722",
+                cursor="hand2",
+                padx=12,
+                pady=6
+            )
+            back_button.grid(row=0, column=0, sticky="w", padx=(0, 14))
+            self.apply_button_feedback(back_button)
+
+        title_box = tk.Frame(header, bg=HOME_PANEL_COLOR)
+        title_box.grid(row=0, column=1, sticky="ew")
+        title_box.columnconfigure(0, weight=1)
+
+        tk.Label(
+            title_box,
+            text=title,
+            bg=HOME_PANEL_COLOR,
+            fg=TITLE_COLOR,
+            font=TITLE_FONT,
+            anchor="center"
+        ).grid(row=0, column=0, sticky="ew")
+
+        if subtitle:
+            tk.Label(
+                title_box,
+                text=subtitle,
+                bg=HOME_PANEL_COLOR,
+                fg=SUBTLE_TEXT,
+                font=HOME_SUBTITLE_FONT,
+                anchor="center"
+            ).grid(row=1, column=0, sticky="ew", pady=(4, 0))
+
+        content = tk.Frame(panel, bg=HOME_PANEL_COLOR, padx=22, pady=0)
         content.grid(row=1, column=0, sticky="nsew")
         content.columnconfigure(0, weight=1)
         content.rowconfigure(0, weight=1)
         return panel, content
 
     def show_message_panel(self, title, message, action_text=None, action=None):
-        _panel, content = self.create_content_shell(title)
+        _panel, content = self.create_content_shell(
+            title,
+            show_back_button=True,
+            subtitle="Use esta area para executar a acao selecionada."
+        )
 
-        box = tk.Frame(content, bg=BG_COLOR)
-        box.place(relx=0.5, rely=0.45, anchor="center")
+        box = tk.Frame(
+            content,
+            bg=PANEL_COLOR,
+            highlightbackground=BORDER_COLOR,
+            highlightthickness=1,
+            padx=28,
+            pady=26
+        )
+        box.place(relx=0.5, rely=0.42, anchor="center")
 
         tk.Label(
             box,
             text=message,
-            bg=BG_COLOR,
+            bg=PANEL_COLOR,
             fg=SUBTLE_TEXT,
             font=("Segoe UI", 12),
             justify="center",
-            wraplength=520
+            wraplength=620
         ).pack(pady=(0, 16))
 
         if action_text and action:
             self.create_dialog_button(box, action_text, action).pack()
 
     def show_welcome_panel(self):
-        self.show_message_panel(
-            "Sistema de Backup",
-            "Escolha uma opcao no menu lateral para comecar."
+        self.render_dashboard()
+
+    def load_dataset_rows(self):
+        dataset_path = os.path.join("dataset", "files_dataset.csv")
+
+        if not os.path.exists(dataset_path):
+            return []
+
+        with open(dataset_path, "r", encoding="utf-8", newline="") as file:
+            try:
+                reader = csv.DictReader(file)
+                return list(reader)
+            except csv.Error:
+                return []
+
+    def count_backup_actions(self, entry):
+        counts = {
+            "adicionado": 0,
+            "alterado": 0,
+            "excluido": 0,
+        }
+
+        if not isinstance(entry, dict):
+            return counts
+
+        for change in entry.get("file_changes", []):
+            action = str(change.get("action", "")).strip().lower()
+
+            if action in counts:
+                counts[action] += 1
+
+        return counts
+
+    def build_dashboard_summary(self):
+        dataset_rows = self.load_dataset_rows()
+        latest_backup = self.get_latest_visible_history_entry()
+        action_counts = self.count_backup_actions(latest_backup)
+
+        return {
+            "total_files": len(dataset_rows),
+            "added_files": action_counts["adicionado"],
+            "changed_files": action_counts["alterado"],
+            "deleted_files": action_counts["excluido"],
+            "latest_backup": latest_backup,
+            "backup_destination": self.get_backup_destination(),
+        }
+
+    def create_summary_card(self, parent, title, value, accent, note):
+        card = tk.Frame(
+            parent,
+            bg=CARD_COLOR,
+            highlightbackground=accent,
+            highlightthickness=2,
+            padx=18,
+            pady=16
         )
+
+        accent_bar = tk.Frame(card, bg=accent, height=5)
+        accent_bar.pack(fill="x", pady=(0, 14))
+
+        tk.Label(
+            card,
+            text=title,
+            bg=CARD_COLOR,
+            fg=SUBTLE_TEXT,
+            font=CARD_LABEL_FONT,
+            anchor="w",
+            justify="left"
+        ).pack(fill="x")
+
+        tk.Label(
+            card,
+            text=str(value),
+            bg=CARD_COLOR,
+            fg="white",
+            font=CARD_VALUE_FONT,
+            anchor="w",
+            justify="left"
+        ).pack(fill="x", pady=(10, 6))
+
+        tk.Label(
+            card,
+            text=note,
+            bg=CARD_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Segoe UI", 9),
+            anchor="w",
+            justify="left",
+            wraplength=220
+        ).pack(fill="x")
+
+        return card
+
+    def render_dashboard(self):
+        summary = self.build_dashboard_summary()
+        _panel, content = self.create_content_shell(
+            "Sistema de Backup",
+            show_back_button=False,
+            subtitle="Acompanhe rapidamente o status do sistema e das ultimas mudancas."
+        )
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(1, weight=1)
+
+        hero = tk.Frame(
+            content,
+            bg=PANEL_COLOR,
+            highlightbackground=BORDER_COLOR,
+            highlightthickness=1,
+            padx=28,
+            pady=24
+        )
+        hero.grid(row=0, column=0, sticky="ew", pady=(0, 18))
+        hero.columnconfigure(0, weight=3)
+        hero.columnconfigure(1, weight=2)
+
+        left_hero = tk.Frame(hero, bg=PANEL_COLOR)
+        left_hero.grid(row=0, column=0, sticky="nsew", padx=(0, 18))
+
+        tk.Label(
+            left_hero,
+            text="Painel inicial",
+            bg=PANEL_COLOR,
+            fg=TITLE_COLOR,
+            font=HOME_TITLE_FONT,
+            anchor="w"
+        ).pack(fill="x")
+
+        tk.Label(
+            left_hero,
+            text=(
+                "Visualize os arquivos acompanhados e o impacto do ultimo backup "
+                "sem sair da tela principal."
+            ),
+            bg=PANEL_COLOR,
+            fg=SUBTLE_TEXT,
+            font=HOME_SUBTITLE_FONT,
+            justify="left",
+            wraplength=460
+        ).pack(fill="x", pady=(10, 16))
+
+        quick_info = tk.Frame(left_hero, bg=PANEL_COLOR)
+        quick_info.pack(fill="x")
+
+        latest_backup = summary["latest_backup"] or {}
+        backup_name = latest_backup.get("backup_name") or latest_backup.get("backup_file") or "Nenhum backup registrado"
+        backup_time = latest_backup.get("timestamp", "Sem historico")
+
+        for label_text, value_text in (
+            ("Ultimo backup", backup_time),
+            ("Identificacao", backup_name),
+            ("Destino atual", summary["backup_destination"]),
+        ):
+            row = tk.Frame(quick_info, bg=PANEL_COLOR)
+            row.pack(fill="x", pady=3)
+            tk.Label(
+                row,
+                text=f"{label_text}:",
+                bg=PANEL_COLOR,
+                fg=TITLE_COLOR,
+                font=("Segoe UI", 10, "bold"),
+                width=15,
+                anchor="w"
+            ).pack(side="left")
+            tk.Label(
+                row,
+                text=value_text,
+                bg=PANEL_COLOR,
+                fg="white",
+                font=("Segoe UI", 10),
+                anchor="w",
+                justify="left",
+                wraplength=360
+            ).pack(side="left", fill="x", expand=True)
+
+        right_hero = tk.Frame(
+            hero,
+            bg=HOME_PANEL_COLOR,
+            highlightbackground=BORDER_COLOR,
+            highlightthickness=1,
+            padx=18,
+            pady=18
+        )
+        right_hero.grid(row=0, column=1, sticky="nsew")
+
+        tk.Label(
+            right_hero,
+            text="Resumo do ultimo backup",
+            bg=HOME_PANEL_COLOR,
+            fg=TITLE_COLOR,
+            font=("Segoe UI", 12, "bold")
+        ).pack(fill="x")
+
+        tk.Label(
+            right_hero,
+            text=(
+                "Os indicadores abaixo refletem o dataset atual e as mudancas "
+                "registradas no ultimo backup visivel."
+            ),
+            bg=HOME_PANEL_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Segoe UI", 10),
+            justify="left",
+            wraplength=280
+        ).pack(fill="x", pady=(8, 12))
+
+        tk.Label(
+            right_hero,
+            text=f"{summary['added_files'] + summary['changed_files'] + summary['deleted_files']}",
+            bg=HOME_PANEL_COLOR,
+            fg="white",
+            font=("Segoe UI Black", 28, "bold")
+        ).pack(anchor="w")
+
+        tk.Label(
+            right_hero,
+            text="mudancas registradas no ultimo backup",
+            bg=HOME_PANEL_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Segoe UI", 10)
+        ).pack(anchor="w", pady=(4, 0))
+
+        cards_frame = tk.Frame(content, bg=HOME_PANEL_COLOR)
+        cards_frame.grid(row=1, column=0, sticky="nsew")
+        cards_frame.columnconfigure(0, weight=1)
+        cards_frame.columnconfigure(1, weight=1)
+        cards_frame.columnconfigure(2, weight=1)
+        cards_frame.columnconfigure(3, weight=1)
+
+        cards = (
+            ("Arquivos totais", summary["total_files"], TITLE_COLOR, "Arquivos atualmente presentes no dataset analisado."),
+            ("Adicionados", summary["added_files"], "#22C55E", "Novos arquivos incluidos no ultimo backup."),
+            ("Alterados", summary["changed_files"], "#F59E0B", "Arquivos com nova versao no ultimo backup."),
+            ("Excluidos", summary["deleted_files"], "#EF4444", "Arquivos removidos em relacao ao backup anterior."),
+        )
+
+        for column_index, (title, value, accent, note) in enumerate(cards):
+            card = self.create_summary_card(cards_frame, title, value, accent, note)
+            card.grid(row=0, column=column_index, sticky="nsew", padx=(0 if column_index == 0 else 8, 0), pady=(0, 8))
 
     def show_backup_panel(self):
         if not self.require_permission("run_backup"):
@@ -694,11 +1017,24 @@ class BackupGUI:
         if not self.require_permission("schedule_backup"):
             return
 
-        _panel, content = self.create_content_shell("Agendar Backup")
+        _panel, content = self.create_content_shell(
+            "Agendar Backup",
+            subtitle="Defina a janela de execucao automatica e a politica por prioridade."
+        )
 
-        form = tk.Frame(content, bg=BG_COLOR)
-        form.place(relx=0.5, rely=0.38, anchor="center")
+        box = tk.Frame(
+            content,
+            bg=PANEL_COLOR,
+            highlightbackground=BORDER_COLOR,
+            highlightthickness=1,
+            padx=28,
+            pady=24
+        )
+        box.place(relx=0.5, rely=0.43, anchor="center")
+
+        form = tk.Frame(box, bg=PANEL_COLOR)
         form.columnconfigure(1, weight=1)
+        form.pack(fill="both", expand=True)
 
         config_data = self.load_config()
         priority_policy_var = tk.BooleanVar(
@@ -707,7 +1043,7 @@ class BackupGUI:
         tk.Label(
             form,
             text="Horario inicial (HH:MM)",
-            bg=BG_COLOR,
+            bg=PANEL_COLOR,
             fg=SUBTLE_TEXT,
             font=("Arial", 11)
         ).grid(row=0, column=0, sticky="w", pady=6)
@@ -730,7 +1066,7 @@ class BackupGUI:
         tk.Label(
             form,
             text="Horario final (HH:MM)",
-            bg=BG_COLOR,
+            bg=PANEL_COLOR,
             fg=SUBTLE_TEXT,
             font=("Arial", 11)
         ).grid(row=1, column=0, sticky="w", pady=6)
@@ -752,7 +1088,7 @@ class BackupGUI:
         tk.Label(
             form,
             text="O backup sera executado automaticamente uma vez por dia dentro da faixa escolhida.",
-            bg=BG_COLOR,
+            bg=PANEL_COLOR,
             fg=SUBTLE_TEXT,
             font=("Arial", 10),
             wraplength=360,
@@ -763,9 +1099,9 @@ class BackupGUI:
             form,
             text="Ativar backup automatico por prioridade",
             variable=priority_policy_var,
-            bg=BG_COLOR,
+            bg=PANEL_COLOR,
             fg=SUBTLE_TEXT,
-            activebackground=BG_COLOR,
+            activebackground=PANEL_COLOR,
             activeforeground=SUBTLE_TEXT,
             selectcolor=PANEL_COLOR,
             font=("Arial", 10, "bold")
@@ -901,6 +1237,10 @@ class BackupGUI:
     def refresh_footer(self):
         self.footer_label.config(text=self.build_footer_text())
 
+    def refresh_dashboard_if_home(self):
+        if self.current_view == "home":
+            self.render_dashboard()
+
     def load_directories(self):
         data = self.load_config()
         self.directories = data.get("directories", [])
@@ -912,6 +1252,7 @@ class BackupGUI:
         data["backup_destination"] = self.backup_destination
         self.save_config(data)
         self.refresh_footer()
+        self.refresh_dashboard_if_home()
 
     def load_config(self):
         if not os.path.exists(CONFIG_PATH):
@@ -962,38 +1303,36 @@ class BackupGUI:
         if not self.require_permission("manage_directories"):
             return
 
-        window = tk.Toplevel(self.root)
-        window.title("Gerenciar diretorios")
-        window.geometry("820x480")
-        window.minsize(680, 400)
-        window.configure(bg=BG_COLOR)
-        window.transient(self.root)
-        self.prepare_window(window)
-
-        tk.Label(
-            window,
-            text="Diretorios para backup",
-            bg=BG_COLOR,
-            fg=TITLE_COLOR,
-            font=TITLE_FONT
-        ).pack(pady=(20, 6))
+        _panel, content = self.create_content_shell(
+            "Gerenciar Diretorios",
+            subtitle="Adicione, remova e revise as pastas monitoradas pelo sistema."
+        )
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(1, weight=1)
 
         summary_var = tk.StringVar()
         tk.Label(
-            window,
+            content,
             textvariable=summary_var,
-            bg=BG_COLOR,
+            bg=HOME_PANEL_COLOR,
             fg=SUBTLE_TEXT,
             font=("Segoe UI", 10)
-        ).pack(pady=(0, 12))
+        ).grid(row=0, column=0, sticky="w", pady=(0, 10))
 
-        content = tk.Frame(window, bg=BG_COLOR)
-        content.pack(padx=20, pady=(0, 20), fill="both", expand=True)
-        content.columnconfigure(0, weight=1)
-        content.rowconfigure(0, weight=1)
-        content.rowconfigure(1, weight=0)
+        box = tk.Frame(
+            content,
+            bg=PANEL_COLOR,
+            highlightbackground=BORDER_COLOR,
+            highlightthickness=1,
+            padx=18,
+            pady=18
+        )
+        box.grid(row=1, column=0, sticky="nsew")
+        box.columnconfigure(0, weight=1)
+        box.rowconfigure(0, weight=1)
+        box.rowconfigure(1, weight=0)
 
-        tree_frame = tk.Frame(content, bg=BG_COLOR)
+        tree_frame = tk.Frame(box, bg=PANEL_COLOR)
         tree_frame.grid(row=0, column=0, sticky="nsew")
 
         columns = ("folder", "status")
@@ -1054,11 +1393,11 @@ class BackupGUI:
 
         refresh_directory_table()
 
-        buttons = tk.Frame(content, bg=BG_COLOR)
+        buttons = tk.Frame(box, bg=PANEL_COLOR)
         buttons.grid(row=1, column=0, sticky="e", pady=(12, 0))
 
         def add_directory():
-            folder = filedialog.askdirectory(parent=window)
+            folder = filedialog.askdirectory(parent=self.root)
 
             if not folder:
                 return
@@ -1073,7 +1412,7 @@ class BackupGUI:
                 messagebox.showinfo(
                     "Diretorio ja cadastrado",
                     "Esse diretorio ja esta na lista.",
-                    parent=window
+                    parent=self.root
                 )
                 return
 
@@ -1095,9 +1434,8 @@ class BackupGUI:
             messagebox.showinfo(
                 "Sucesso",
                 "Diretorios salvos com sucesso!",
-                parent=window
+                parent=self.root
             )
-            window.destroy()
 
         self.create_dialog_button(buttons, "Adicionar pasta", add_directory).grid(
             row=0, column=0, padx=6
@@ -1616,6 +1954,7 @@ class BackupGUI:
         self.set_backup_button_state(tk.NORMAL)
         self.close_progress_window()
         self.refresh_footer()
+        self.refresh_dashboard_if_home()
 
         warning_count = len(result.get("warnings", []))
         warning_text = ""
@@ -1692,6 +2031,14 @@ class BackupGUI:
 
     def get_latest_history_entry(self):
         history = self.load_history()
+
+        if not history:
+            return None
+
+        return history[-1]
+
+    def get_latest_visible_history_entry(self):
+        history = self.get_visible_history()
 
         if not history:
             return None
@@ -4621,32 +4968,30 @@ class BackupGUI:
         if not self.require_permission("manage_users"):
             return
 
-        window = tk.Toplevel(self.root)
-        window.title("Gerenciar usuarios")
-        window.geometry("820x470")
-        window.minsize(760, 440)
-        window.configure(bg=BG_COLOR)
-        window.transient(self.root)
-        self.prepare_window(window)
+        _panel, content = self.create_content_shell(
+            "Gerenciar Usuarios",
+            subtitle="Cadastre, altere e remova usuarios sem sair da tela principal."
+        )
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(0, weight=1)
 
-        tk.Label(
-            window,
-            text="Gerenciar Usuarios",
-            bg=BG_COLOR,
-            fg=TITLE_COLOR,
-            font=TITLE_FONT
-        ).pack(pady=(18, 10))
-
-        content = tk.Frame(window, bg=BG_COLOR)
-        content.pack(fill="both", expand=True, padx=18, pady=(0, 18))
+        content_box = tk.Frame(
+            content,
+            bg=PANEL_COLOR,
+            highlightbackground=BORDER_COLOR,
+            highlightthickness=1,
+            padx=18,
+            pady=18
+        )
+        content_box.grid(row=0, column=0, sticky="nsew")
 
         columns = ("username", "name", "role")
-        tree_frame = tk.Frame(content, bg=BG_COLOR)
+        tree_frame = tk.Frame(content_box, bg=PANEL_COLOR)
         tree_frame.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0, 16))
         tree = self.create_scrollable_tree(tree_frame, columns, height=10)
-        content.columnconfigure(0, weight=1)
-        content.columnconfigure(1, weight=0)
-        content.rowconfigure(0, weight=1)
+        content_box.columnconfigure(0, weight=1)
+        content_box.columnconfigure(1, weight=0)
+        content_box.rowconfigure(0, weight=1)
 
         headings = {
             "username": "Usuario",
@@ -4674,7 +5019,7 @@ class BackupGUI:
             }
         )
 
-        form = tk.Frame(content, bg=BG_COLOR)
+        form = tk.Frame(content_box, bg=PANEL_COLOR)
         form.grid(row=0, column=1, sticky="n")
 
         username_var = tk.StringVar()
@@ -4686,7 +5031,7 @@ class BackupGUI:
             tk.Label(
                 form,
                 text=label,
-                bg=BG_COLOR,
+                bg=PANEL_COLOR,
                 fg=SUBTLE_TEXT,
                 font=("Arial", 10, "bold")
             ).grid(row=row, column=0, sticky="w", pady=(0, 4))
@@ -4707,7 +5052,7 @@ class BackupGUI:
         tk.Label(
             form,
             text="Perfil",
-            bg=BG_COLOR,
+            bg=PANEL_COLOR,
             fg=SUBTLE_TEXT,
             font=("Arial", 10, "bold")
         ).grid(row=4, column=0, sticky="w", pady=(0, 4))
@@ -4723,7 +5068,7 @@ class BackupGUI:
 
         add_field("Senha", password_var, 6, show="*")
 
-        buttons = tk.Frame(content, bg=BG_COLOR)
+        buttons = tk.Frame(content_box, bg=PANEL_COLOR)
         buttons.grid(row=1, column=1, sticky="s")
 
         def refresh_users():
@@ -4794,7 +5139,7 @@ class BackupGUI:
                 messagebox.showwarning(
                     "Operacao bloqueada",
                     "Voce nao pode alterar o perfil do usuario em uso.",
-                    parent=window
+                    parent=self.root
                 )
                 return
 
@@ -4823,7 +5168,7 @@ class BackupGUI:
                         name=name_var.get()
                     )
             except ValueError as error:
-                messagebox.showwarning("Dados invalidos", str(error), parent=window)
+                messagebox.showwarning("Dados invalidos", str(error), parent=self.root)
                 return
 
             refresh_users()
@@ -4841,14 +5186,14 @@ class BackupGUI:
                 messagebox.showwarning(
                     "Operacao bloqueada",
                     "Voce nao pode remover o usuario em uso.",
-                    parent=window
+                    parent=self.root
                 )
                 return
 
             confirmed = messagebox.askyesno(
                 "Remover usuario",
                 f"Remover o usuario '{username}'?",
-                parent=window
+                parent=self.root
             )
 
             if not confirmed:
@@ -4857,7 +5202,7 @@ class BackupGUI:
             try:
                 delete_user(username)
             except ValueError as error:
-                messagebox.showwarning("Operacao bloqueada", str(error), parent=window)
+                messagebox.showwarning("Operacao bloqueada", str(error), parent=self.root)
                 return
 
             refresh_users()

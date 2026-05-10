@@ -538,7 +538,7 @@ def get_latest_history_snapshot(include_partial=False):
     return {}
 
 
-def build_file_changes(previous_snapshot, current_snapshot):
+def build_file_changes(previous_snapshot, current_snapshot, detect_deletions=True):
     changes = []
     previous_keys = set(previous_snapshot.keys())
     current_keys = set(current_snapshot.keys())
@@ -582,22 +582,23 @@ def build_file_changes(previous_snapshot, current_snapshot):
             }
         )
 
-    for archive_name in sorted(previous_keys - current_keys):
-        file_data = previous_snapshot[archive_name]
-        changes.append(
-            {
-                "action": "excluido",
-                "name": file_data.get("name", ""),
-                "archive_name": archive_name,
-                "source_path": file_data.get("source_path", ""),
-                "size_bytes": file_data.get("size_bytes", 0),
-                "modified_at": file_data.get("modified_at", ""),
-                "file_hash": file_data.get("file_hash", ""),
-                "object_path": file_data.get("object_path", ""),
-                "snapshot_path": file_data.get("snapshot_path", ""),
-                "storage_mode": file_data.get("storage_mode", ""),
-            }
-        )
+    if detect_deletions:
+        for archive_name in sorted(previous_keys - current_keys):
+            file_data = previous_snapshot[archive_name]
+            changes.append(
+                {
+                    "action": "excluido",
+                    "name": file_data.get("name", ""),
+                    "archive_name": archive_name,
+                    "source_path": file_data.get("source_path", ""),
+                    "size_bytes": file_data.get("size_bytes", 0),
+                    "modified_at": file_data.get("modified_at", ""),
+                    "file_hash": file_data.get("file_hash", ""),
+                    "object_path": file_data.get("object_path", ""),
+                    "snapshot_path": file_data.get("snapshot_path", ""),
+                    "storage_mode": file_data.get("storage_mode", ""),
+                }
+            )
 
     return changes
 
@@ -1510,7 +1511,11 @@ def run_priority_backup_job(
         cancel_callback=cancel_callback
     )
     current_snapshot = incremental_result["file_snapshot"]
-    file_changes = build_file_changes(previous_snapshot, current_snapshot)
+    file_changes = build_file_changes(
+        previous_snapshot,
+        current_snapshot,
+        detect_deletions=False
+    )
     completed_at = datetime.now()
 
     history_entry = {
@@ -1538,6 +1543,7 @@ def run_priority_backup_job(
         "status_counts": incremental_result["status_counts"],
         "warnings_count": len(incremental_result["warnings"]),
         "priority_policy": True,
+        "partial_backup": True,
         "priority_decisions": priority_decisions,
     }
     append_history(history_entry)
