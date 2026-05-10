@@ -4,6 +4,7 @@ import os
 import queue
 import re
 import shutil
+import tempfile
 import threading
 from datetime import datetime
 import tkinter as tk
@@ -105,6 +106,24 @@ def format_size_bytes_to_mb(size_bytes):
         size_mb = 0.0
 
     return f"{size_mb:.2f}"
+
+
+def format_size_bytes_human(size_bytes):
+    try:
+        size = float(size_bytes)
+    except (TypeError, ValueError):
+        return "0 B"
+
+    if size >= 1024 * 1024 * 1024:
+        return f"{size / (1024 * 1024 * 1024):.2f} GB"
+
+    if size >= 1024 * 1024:
+        return f"{size / (1024 * 1024):.2f} MB"
+
+    if size >= 1024:
+        return f"{size / 1024:.2f} KB"
+
+    return f"{int(size)} B"
 
 
 def iter_history_snapshot_files(entry):
@@ -321,6 +340,7 @@ class BackupGUI:
         self.sidebar_footer_frame = None
         self.content_panel = None
         self.current_view = "home"
+        self.dashboard_compacted_size_job_key = None
         self.logout_requested = False
         self.pending_backup_name = ""
         self.pending_backup_description = ""
@@ -789,18 +809,153 @@ class BackupGUI:
 
         return counts
 
+    def get_history_snapshot_total_size_bytes(self, entry):
+        snapshot = entry.get("file_snapshot", {}) if isinstance(entry, dict) else {}
+
+        if not isinstance(snapshot, dict):
+            return 0
+
+        total_size = 0
+
+        for file_data in snapshot.values():
+            if not isinstance(file_data, dict):
+                continue
+
+            try:
+                total_size += int(file_data.get("size_bytes", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+
+        return total_size
+
+    def get_history_compacted_size_bytes(self, entry):
+        if not isinstance(entry, dict):
+            return None
+
+        try:
+            cached_size = entry.get("compacted_size_bytes")
+            if cached_size is None or cached_size == "":
+                return None
+            return int(cached_size)
+        except (TypeError, ValueError):
+            return None
+
+    def compute_history_compacted_size_bytes(self, entry):
+        if not isinstance(entry, dict):
+            return 0
+
+        backup_path = entry.get("backup_path") or entry.get("snapshot_path", "")
+
+        if backup_path and str(backup_path).lower().endswith(".zip") and os.path.exists(backup_path):
+            return os.path.getsize(backup_path)
+
+        if not backup_path or not os.path.exists(backup_path):
+            return 0
+
+        if str(backup_path).lower().endswith(".json"):
+            temporary_zip_path = ""
+
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as temp_file:
+                    temporary_zip_path = temp_file.name
+
+                export_snapshot_to_zip(backup_path, temporary_zip_path)
+                return os.path.getsize(temporary_zip_path)
+            except Exception:
+                return 0
+            finally:
+                if temporary_zip_path and os.path.exists(temporary_zip_path):
+                    try:
+                        os.remove(temporary_zip_path)
+                    except OSError:
+                        pass
+
+        return 0
+
+    def get_history_entry_identity(self, entry):
+        if not isinstance(entry, dict):
+            return ("", "", "")
+
+        return (
+            entry.get("snapshot_id", ""),
+            entry.get("backup_path", "") or entry.get("snapshot_path", ""),
+            entry.get("timestamp", ""),
+        )
+
+    def persist_history_compacted_size(self, entry, compacted_size_bytes):
+        target_identity = self.get_history_entry_identity(entry)
+        history = self.load_history()
+        updated = False
+
+        for history_entry in history:
+            if self.get_history_entry_identity(history_entry) != target_identity:
+                continue
+
+            history_entry["compacted_size_bytes"] = int(compacted_size_bytes)
+            updated = True
+            break
+
+        if not updated:
+            return
+
+        os.makedirs("config", exist_ok=True)
+
+        with open(HISTORY_PATH, "w", encoding="utf-8") as file:
+            json.dump(history[-50:], file, indent=4, ensure_ascii=False)
+
+    def ensure_dashboard_compacted_size_async(self, entry):
+        if not isinstance(entry, dict):
+            return
+
+        if self.get_history_compacted_size_bytes(entry) is not None:
+            return
+
+        job_key = self.get_history_entry_identity(entry)
+
+        if self.dashboard_compacted_size_job_key == job_key:
+            return
+
+        self.dashboard_compacted_size_job_key = job_key
+
+        def worker():
+            compacted_size = self.compute_history_compacted_size_bytes(entry)
+
+            try:
+                self.persist_history_compacted_size(entry, compacted_size)
+            finally:
+                def finish():
+                    if self.dashboard_compacted_size_job_key == job_key:
+                        self.dashboard_compacted_size_job_key = None
+
+                    if self.current_view == "home":
+                        self.render_dashboard()
+
+                self.root.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def build_dashboard_summary(self):
-        dataset_rows = self.load_dataset_rows()
         latest_backup = self.get_latest_visible_history_entry()
+        latest_full_backup = self.get_latest_visible_full_backup_entry()
         action_counts = self.count_backup_actions(latest_backup)
+        compacted_size_bytes = self.get_history_compacted_size_bytes(latest_full_backup)
 
         return {
-            "total_files": len(dataset_rows),
+            "total_files": len(self.load_dataset_rows()),
             "added_files": action_counts["adicionado"],
             "changed_files": action_counts["alterado"],
             "deleted_files": action_counts["excluido"],
             "latest_backup": latest_backup,
+            "latest_full_backup": latest_full_backup,
             "backup_destination": self.get_backup_destination(),
+            "backup_recovery_size": format_size_bytes_human(
+                self.get_history_snapshot_total_size_bytes(latest_full_backup)
+            ),
+            "backup_compacted_size": (
+                format_size_bytes_human(compacted_size_bytes)
+                if compacted_size_bytes is not None
+                else "Calculando..."
+            ),
         }
 
     def create_summary_card(self, parent, title, value, accent, note):
@@ -851,6 +1006,7 @@ class BackupGUI:
 
     def render_dashboard(self):
         summary = self.build_dashboard_summary()
+        latest_full_backup = summary["latest_full_backup"]
         _panel, content = self.create_content_shell(
             "Sistema de Backup",
             show_back_button=False,
@@ -858,6 +1014,7 @@ class BackupGUI:
         )
         content.columnconfigure(0, weight=1)
         content.rowconfigure(1, weight=1)
+        content.rowconfigure(2, weight=0)
 
         hero = tk.Frame(
             content,
@@ -994,6 +1151,52 @@ class BackupGUI:
         for column_index, (title, value, accent, note) in enumerate(cards):
             card = self.create_summary_card(cards_frame, title, value, accent, note)
             card.grid(row=0, column=column_index, sticky="nsew", padx=(0 if column_index == 0 else 8, 0), pady=(0, 8))
+
+        size_cards_frame = tk.Frame(content, bg=HOME_PANEL_COLOR)
+        size_cards_frame.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        size_cards_frame.columnconfigure(0, weight=5)
+        size_cards_frame.columnconfigure(1, weight=2)
+        size_cards_frame.columnconfigure(2, weight=5)
+
+        backup_card = self.create_summary_card(
+            size_cards_frame,
+            "Tamanho do total dos arquivos",
+            summary["backup_recovery_size"],
+            "#38BDF8",
+            "Volume real de todos os arquivos do backup completo mais recente."
+        )
+        backup_card.grid(row=0, column=0, sticky="nsew", padx=(0, 12), pady=(0, 8))
+
+        middle_hint = tk.Frame(size_cards_frame, bg=HOME_PANEL_COLOR)
+        middle_hint.grid(row=0, column=1, sticky="nsew")
+
+        tk.Label(
+            middle_hint,
+            text="COMPACTA",
+            bg=HOME_PANEL_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Segoe UI", 10, "bold")
+        ).pack(pady=(26, 6))
+
+        tk.Label(
+            middle_hint,
+            text=">>>",
+            bg=HOME_PANEL_COLOR,
+            fg="white",
+            font=("Segoe UI Black", 28, "bold")
+        ).pack()
+
+        compacted_card = self.create_summary_card(
+            size_cards_frame,
+            "Backup compactado",
+            summary["backup_compacted_size"],
+            "#F97316",
+            "Tamanho final estimado do ZIP gerado a partir do backup completo."
+        )
+        compacted_card.grid(row=0, column=2, sticky="nsew", padx=(12, 0), pady=(0, 8))
+
+        if latest_full_backup and summary["backup_compacted_size"] == "Calculando...":
+            self.ensure_dashboard_compacted_size_async(latest_full_backup)
 
     def show_backup_panel(self):
         if not self.require_permission("run_backup"):
