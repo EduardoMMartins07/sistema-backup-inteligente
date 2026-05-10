@@ -553,6 +553,7 @@ def build_file_changes(previous_snapshot, current_snapshot, detect_deletions=Tru
                 "source_path": file_data.get("source_path", ""),
                 "size_bytes": file_data.get("size_bytes", 0),
                 "modified_at": file_data.get("modified_at", ""),
+                "priority": file_data.get("priority", ""),
                 "file_hash": file_data.get("file_hash", ""),
                 "object_path": file_data.get("object_path", ""),
                 "snapshot_path": file_data.get("snapshot_path", ""),
@@ -575,6 +576,7 @@ def build_file_changes(previous_snapshot, current_snapshot, detect_deletions=Tru
                 "source_path": current_file.get("source_path", ""),
                 "size_bytes": current_file.get("size_bytes", 0),
                 "modified_at": current_file.get("modified_at", ""),
+                "priority": current_file.get("priority", ""),
                 "file_hash": current_file.get("file_hash", ""),
                 "object_path": current_file.get("object_path", ""),
                 "snapshot_path": current_file.get("snapshot_path", ""),
@@ -593,6 +595,7 @@ def build_file_changes(previous_snapshot, current_snapshot, detect_deletions=Tru
                     "source_path": file_data.get("source_path", ""),
                     "size_bytes": file_data.get("size_bytes", 0),
                     "modified_at": file_data.get("modified_at", ""),
+                    "priority": file_data.get("priority", ""),
                     "file_hash": file_data.get("file_hash", ""),
                     "object_path": file_data.get("object_path", ""),
                     "snapshot_path": file_data.get("snapshot_path", ""),
@@ -1831,7 +1834,7 @@ def restore_snapshot(
     return results
 
 
-def export_snapshot_to_zip(snapshot_path, destination_zip_path):
+def export_snapshot_to_zip(snapshot_path, destination_zip_path, progress_callback=None):
     snapshot_path = normalize_path(snapshot_path)
     destination_zip_path = normalize_path(destination_zip_path)
     snapshot = load_json(snapshot_path, {})
@@ -1847,18 +1850,26 @@ def export_snapshot_to_zip(snapshot_path, destination_zip_path):
 
     warnings = []
     exported_count = 0
+    exportable_files = [
+        file_data
+        for file_data in snapshot.get("files", [])
+        if (
+            normalize_archive_name(file_data.get("archive_name", ""))
+            and file_data.get("object_path", "")
+            and (file_data.get("hash") or file_data.get("file_hash", ""))
+            and file_data.get("status") != "error"
+        )
+    ]
+    total_files = len(exportable_files)
+
+    if progress_callback:
+        progress_callback(0, total_files, "Preparando exportacao do backup...")
 
     with zipfile.ZipFile(destination_zip_path, "w", compression=ZIP_COMPRESSION_METHOD) as archive:
-        for file_data in snapshot.get("files", []):
+        for item_index, file_data in enumerate(exportable_files, start=1):
             archive_name = normalize_archive_name(file_data.get("archive_name", ""))
             object_path = file_data.get("object_path", "")
             file_hash = file_data.get("hash") or file_data.get("file_hash", "")
-
-            if not archive_name or not object_path or not file_hash:
-                continue
-
-            if file_data.get("status") == "error":
-                continue
 
             object_abs_path = resolve_storage_relative_path(storage_root, object_path)
 
@@ -1873,6 +1884,8 @@ def export_snapshot_to_zip(snapshot_path, destination_zip_path):
                     "ERROR",
                     f"Objeto ausente durante exportacao do ZIP: {object_abs_path}"
                 )
+                if progress_callback:
+                    progress_callback(item_index, total_files, archive_name)
                 continue
 
             try:
@@ -1889,6 +1902,9 @@ def export_snapshot_to_zip(snapshot_path, destination_zip_path):
                     "ERROR",
                     f"Falha ao adicionar arquivo ao ZIP exportado: {archive_name} ({error})"
                 )
+
+            if progress_callback:
+                progress_callback(item_index, total_files, archive_name)
 
     return {
         "zip_path": destination_zip_path,

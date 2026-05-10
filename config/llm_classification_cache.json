@@ -1454,5 +1454,83 @@
             "llm_confidence": 0.95,
             "decision_tree": "{\"frequent_access\": true, \"frequent_modifications\": true, \"high_value_extension\": true, \"important_context\": false, \"important_name\": false, \"llm_acessos_relevantes\": true, \"llm_contexto_critico\": true, \"llm_modificacoes_relevantes\": true, \"llm_nome_critico\": true, \"llm_tipo_critico\": true, \"low_value_context\": false, \"low_value_extension\": false, \"system_or_program_extension\": true}"
         }
+    },
+    "087a2f445d2f83563910991b8c5664255ca5d40254f372d938b22bec7d586744": {
+        "created_at": "2026-05-10T18:51:40",
+        "result": {
+            "priority": "media",
+            "priority_score": 55,
+            "confidence": 0.8,
+            "reasons": [
+                "extensao com valor potencial para backup",
+                "arquivo acessado varias vezes entre varreduras",
+                "É um arquivo de documento.",
+                "Foi acessado 9 vezes.",
+                "Nome 'AULA 2 BACK-END' sugere conteúdo importante.",
+                "Não houve modificações recentes (60 dias)."
+            ],
+            "decisions": {
+                "frequent_modifications": false,
+                "high_value_extension": true,
+                "system_or_program_extension": false,
+                "frequent_access": true,
+                "important_name": false,
+                "important_context": false,
+                "low_value_extension": false,
+                "low_value_context": false,
+                "llm_modificacoes_relevantes": false,
+                "llm_tipo_critico": true,
+                "llm_acessos_relevantes": true,
+                "llm_nome_critico": true,
+                "llm_contexto_critico": false
+            },
+            "classification_source": "gemini_api",
+            "llm_model": "gemini-2.5-flash",
+            "llm_error": "",
+            "priority_reason": "extensao com valor potencial para backup; arquivo acessado varias vezes entre varreduras; É um arquivo de documento.; Foi acessado 9 vezes.; Nome 'AULA 2 BACK-END' sugere conteúdo importante.; Não houve modificações recentes (60 dias).",
+            "important": 1,
+            "backup_policy": "backup_a_cada_2_dias",
+            "llm_confidence": 0.8,
+            "decision_tree": "{\"frequent_access\": true, \"frequent_modifications\": false, \"high_value_extension\": true, \"important_context\": false, \"important_name\": false, \"llm_acessos_relevantes\": true, \"llm_contexto_critico\": false, \"llm_modificacoes_relevantes\": false, \"llm_nome_critico\": true, \"llm_tipo_critico\": true, \"low_value_context\": false, \"low_value_extension\": false, \"system_or_program_extension\": false}"
+        }
+    },
+    "51227758a25aaa2853fa442f86fe31e8369ae00cbd0da3face27b29ed559085f": {
+        "created_at": "2026-05-10T18:52:07",
+        "result": {
+            "priority": "media",
+            "priority_score": 60,
+            "confidence": 0.9,
+            "reasons": [
+                "arquivo modificado recentemente ou varias vezes",
+                "extensao com valor potencial para backup",
+                "arquivo acessado varias vezes entre varreduras",
+                "Documento PDF de tipo crítico.",
+                "Nome do arquivo indica informações importantes.",
+                "Alto número de acessos recentes."
+            ],
+            "decisions": {
+                "frequent_modifications": true,
+                "high_value_extension": true,
+                "system_or_program_extension": false,
+                "frequent_access": true,
+                "important_name": false,
+                "important_context": false,
+                "low_value_extension": false,
+                "low_value_context": false,
+                "llm_modificacoes_relevantes": true,
+                "llm_tipo_critico": true,
+                "llm_acessos_relevantes": true,
+                "llm_nome_critico": true,
+                "llm_contexto_critico": false
+            },
+            "classification_source": "gemini_api",
+            "llm_model": "gemini-2.5-flash",
+            "llm_error": "",
+            "priority_reason": "arquivo modificado recentemente ou varias vezes; extensao com valor potencial para backup; arquivo acessado varias vezes entre varreduras; Documento PDF de tipo crítico.; Nome do arquivo indica informações importantes.; Alto número de acessos recentes.",
+            "important": 1,
+            "backup_policy": "backup_a_cada_2_dias",
+            "llm_confidence": 0.9,
+            "decision_tree": "{\"frequent_access\": true, \"frequent_modifications\": true, \"high_value_extension\": true, \"important_context\": false, \"important_name\": false, \"llm_acessos_relevantes\": true, \"llm_contexto_critico\": false, \"llm_modificacoes_relevantes\": true, \"llm_nome_critico\": true, \"llm_tipo_critico\": true, \"low_value_context\": false, \"low_value_extension\": false, \"system_or_program_extension\": false}"
+        }
     }
 }

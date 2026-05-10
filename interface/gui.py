@@ -304,6 +304,10 @@ class BackupGUI:
         self.progress_label = None
         self.progress_bar = None
         self.cancel_button = None
+        self.download_queue = queue.Queue()
+        self.download_window = None
+        self.download_label = None
+        self.download_bar = None
         self.backup_button = None
         self.schedule_button = None
         self.files_button = None
@@ -508,7 +512,7 @@ class BackupGUI:
             bg=LIGHT_BUTTON
         )
         self.download_button = self.create_menu_button(
-            "Baixar ultimo backup",
+            "Baixar backups",
             self.show_download_panel,
             bg=LIGHT_BUTTON
         )
@@ -1006,12 +1010,7 @@ class BackupGUI:
         if not self.require_permission("download_backup"):
             return
 
-        self.show_message_panel(
-            "Baixar ultimo backup",
-            "Exporte uma copia do ultimo backup gerado.",
-            "Baixar backup",
-            self.download_latest_backup
-        )
+        self.show_download_options_panel()
 
     def show_schedule_panel(self):
         if not self.require_permission("schedule_backup"):
@@ -1473,6 +1472,30 @@ class BackupGUI:
         self.configure_child_icon(window)
         self.fade_in_window(window)
 
+    def center_window(self, window):
+        try:
+            window.update_idletasks()
+        except tk.TclError:
+            return
+
+        root_x = self.root.winfo_rootx()
+        root_y = self.root.winfo_rooty()
+        root_width = self.root.winfo_width()
+        root_height = self.root.winfo_height()
+        window_width = window.winfo_width()
+        window_height = window.winfo_height()
+
+        if root_width <= 1 or root_height <= 1:
+            screen_width = window.winfo_screenwidth()
+            screen_height = window.winfo_screenheight()
+            pos_x = max((screen_width - window_width) // 2, 0)
+            pos_y = max((screen_height - window_height) // 2, 0)
+        else:
+            pos_x = max(root_x + (root_width - window_width) // 2, 0)
+            pos_y = max(root_y + (root_height - window_height) // 2, 0)
+
+        window.geometry(f"+{pos_x}+{pos_y}")
+
     def configure_child_icon(self, window):
         if self.window_icon_photo is None:
             return
@@ -1860,6 +1883,7 @@ class BackupGUI:
         self.prepare_window(self.progress_window)
         self.progress_window.grab_set()
         self.progress_window.protocol("WM_DELETE_WINDOW", lambda: None)
+        self.center_window(self.progress_window)
 
         tk.Label(
             self.progress_window,
@@ -1930,6 +1954,138 @@ class BackupGUI:
         self.progress_label = None
         self.progress_bar = None
         self.cancel_button = None
+
+    def open_download_progress_window(self):
+        self.download_window = tk.Toplevel(self.root)
+        self.download_window.title("Baixando backup")
+        self.download_window.geometry("400x150")
+        self.download_window.minsize(360, 150)
+        self.download_window.configure(bg=BG_COLOR)
+        self.download_window.transient(self.root)
+        self.prepare_window(self.download_window)
+        self.download_window.grab_set()
+        self.download_window.protocol("WM_DELETE_WINDOW", lambda: None)
+        self.center_window(self.download_window)
+
+        tk.Label(
+            self.download_window,
+            text="Baixando backup",
+            bg=BG_COLOR,
+            fg=TITLE_COLOR,
+            font=TITLE_FONT
+        ).pack(pady=(20, 12))
+
+        self.download_label = tk.Label(
+            self.download_window,
+            text="Preparando...",
+            bg=BG_COLOR,
+            fg=SUBTLE_TEXT,
+            font=BODY_FONT,
+            wraplength=340,
+            justify="center"
+        )
+        self.download_label.pack(fill="x", padx=24, pady=(0, 12))
+
+        self.download_bar = ttk.Progressbar(
+            self.download_window,
+            orient="horizontal",
+            mode="determinate",
+            maximum=100
+        )
+        self.download_bar.pack(fill="x", padx=36, pady=(0, 6))
+        self.download_bar["value"] = 0
+
+    def update_download_progress_window(self, percent, message):
+        if self.download_window is None or not self.download_window.winfo_exists():
+            return
+
+        self.download_bar["value"] = max(0, min(percent, 100))
+        self.download_label.config(text=message)
+        self.download_window.update_idletasks()
+
+    def close_download_progress_window(self):
+        if self.download_window is None:
+            return
+
+        if self.download_window.winfo_exists():
+            self.download_window.grab_release()
+            self.download_window.destroy()
+
+        self.download_window = None
+        self.download_label = None
+        self.download_bar = None
+
+    def enqueue_download_progress(self, percent, message):
+        self.download_queue.put(("progress", percent, message))
+
+    def process_download_events(self):
+        should_continue = True
+
+        while True:
+            try:
+                event = self.download_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            event_type = event[0]
+
+            if event_type == "progress":
+                _, percent, message = event
+                self.update_download_progress_window(percent, message)
+                continue
+
+            should_continue = False
+
+            if event_type == "success":
+                _, message = event
+                self.update_download_progress_window(100, "Download concluido.")
+                self.root.after(300, self.close_download_progress_window)
+                self.root.after(
+                    320,
+                    lambda current_message=message: messagebox.showinfo(
+                        "Backup exportado",
+                        current_message,
+                        parent=self.root
+                    )
+                )
+            elif event_type == "error":
+                _, error_message = event
+                self.close_download_progress_window()
+                messagebox.showerror(
+                    "Erro ao exportar backup",
+                    error_message,
+                    parent=self.root
+                )
+
+        if should_continue and self.download_window is not None:
+            self.root.after(120, self.process_download_events)
+
+    def copy_file_with_progress(self, source_path, destination_path):
+        total_size = max(os.path.getsize(source_path), 1)
+        copied_size = 0
+        chunk_size = 1024 * 1024
+        destination_directory = os.path.dirname(destination_path)
+
+        if destination_directory:
+            os.makedirs(destination_directory, exist_ok=True)
+
+        with open(source_path, "rb") as source_file:
+            with open(destination_path, "wb") as target_file:
+                while True:
+                    chunk = source_file.read(chunk_size)
+
+                    if not chunk:
+                        break
+
+                    target_file.write(chunk)
+                    copied_size += len(chunk)
+                    percent = int((copied_size / total_size) * 100)
+                    self.enqueue_download_progress(
+                        percent,
+                        f"Copiando arquivo... {percent}%"
+                    )
+
+        shutil.copystat(source_path, destination_path)
 
     def set_backup_button_state(self, state):
         if self.backup_button is not None:
@@ -2863,6 +3019,7 @@ class BackupGUI:
                 {
                     "action": change.get("action", "-"),
                     "name": change.get("name", ""),
+                    "priority": change.get("priority", "-") or "-",
                     "archive_name": change.get("archive_name", ""),
                     "size_bytes": change.get("size_bytes", 0),
                     "modified_at": change.get("modified_at", ""),
@@ -2882,6 +3039,7 @@ class BackupGUI:
                 {
                     "action": "mantido",
                     "name": file_data.get("name", ""),
+                    "priority": file_data.get("priority", "-") or "-",
                     "archive_name": archive_name,
                     "size_bytes": file_data.get("size_bytes", 0),
                     "modified_at": file_data.get("modified_at", ""),
@@ -4290,7 +4448,7 @@ class BackupGUI:
             }
         )
 
-        change_columns = ("action", "name", "archive_name", "size", "modified_at")
+        change_columns = ("action", "name", "priority", "archive_name", "size", "modified_at")
         change_frame = tk.Frame(content, bg=BG_COLOR)
         change_tree = self.create_scrollable_tree(
             change_frame,
@@ -4301,6 +4459,7 @@ class BackupGUI:
         change_headings = {
             "action": "Acao",
             "name": "Arquivo",
+            "priority": "Prioridade",
             "archive_name": "Caminho no backup",
             "size": "Tamanho",
             "modified_at": "Modificado em"
@@ -4312,15 +4471,16 @@ class BackupGUI:
             {
                 "action": {"width": 95, "minwidth": 80, "weight": 1},
                 "name": {
-                    "width": 220,
-                    "minwidth": 170,
-                    "weight": 3,
+                    "width": 180,
+                    "minwidth": 150,
+                    "weight": 2,
                     "anchor": "w",
                 },
+                "priority": {"width": 105, "minwidth": 90, "weight": 1},
                 "archive_name": {
-                    "width": 330,
-                    "minwidth": 250,
-                    "weight": 5,
+                    "width": 300,
+                    "minwidth": 220,
+                    "weight": 4,
                     "anchor": "w",
                 },
                 "size": {"width": 100, "minwidth": 85, "weight": 1},
@@ -4647,7 +4807,7 @@ class BackupGUI:
                 change_tree.insert(
                     "",
                     tk.END,
-                    values=("-", "Nenhum backup para este filtro", "", "-", "-")
+                    values=("-", "Nenhum backup para este filtro", "-", "", "-", "-")
                 )
 
         def refresh_changes(event=None):
@@ -4671,6 +4831,7 @@ class BackupGUI:
                     values=(
                         "-",
                         "Nenhum arquivo registrado",
+                        "-",
                         "Backups antigos podem nao ter snapshot ou mudancas detalhadas",
                         "-",
                         "-"
@@ -4696,6 +4857,7 @@ class BackupGUI:
                     values=(
                         action,
                         file_name,
+                        change.get("priority", "-"),
                         archive_name,
                         format_size(change.get("size_bytes")),
                         change.get("modified_at", "")
@@ -4707,7 +4869,7 @@ class BackupGUI:
                 change_tree.insert(
                     "",
                     tk.END,
-                    values=("-", "Nenhum arquivo para este filtro", "", "-", "-")
+                    values=("-", "Nenhum arquivo para este filtro", "-", "", "-", "-")
                 )
 
         backup_tree.bind("<<TreeviewSelect>>", refresh_changes)
@@ -4901,68 +5063,292 @@ class BackupGUI:
         if not self.require_permission("download_backup"):
             return
 
-        latest_backup = self.get_latest_backup()
+        latest_entry = self.get_latest_visible_history_entry()
 
-        if not latest_backup:
-            messagebox.showinfo(
-                "Sem backup",
-                "Nenhum backup disponivel para exportacao."
-            )
+        if not latest_entry:
+            messagebox.showinfo("Sem backup", "Nenhum backup disponivel para exportacao.")
             return
 
-        extension = os.path.splitext(latest_backup)[1].lower()
+        self.export_history_entry(latest_entry, title_suffix="do ultimo backup")
+
+    def get_latest_backup(self):
+        return get_latest_backup_path(self.get_backup_destination())
+
+    def get_latest_visible_full_backup_entry(self):
+        history = self.get_visible_history()
+
+        for entry in reversed(history):
+            if entry.get("partial_backup"):
+                continue
+            return entry
+
+        return None
+
+    def choose_backup_export_destination(self, backup_path, export_mode_label):
+        extension = os.path.splitext(backup_path)[1].lower()
         filetypes = [("Arquivo ZIP", "*.zip"), ("Todos os arquivos", "*.*")]
         defaultextension = ".zip"
-        initial_name = os.path.splitext(os.path.basename(latest_backup))[0] + ".zip"
+        initial_name = os.path.splitext(os.path.basename(backup_path))[0] + ".zip"
 
         if extension == ".zip":
-            initial_name = os.path.basename(latest_backup)
+            initial_name = os.path.basename(backup_path)
 
-        destination = filedialog.asksaveasfilename(
-            title="Salvar copia do ultimo backup",
+        return filedialog.asksaveasfilename(
+            title=f"Salvar copia {export_mode_label}",
             defaultextension=defaultextension,
             initialfile=initial_name,
             filetypes=filetypes
         )
 
+    def export_history_entry(self, entry, title_suffix="do backup selecionado"):
+        backup_path = entry.get("backup_path") or entry.get("snapshot_path", "")
+
+        if not backup_path or not os.path.exists(backup_path):
+            messagebox.showwarning(
+                "Backup indisponivel",
+                "O arquivo deste backup nao foi encontrado no disco.",
+                parent=self.root
+            )
+            return False
+
+        destination = self.choose_backup_export_destination(backup_path, title_suffix)
+
         if not destination:
-            return
+            return False
 
-        try:
-            if extension == ".json":
-                export_result = export_snapshot_to_zip(latest_backup, destination)
-                warning_count = len(export_result.get("warnings", []))
-                warning_text = ""
+        self.open_download_progress_window()
 
-                if warning_count:
-                    warning_text = (
-                        "\n\nArquivos ignorados durante a exportacao: "
-                        f"{warning_count}"
+        def run_export():
+            try:
+                extension = os.path.splitext(backup_path)[1].lower()
+
+                if extension == ".json":
+                    export_result = export_snapshot_to_zip(
+                        backup_path,
+                        destination,
+                        progress_callback=lambda processed, total, current_entry: (
+                            self.enqueue_download_progress(
+                                100 if total <= 0 else int((processed / total) * 100),
+                                (
+                                    "Gerando ZIP do backup..."
+                                    if not current_entry
+                                    else f"Compactando: {current_entry}"
+                                )
+                            )
+                        )
                     )
+                    warning_count = len(export_result.get("warnings", []))
+                    warning_text = ""
 
-                messagebox.showinfo(
-                    "Backup exportado",
-                    (
-                        "ZIP gerado a partir do ultimo snapshot incremental.\n\n"
+                    if warning_count:
+                        warning_text = (
+                            "\n\nArquivos ignorados durante a exportacao: "
+                            f"{warning_count}"
+                        )
+
+                    success_message = (
+                        "ZIP gerado a partir do snapshot selecionado.\n\n"
                         f"Arquivo salvo em:\n{destination}\n\n"
                         f"Arquivos exportados: {export_result.get('files_exported', 0)}"
                         f"{warning_text}"
                     )
+                else:
+                    self.copy_file_with_progress(backup_path, destination)
+                    success_message = f"Backup copiado para:\n{destination}"
+
+                self.download_queue.put(("success", success_message))
+            except Exception as error:
+                self.download_queue.put(("error", str(error)))
+
+        worker = threading.Thread(target=run_export, daemon=True)
+        worker.start()
+        self.root.after(120, self.process_download_events)
+
+        return True
+
+    def show_download_options_panel(self):
+        if not self.require_permission("download_backup"):
+            return
+
+        history = self.get_visible_history()
+        latest_entry = self.get_latest_visible_history_entry()
+        latest_full_entry = self.get_latest_visible_full_backup_entry()
+
+        _panel, content = self.create_content_shell(
+            "Baixar Backups",
+            subtitle="Exporte o ultimo backup, um backup completo de recuperacao ou um backup especifico."
+        )
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(1, weight=1)
+
+        options_box = tk.Frame(
+            content,
+            bg=PANEL_COLOR,
+            highlightbackground=BORDER_COLOR,
+            highlightthickness=1,
+            padx=18,
+            pady=18
+        )
+        options_box.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+        options_box.columnconfigure(0, weight=1)
+        options_box.columnconfigure(1, weight=1)
+        options_box.columnconfigure(2, weight=1)
+
+        def add_download_option(column, title, description, button_text, command, enabled=True):
+            card = tk.Frame(
+                options_box,
+                bg=HOME_PANEL_COLOR,
+                highlightbackground=BORDER_COLOR,
+                highlightthickness=1,
+                padx=16,
+                pady=16
+            )
+            card.grid(row=0, column=column, sticky="nsew", padx=(0 if column == 0 else 10, 0))
+
+            tk.Label(
+                card,
+                text=title,
+                bg=HOME_PANEL_COLOR,
+                fg=TITLE_COLOR,
+                font=("Segoe UI", 12, "bold"),
+                justify="left",
+                anchor="w"
+            ).pack(fill="x")
+
+            tk.Label(
+                card,
+                text=description,
+                bg=HOME_PANEL_COLOR,
+                fg=SUBTLE_TEXT,
+                font=("Segoe UI", 10),
+                justify="left",
+                anchor="w",
+                wraplength=250
+            ).pack(fill="x", pady=(8, 14))
+
+            button = self.create_dialog_button(card, button_text, command)
+            if not enabled:
+                button.config(state=tk.DISABLED, cursor="arrow")
+            button.pack(anchor="w")
+
+        add_download_option(
+            0,
+            "Ultimo backup",
+            "Exporta exatamente o backup mais recente visivel no historico, mesmo se ele for parcial por prioridade.",
+            "Baixar ultimo",
+            lambda: self.export_history_entry(latest_entry, "do ultimo backup"),
+            enabled=latest_entry is not None
+        )
+        add_download_option(
+            1,
+            "Backup completo",
+            "Exporta o backup completo mais recente para recuperacao de todos os arquivos, ignorando snapshots parciais.",
+            "Baixar completo",
+            lambda: self.export_history_entry(latest_full_entry, "do backup completo"),
+            enabled=latest_full_entry is not None
+        )
+        add_download_option(
+            2,
+            "Backup especifico",
+            "Selecione qualquer backup da lista abaixo para exportar exatamente a execucao desejada.",
+            "Baixar selecionado",
+            lambda: export_selected_backup(),
+            enabled=bool(history)
+        )
+
+        table_box = tk.Frame(
+            content,
+            bg=PANEL_COLOR,
+            highlightbackground=BORDER_COLOR,
+            highlightthickness=1,
+            padx=14,
+            pady=14
+        )
+        table_box.grid(row=1, column=0, sticky="nsew")
+        table_box.columnconfigure(0, weight=1)
+        table_box.rowconfigure(1, weight=1)
+
+        tk.Label(
+            table_box,
+            text="Escolher backup especifico",
+            bg=PANEL_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Arial", 10, "bold")
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+
+        columns = ("timestamp", "user", "backup_name", "trigger", "total", "kind")
+        table_frame = tk.Frame(table_box, bg=PANEL_COLOR)
+        table_frame.grid(row=1, column=0, sticky="nsew")
+        history_tree = self.create_scrollable_tree(table_frame, columns, height=12)
+        self.configure_tree_columns(
+            history_tree,
+            {
+                "timestamp": "Data",
+                "user": "Usuario",
+                "backup_name": "Backup",
+                "trigger": "Tipo",
+                "total": "Arquivos",
+                "kind": "Escopo",
+            },
+            {
+                "timestamp": {"width": 150, "minwidth": 130, "weight": 2},
+                "user": {"width": 90, "minwidth": 70, "weight": 1},
+                "backup_name": {"width": 220, "minwidth": 180, "weight": 3, "anchor": "w"},
+                "trigger": {"width": 100, "minwidth": 85, "weight": 1},
+                "total": {"width": 90, "minwidth": 75, "weight": 1},
+                "kind": {"width": 110, "minwidth": 95, "weight": 1},
+            }
+        )
+
+        indexed_history = list(reversed(history))
+
+        for index, entry in enumerate(indexed_history):
+            history_tree.insert(
+                "",
+                tk.END,
+                iid=str(index),
+                values=(
+                    entry.get("timestamp", "-"),
+                    entry.get("user", "sistema"),
+                    entry.get("backup_name", "") or entry.get("backup_file", "-"),
+                    entry.get("trigger", "-"),
+                    entry.get("total_files", 0),
+                    "Parcial" if entry.get("partial_backup") else "Completo",
                 )
-            else:
-                shutil.copy2(latest_backup, destination)
-                messagebox.showinfo(
-                    "Backup exportado",
-                    f"Ultimo backup copiado para:\n{destination}"
-                )
-        except Exception as error:
-            messagebox.showerror(
-                "Erro ao exportar backup",
-                str(error)
             )
 
-    def get_latest_backup(self):
-        return get_latest_backup_path(self.get_backup_destination())
+        if history_tree.get_children():
+            history_tree.selection_set(history_tree.get_children()[0])
+
+        def get_selected_history_entry():
+            selected = history_tree.selection()
+
+            if not selected:
+                return None
+
+            return indexed_history[int(selected[0])]
+
+        def export_selected_backup():
+            selected_entry = get_selected_history_entry()
+
+            if not selected_entry:
+                messagebox.showwarning(
+                    "Selecao vazia",
+                    "Selecione um backup da lista para exportar.",
+                    parent=self.root
+                )
+                return
+
+            self.export_history_entry(selected_entry, "do backup selecionado")
+
+        button_bar = tk.Frame(table_box, bg=PANEL_COLOR)
+        button_bar.grid(row=2, column=0, sticky="e", pady=(10, 0))
+
+        self.create_dialog_button(
+            button_bar,
+            "Baixar backup selecionado",
+            export_selected_backup
+        ).pack(side="left")
 
     def open_user_manager(self):
         if not self.require_permission("manage_users"):
