@@ -227,7 +227,7 @@ class IncrementalBackupTests(unittest.TestCase):
         self.assertEqual(1, len(result["priority_decisions"]))
         self.assertFalse(result["priority_decisions"][0]["included"])
 
-    def test_priority_eligible_manifest_in_dev_mode_includes_high_after_5_minutes(self):
+    def test_priority_eligible_manifest_in_dev_mode_includes_high_after_change(self):
         os.environ["BACKUP_DEV_MODE"] = "true"
         file_path = self.write_file("A.txt", "v1")
         manifest = self.manifest_for(file_path)
@@ -246,16 +246,32 @@ class IncrementalBackupTests(unittest.TestCase):
             now=self.now + timedelta(minutes=5, seconds=1),
             priority_index=priority_index,
         )
+        file_path.write_text("v2", encoding="utf-8")
+        changed_manifest, changed_decisions, _ = build_priority_eligible_manifest(
+            directories=[str(self.source)],
+            backup_destination=str(self.destination),
+            now=self.now + timedelta(minutes=5, seconds=2),
+            priority_index=priority_index,
+        )
 
         self.assertEqual([], before_manifest)
         self.assertFalse(before_decisions[0]["included"])
+        self.assertEqual([], after_manifest)
+        self.assertFalse(after_decisions[0]["included"])
+        self.assertEqual(
+            "arquivo sem alteracao desde a ultima snapshot",
+            after_decisions[0]["reason"]
+        )
         self.assertEqual(
             [(manifest[0][0], normalize_archive_name(manifest[0][1]))],
             [
-                (after_manifest[0][0], normalize_archive_name(after_manifest[0][1]))
+                (
+                    changed_manifest[0][0],
+                    normalize_archive_name(changed_manifest[0][1])
+                )
             ]
         )
-        self.assertTrue(after_decisions[0]["included"])
+        self.assertTrue(changed_decisions[0]["included"])
 
     def test_priority_eligible_manifest_in_dev_mode_respects_medium_and_low(self):
         os.environ["BACKUP_DEV_MODE"] = "true"
@@ -298,6 +314,7 @@ class IncrementalBackupTests(unittest.TestCase):
             now=self.now + timedelta(minutes=14),
             priority_index=medium_index,
         )
+        medium_file.write_text("media alterada", encoding="utf-8")
         medium_after, _, _ = build_priority_eligible_manifest(
             directories=[str(medium_dir)],
             backup_destination=str(self.destination),
@@ -310,7 +327,7 @@ class IncrementalBackupTests(unittest.TestCase):
             now=self.now + timedelta(minutes=29),
             priority_index=low_index,
         )
-        low_after, _, _ = build_priority_eligible_manifest(
+        low_after, low_after_decisions, _ = build_priority_eligible_manifest(
             directories=[str(low_dir)],
             backup_destination=str(self.destination),
             now=self.now + timedelta(minutes=30, seconds=1),
@@ -323,9 +340,11 @@ class IncrementalBackupTests(unittest.TestCase):
             [(medium_after[0][0], normalize_archive_name(medium_after[0][1]))]
         )
         self.assertEqual([], low_before)
+        self.assertEqual([], low_after)
+        self.assertFalse(low_after_decisions[0]["included"])
         self.assertEqual(
-            [(low_manifest[0][0], normalize_archive_name(low_manifest[0][1]))],
-            [(low_after[0][0], normalize_archive_name(low_after[0][1]))]
+            "baixa prioridade aguardando backup completo",
+            low_after_decisions[0]["reason"]
         )
 
     def test_first_backup_creates_objects_snapshot_and_index(self):
@@ -400,6 +419,28 @@ class IncrementalBackupTests(unittest.TestCase):
         self.assertEqual(1, len(hashes))
         self.assertEqual(1, result["objects_stored"])
         self.assertEqual(1, result["objects_referenced"])
+
+    def test_duplicate_files_restore_after_sources_are_deleted(self):
+        original = self.write_file("A.txt", "same")
+        copy = self.write_file("nested/copia_de_A.txt", "same")
+        result = self.run_backup(self.manifest_for(original, copy))
+        restore_destination = self.root / "restore"
+        original.unlink()
+        copy.unlink()
+
+        restore_snapshot(result["snapshot_path"], str(restore_destination))
+
+        self.assertEqual(
+            "same",
+            (restore_destination / "source" / "A.txt").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            "same",
+            (
+                restore_destination / "source" / "nested" / "copia_de_A.txt"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(1, len(self.object_paths()))
 
     def test_low_priority_waits_seven_days_before_new_object(self):
         file_path = self.write_file("A.txt", "v1")
@@ -552,6 +593,7 @@ class IncrementalBackupTests(unittest.TestCase):
             now=datetime.now() - timedelta(minutes=6),
             priority="alta"
         )
+        file_path.write_text("v2", encoding="utf-8")
 
         result = run_priority_backup_job(
             run_scan_first=False,
@@ -565,6 +607,30 @@ class IncrementalBackupTests(unittest.TestCase):
         self.assertEqual(1, len(backup_manager.load_history()))
         self.assertEqual(1, len(result["priority_decisions"]))
         self.assertTrue(result["priority_decisions"][0]["included"])
+
+    def test_priority_job_skips_after_ttl_when_file_is_unchanged(self):
+        os.environ["BACKUP_DEV_MODE"] = "true"
+        file_path = self.write_file("A.txt", "v1")
+        manifest = self.manifest_for(file_path)
+        self.configure_priority_job_environment([file_path], "alta")
+        self.run_backup(
+            manifest,
+            now=datetime.now() - timedelta(minutes=6),
+            priority="alta"
+        )
+
+        result = run_priority_backup_job(
+            run_scan_first=False,
+            username="sistema",
+            user_role="system"
+        )
+
+        self.assertTrue(result["skipped"])
+        self.assertEqual(0, len(backup_manager.load_history()))
+        self.assertEqual(
+            "arquivo sem alteracao desde a ultima snapshot",
+            result["priority_decisions"][0]["reason"]
+        )
 
     def test_priority_job_marks_partial_backup_without_false_deletions(self):
         high_file = self.write_file("A.txt", "high")
@@ -587,13 +653,28 @@ class IncrementalBackupTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        run_incremental_backup(
+        full_result = run_incremental_backup(
             directories=[str(self.source)],
             backup_destination=str(self.destination),
             manifest=manifest,
             now=self.now,
             priority_index=mixed_priority_index,
         )
+        backup_manager.append_history(
+            {
+                "timestamp": self.now.strftime("%d/%m/%Y %H:%M:%S"),
+                "backup_name": "full",
+                "snapshot_id": full_result["snapshot_id"],
+                "snapshot_path": full_result["snapshot_path"],
+                "backup_path": full_result["snapshot_path"],
+                "backup_storage": full_result["backup_storage"],
+                "storage_mode": "incremental",
+                "file_snapshot": full_result["file_snapshot"],
+                "file_changes": [],
+                "history_group_type": "full",
+            }
+        )
+        high_file.write_text("high changed", encoding="utf-8")
 
         result = run_priority_backup_job(
             run_scan_first=False,
@@ -603,7 +684,12 @@ class IncrementalBackupTests(unittest.TestCase):
 
         self.assertFalse(result.get("skipped", False))
         self.assertTrue(result.get("partial_backup"))
-        self.assertEqual([], result["file_changes"])
+        self.assertEqual(
+            ["alterado"],
+            [change["action"] for change in result["file_changes"]]
+        )
+        self.assertEqual(full_result["snapshot_id"], result["parent_snapshot_id"])
+        self.assertEqual("alta", result["priority_scope"])
 
         latest_full_snapshot = backup_manager.get_latest_history_snapshot()
         self.assertEqual(2, len(latest_full_snapshot))

@@ -26,6 +26,7 @@ INDEX_VERSION = 1
 PRIORITY_LOW = "baixa"
 PRIORITY_MEDIUM = "media"
 PRIORITY_HIGH = "alta"
+DEFAULT_PRIORITY_BACKUP_POLICY_ENABLED = True
 ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
 _BACKUP_ENV_FILE_LOADED = False
 PRIORITY_INTERVALS = {
@@ -154,7 +155,12 @@ def is_deduplication_enabled(config=None):
 
 def is_priority_backup_policy_enabled(config=None):
     config = config or load_config()
-    return bool(config.get("priority_backup_policy_enabled", False))
+    return bool(
+        config.get(
+            "priority_backup_policy_enabled",
+            DEFAULT_PRIORITY_BACKUP_POLICY_ENABLED
+        )
+    )
 
 
 def get_ignored_roots(config=None, backup_destination=None):
@@ -444,20 +450,42 @@ def build_priority_eligible_manifest(
         state_key = normalize_path(source_path)
         index_entry = index.get("files", {}).get(state_key, {})
         last_backup_at = parse_iso_datetime(index_entry.get("last_backup_at"))
-        include_file = is_file_eligible_for_backup(metadata, index_entry, now)
+        include_file = False
+        reason = ""
+
+        if priority == PRIORITY_LOW:
+            reason = "baixa prioridade aguardando backup completo"
+        else:
+            time_eligible = is_file_eligible_for_backup(metadata, index_entry, now)
+
+            if time_eligible:
+                changed, current_hash, change_reason = has_priority_file_changed(
+                    source_path,
+                    index_entry,
+                    metadata
+                )
+                include_file = changed
+                reason = change_reason
+
+                if (
+                    include_file
+                    and is_dev_mode_enabled()
+                    and last_backup_at
+                    and current_hash
+                ):
+                    log_backup_decision(
+                        "DEV MODE",
+                        f"Arquivo elegivel e alterado em intervalo reduzido: {os.path.basename(source_path)}"
+                    )
+            else:
+                reason = f"prioridade {priority} ainda dentro do intervalo"
+                log_dev_mode_not_eligible(source_path, priority, last_backup_at, now)
 
         if include_file:
-            reason = "arquivo elegivel pela politica de prioridade"
-
-            if is_dev_mode_enabled() and last_backup_at:
-                reason = "arquivo elegivel em intervalo reduzido de DEV MODE"
-                log_backup_decision(
-                    "DEV MODE",
-                    f"Arquivo elegivel em intervalo reduzido: {os.path.basename(source_path)}"
-                )
-        else:
-            reason = f"prioridade {priority} ainda dentro do intervalo"
-            log_dev_mode_not_eligible(source_path, priority, last_backup_at, now)
+            log_backup_decision(
+                "INFO",
+                f"Arquivo incluido na snapshot por prioridade: {source_path}"
+            )
 
         decisions.append(
             {
@@ -467,6 +495,7 @@ def build_priority_eligible_manifest(
                 "included": include_file,
                 "reason": reason,
                 "last_backup_at": index_entry.get("last_backup_at", ""),
+                "last_hash": index_entry.get("last_hash", ""),
                 "required_interval": format_interval_for_log(get_backup_interval(priority)),
             }
         )
@@ -489,6 +518,25 @@ def build_priority_backup_manifest(
         backup_destination=backup_destination,
         now=now,
     )
+
+
+def determine_priority_scope(manifest, priority_index=None):
+    priority_index = priority_index or load_dataset_priority_index()
+    priorities = {
+        normalize_priority(
+            find_priority_metadata(source_path, archive_name, priority_index).get("priority")
+        )
+        for source_path, archive_name in manifest
+    }
+    priorities.discard(PRIORITY_LOW)
+
+    if len(priorities) == 1:
+        return next(iter(priorities))
+
+    if priorities:
+        return "mixed"
+
+    return PRIORITY_LOW
 
 
 def update_priority_state_after_backup(manifest, current_snapshot, now=None, priority_index=None):
@@ -536,6 +584,26 @@ def get_latest_history_snapshot(include_partial=False):
             return snapshot
 
     return {}
+
+
+def is_full_history_entry(entry):
+    if not isinstance(entry, dict):
+        return False
+
+    if entry.get("partial_backup") or entry.get("priority_policy"):
+        return False
+
+    return bool(entry.get("file_snapshot"))
+
+
+def get_latest_full_history_entry():
+    history = load_history()
+
+    for entry in reversed(history):
+        if is_full_history_entry(entry):
+            return entry
+
+    return None
 
 
 def build_file_changes(previous_snapshot, current_snapshot, detect_deletions=True):
@@ -948,6 +1016,23 @@ def is_file_eligible_for_backup(file_metadata, index_entry, now):
         return now - last_backup_at >= interval
 
     return now - last_backup_at >= interval
+
+
+def has_priority_file_changed(source_path, index_entry, metadata):
+    previous_hash = index_entry.get("last_hash") or index_entry.get("last_backup_hash", "")
+
+    if not previous_hash:
+        return True, "", "arquivo novo sem hash anterior"
+
+    current_hash = get_priority_file_hash(source_path, metadata)
+
+    if not current_hash:
+        return True, "", "hash atual indisponivel; arquivo sera avaliado pelo backup"
+
+    if current_hash != previous_hash:
+        return True, current_hash, "arquivo alterado desde a ultima snapshot"
+
+    return False, current_hash, "arquivo sem alteracao desde a ultima snapshot"
 
 
 def store_incremental_object(source_path, object_path):
@@ -1408,7 +1493,8 @@ def run_backup_job(
         "file_changes": file_changes,
         "file_snapshot": current_snapshot,
         "status_counts": incremental_result["status_counts"],
-        "warnings_count": len(incremental_result["warnings"])
+        "warnings_count": len(incremental_result["warnings"]),
+        "history_group_type": "full",
     }
     append_history(history_entry)
 
@@ -1520,6 +1606,8 @@ def run_priority_backup_job(
         detect_deletions=False
     )
     completed_at = datetime.now()
+    parent_entry = get_latest_full_history_entry()
+    parent_snapshot_id = parent_entry.get("snapshot_id", "") if parent_entry else ""
 
     history_entry = {
         "timestamp": completed_at.strftime("%d/%m/%Y %H:%M:%S"),
@@ -1548,6 +1636,9 @@ def run_priority_backup_job(
         "priority_policy": True,
         "partial_backup": True,
         "priority_decisions": priority_decisions,
+        "history_group_type": "priority_snapshot",
+        "parent_snapshot_id": parent_snapshot_id,
+        "priority_scope": determine_priority_scope(eligible_manifest, priority_index),
     }
     append_history(history_entry)
 

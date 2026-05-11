@@ -3,6 +3,9 @@ config/config.json
 config/users.json
 config/backup_history.json
 config/backup_schedule.json
+config/file_activity.json
+config/llm_classification_cache.json
+config/priority_backup_state.json
 
 # Dados gerados pela aplicacao
 dataset/

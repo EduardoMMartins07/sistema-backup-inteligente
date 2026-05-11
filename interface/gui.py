@@ -24,6 +24,7 @@ from backup.backup_manager import build_recovered_folder_path
 from backup.backup_manager import build_restore_target
 from backup.backup_manager import get_latest_backup_path
 from backup.backup_manager import inspect_restore_changes
+from backup.backup_manager import is_path_ignored
 from backup.backup_manager import export_snapshot_to_zip
 from backup.backup_manager import restore_recoverable_changes
 from backup.backup_manager import restore_snapshot
@@ -34,6 +35,7 @@ BACKUP_DIR = "backups"
 HISTORY_PATH = "config/backup_history.json"
 SCHEDULE_PATH = "config/backup_schedule.json"
 ICON_PATH = os.path.join("assets", "nuvem.png")
+DEFAULT_PRIORITY_BACKUP_POLICY_ENABLED = True
 
 BG_COLOR = "#283241"
 PANEL_COLOR = "#1F2733"
@@ -304,6 +306,20 @@ def build_file_status_rows(dataset_rows, history):
     return rows
 
 
+def format_files_view_modified_at(timestamp):
+    try:
+        return datetime.fromtimestamp(float(timestamp)).strftime("%d/%m/%Y %H:%M:%S")
+    except (TypeError, ValueError, OSError):
+        return "-"
+
+
+def format_files_view_days_since_modified(timestamp):
+    try:
+        return str((datetime.now() - datetime.fromtimestamp(float(timestamp))).days)
+    except (TypeError, ValueError, OSError):
+        return "-"
+
+
 class BackupGUI:
 
     def __init__(self, root, current_user):
@@ -341,9 +357,13 @@ class BackupGUI:
         self.content_panel = None
         self.current_view = "home"
         self.dashboard_compacted_size_job_key = None
+        self.dashboard_monitored_size_job_key = None
+        self.dashboard_monitored_size_bytes = None
         self.logout_requested = False
         self.pending_backup_name = ""
         self.pending_backup_description = ""
+        self.pending_backup_directories = None
+        self.pending_backup_trigger = "manual"
         self.cancel_backup_requested = threading.Event()
 
         self.configure_window_icon()
@@ -776,6 +796,7 @@ class BackupGUI:
             self.create_dialog_button(box, action_text, action).pack()
 
     def show_welcome_panel(self):
+        self.dashboard_monitored_size_bytes = None
         self.render_dashboard()
 
     def load_dataset_rows(self):
@@ -934,11 +955,86 @@ class BackupGUI:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def get_monitored_size_job_key(self):
+        return tuple(
+            os.path.normcase(os.path.abspath(directory))
+            for directory in self.directories
+        )
+
+    def compute_monitored_total_size_bytes(self):
+        total_size = 0
+
+        for directory in self.directories:
+            directory_path = os.path.abspath(directory)
+
+            if not os.path.isdir(directory_path) or is_path_ignored(directory_path):
+                continue
+
+            for current_root, dirs, files in os.walk(directory_path):
+                if is_path_ignored(current_root):
+                    dirs[:] = []
+                    continue
+
+                dirs[:] = [
+                    current_dir
+                    for current_dir in dirs
+                    if not is_path_ignored(os.path.join(current_root, current_dir))
+                ]
+
+                for file_name in files:
+                    file_path = os.path.join(current_root, file_name)
+
+                    if is_path_ignored(file_path):
+                        continue
+
+                    try:
+                        total_size += os.path.getsize(file_path)
+                    except OSError:
+                        continue
+
+        return total_size
+
+    def ensure_dashboard_monitored_size_async(self):
+        job_key = self.get_monitored_size_job_key()
+
+        if not job_key:
+            self.dashboard_monitored_size_bytes = 0
+            return
+
+        if self.dashboard_monitored_size_bytes is not None:
+            return
+
+        if self.dashboard_monitored_size_job_key == job_key:
+            return
+
+        self.dashboard_monitored_size_job_key = job_key
+
+        def worker():
+            total_size = self.compute_monitored_total_size_bytes()
+
+            def finish():
+                if self.dashboard_monitored_size_job_key == job_key:
+                    self.dashboard_monitored_size_job_key = None
+                    self.dashboard_monitored_size_bytes = total_size
+
+                if self.current_view == "home":
+                    self.render_dashboard()
+
+            self.root.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def build_dashboard_summary(self):
         latest_backup = self.get_latest_visible_history_entry()
         latest_full_backup = self.get_latest_visible_full_backup_entry()
+        latest_size_backup = latest_full_backup or latest_backup
         action_counts = self.count_backup_actions(latest_backup)
-        compacted_size_bytes = self.get_history_compacted_size_bytes(latest_full_backup)
+        compacted_size_bytes = self.get_history_compacted_size_bytes(latest_size_backup)
+        monitored_size = (
+            format_size_bytes_human(self.dashboard_monitored_size_bytes)
+            if self.dashboard_monitored_size_bytes is not None
+            else "Calculando"
+        )
 
         return {
             "total_files": len(self.load_dataset_rows()),
@@ -946,15 +1042,20 @@ class BackupGUI:
             "changed_files": action_counts["alterado"],
             "deleted_files": action_counts["excluido"],
             "latest_backup": latest_backup,
-            "latest_full_backup": latest_full_backup,
+            "latest_full_backup": latest_size_backup,
             "backup_destination": self.get_backup_destination(),
-            "backup_recovery_size": format_size_bytes_human(
-                self.get_history_snapshot_total_size_bytes(latest_full_backup)
+            "monitored_total_size": monitored_size,
+            "backup_recovery_size": (
+                format_size_bytes_human(
+                    self.get_history_snapshot_total_size_bytes(latest_size_backup)
+                )
+                if latest_size_backup
+                else "-"
             ),
             "backup_compacted_size": (
                 format_size_bytes_human(compacted_size_bytes)
                 if compacted_size_bytes is not None
-                else "Calculando..."
+                else ("Calculando..." if latest_size_backup else "-")
             ),
         }
 
@@ -1154,46 +1255,39 @@ class BackupGUI:
 
         size_cards_frame = tk.Frame(content, bg=HOME_PANEL_COLOR)
         size_cards_frame.grid(row=2, column=0, sticky="ew", pady=(8, 0))
-        size_cards_frame.columnconfigure(0, weight=5)
-        size_cards_frame.columnconfigure(1, weight=2)
-        size_cards_frame.columnconfigure(2, weight=5)
+        size_cards_frame.columnconfigure(0, weight=1)
+        size_cards_frame.columnconfigure(1, weight=1)
+        size_cards_frame.columnconfigure(2, weight=1)
+
+        monitored_card = self.create_summary_card(
+            size_cards_frame,
+            "Tamanho total monitorado",
+            summary["monitored_total_size"],
+            "#38BDF8",
+            "Soma atual de todos os arquivos presentes nas pastas monitoradas."
+        )
+        monitored_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=(0, 8))
 
         backup_card = self.create_summary_card(
             size_cards_frame,
-            "Tamanho do total dos arquivos",
+            "Tamanho do ultimo backup",
             summary["backup_recovery_size"],
-            "#38BDF8",
-            "Volume real de todos os arquivos do backup completo mais recente."
+            "#22C55E",
+            "Volume real dos arquivos registrados no ultimo backup."
         )
-        backup_card.grid(row=0, column=0, sticky="nsew", padx=(0, 12), pady=(0, 8))
-
-        middle_hint = tk.Frame(size_cards_frame, bg=HOME_PANEL_COLOR)
-        middle_hint.grid(row=0, column=1, sticky="nsew")
-
-        tk.Label(
-            middle_hint,
-            text="COMPACTA",
-            bg=HOME_PANEL_COLOR,
-            fg=SUBTLE_TEXT,
-            font=("Segoe UI", 10, "bold")
-        ).pack(pady=(26, 6))
-
-        tk.Label(
-            middle_hint,
-            text=">>>",
-            bg=HOME_PANEL_COLOR,
-            fg="white",
-            font=("Segoe UI Black", 28, "bold")
-        ).pack()
+        backup_card.grid(row=0, column=1, sticky="nsew", padx=(8, 8), pady=(0, 8))
 
         compacted_card = self.create_summary_card(
             size_cards_frame,
             "Backup compactado",
             summary["backup_compacted_size"],
             "#F97316",
-            "Tamanho final estimado do ZIP gerado a partir do backup completo."
+            "Tamanho final estimado do ZIP gerado a partir do ultimo backup."
         )
-        compacted_card.grid(row=0, column=2, sticky="nsew", padx=(12, 0), pady=(0, 8))
+        compacted_card.grid(row=0, column=2, sticky="nsew", padx=(8, 0), pady=(0, 8))
+
+        if summary["monitored_total_size"] == "Calculando":
+            self.ensure_dashboard_monitored_size_async()
 
         if latest_full_backup and summary["backup_compacted_size"] == "Calculando...":
             self.ensure_dashboard_compacted_size_async(latest_full_backup)
@@ -1240,7 +1334,12 @@ class BackupGUI:
 
         config_data = self.load_config()
         priority_policy_var = tk.BooleanVar(
-            value=bool(config_data.get("priority_backup_policy_enabled", False))
+            value=bool(
+                config_data.get(
+                    "priority_backup_policy_enabled",
+                    DEFAULT_PRIORITY_BACKUP_POLICY_ENABLED
+                )
+            )
         )
         tk.Label(
             form,
@@ -1453,26 +1552,263 @@ class BackupGUI:
         data["directories"] = self.directories
         data["backup_destination"] = self.backup_destination
         self.save_config(data)
+        self.dashboard_monitored_size_bytes = None
         self.refresh_footer()
         self.refresh_dashboard_if_home()
 
+    def load_dataset_lookup(self):
+        dataset_path = os.path.join("dataset", "files_dataset.csv")
+
+        if not os.path.exists(dataset_path):
+            return {}
+
+        try:
+            with open(dataset_path, "r", encoding="utf-8", newline="") as file:
+                reader = csv.DictReader(file)
+                return {
+                    normalize_file_source_key(row.get("source_path", "")): row
+                    for row in reader
+                    if normalize_file_source_key(row.get("source_path", ""))
+                }
+        except OSError:
+            return {}
+
+    def build_monitored_file_nodes(self):
+        history_lookup = build_history_backup_lookup(self.load_history())
+        dataset_lookup = self.load_dataset_lookup()
+        nodes = []
+        summary = {
+            "directories": 0,
+            "missing_directories": 0,
+            "files": 0,
+        }
+
+        for directory in self.directories:
+            directory_path = os.path.abspath(directory)
+            directory_exists = os.path.isdir(directory_path)
+            root_node = {
+                "name": directory_path,
+                "path": directory_path,
+                "is_dir": True,
+                "extension": "-",
+                "priority": "-",
+                "priority_score": "-",
+                "added_to_backup_at": "-",
+                "added_in_backup": "-",
+                "status": "Monitorando" if directory_exists else "Nao encontrado",
+                "size": "-",
+                "size_mb": "-",
+                "modified_at": "-",
+                "days_since_modified": "-",
+                "children": [],
+                "tags": ("directory_root",),
+            }
+            nodes.append(root_node)
+            summary["directories"] += 1
+
+            if not directory_exists:
+                summary["missing_directories"] += 1
+                root_node["tags"] = ("directory_missing",)
+                continue
+
+            path_to_node = {directory_path: root_node}
+
+            for current_root, dirs, files in os.walk(directory_path):
+                if is_path_ignored(current_root):
+                    dirs[:] = []
+                    continue
+
+                parent_node = path_to_node.get(current_root, root_node)
+
+                dirs[:] = sorted(
+                    [
+                        current_dir
+                        for current_dir in dirs
+                        if not is_path_ignored(os.path.join(current_root, current_dir))
+                    ],
+                    key=str.lower
+                )
+
+                for current_dir in dirs:
+                    child_path = os.path.join(current_root, current_dir)
+                    child_node = {
+                        "name": current_dir,
+                        "path": child_path,
+                        "is_dir": True,
+                        "extension": "-",
+                        "priority": "-",
+                        "priority_score": "-",
+                        "added_to_backup_at": "-",
+                        "added_in_backup": "-",
+                        "status": "Pasta",
+                        "size": "-",
+                        "size_mb": "-",
+                        "modified_at": "-",
+                        "days_since_modified": "-",
+                        "children": [],
+                        "tags": ("directory_child",),
+                    }
+                    parent_node["children"].append(child_node)
+                    path_to_node[child_path] = child_node
+
+                for file_name in sorted(files, key=str.lower):
+                    file_path = os.path.join(current_root, file_name)
+
+                    if is_path_ignored(file_path):
+                        continue
+
+                    try:
+                        file_stat = os.stat(file_path)
+                    except OSError:
+                        continue
+
+                    source_key = normalize_file_source_key(file_path)
+                    dataset_row = dataset_lookup.get(source_key, {})
+                    snapshot_file = history_lookup["latest_by_source"].get(source_key, {})
+                    archive_key = normalize_file_archive_key(
+                        snapshot_file.get("archive_name", "")
+                    )
+                    backup_info = get_backup_info_for_file(
+                        history_lookup,
+                        source_key,
+                        archive_key
+                    )
+                    extension = os.path.splitext(file_name)[1].lstrip(".").lower()
+                    priority = (
+                        str(dataset_row.get("priority", "")).strip()
+                        or str(snapshot_file.get("priority", "")).strip()
+                        or "Nao classificado"
+                    )
+                    priority_score = (
+                        str(dataset_row.get("priority_score", "")).strip()
+                        or str(snapshot_file.get("priority_score", "")).strip()
+                        or str(snapshot_file.get("score", "")).strip()
+                        or "-"
+                    )
+                    status = (
+                        BACKUP_STATUS_IN_BACKUP
+                        if snapshot_file
+                        else "Monitorado"
+                    )
+
+                    parent_node["children"].append(
+                        {
+                            "name": file_name,
+                            "path": file_path,
+                            "is_dir": False,
+                            "extension": extension,
+                            "priority": priority,
+                            "priority_score": priority_score,
+                            "added_to_backup_at": backup_info["added_to_backup_at"],
+                            "added_in_backup": backup_info["added_in_backup"],
+                            "status": status,
+                            "size": format_size_bytes_human(file_stat.st_size),
+                            "size_mb": f"{file_stat.st_size / (1024 * 1024):.2f}",
+                            "modified_at": format_files_view_modified_at(
+                                file_stat.st_mtime
+                            ),
+                            "days_since_modified": format_files_view_days_since_modified(
+                                file_stat.st_mtime
+                            ),
+                            "children": [],
+                            "tags": (
+                                self.get_file_backup_status_tag(status)
+                                or ("file_monitored",)
+                            ),
+                        }
+                    )
+                    summary["files"] += 1
+
+        return nodes, summary
+
+    def filter_monitored_nodes(self, nodes, search_text):
+        normalized_search = str(search_text or "").strip().lower()
+
+        if not normalized_search:
+            return nodes
+
+        filtered_nodes = []
+
+        for node in nodes:
+            child_matches = self.filter_monitored_nodes(
+                node.get("children", []),
+                normalized_search
+            )
+            searchable_text = " ".join(
+                [
+                    str(node.get("name", "")),
+                    str(node.get("path", "")),
+                    str(node.get("priority", "")),
+                    str(node.get("status", "")),
+                ]
+            ).lower()
+
+            if normalized_search in searchable_text or child_matches:
+                filtered_nodes.append(
+                    {
+                        **node,
+                        "children": child_matches,
+                    }
+                )
+
+        return filtered_nodes
+
+    def insert_monitored_file_nodes(self, tree, nodes, parent=""):
+        for node in nodes:
+            item_id = tree.insert(
+                parent,
+                tk.END,
+                text=node.get("name", ""),
+                values=(
+                    node.get("extension", "-"),
+                    node.get("priority", "-"),
+                    node.get("priority_score", "-"),
+                    node.get("added_to_backup_at", "-"),
+                    node.get("added_in_backup", "-"),
+                    node.get("status", "-"),
+                    node.get("size_mb", "-"),
+                    node.get("days_since_modified", "-"),
+                ),
+                open=not parent,
+                tags=node.get("tags", ()),
+            )
+            self.insert_monitored_file_nodes(
+                tree,
+                node.get("children", []),
+                parent=item_id
+            )
+
     def load_config(self):
         if not os.path.exists(CONFIG_PATH):
-            return {}
+            return {
+                "priority_backup_policy_enabled": DEFAULT_PRIORITY_BACKUP_POLICY_ENABLED
+            }
 
         with open(CONFIG_PATH, "r", encoding="utf-8") as file:
             try:
                 data = json.load(file)
             except json.JSONDecodeError:
-                return {}
+                return {
+                    "priority_backup_policy_enabled": DEFAULT_PRIORITY_BACKUP_POLICY_ENABLED
+                }
 
         if isinstance(data, dict):
+            data.setdefault(
+                "priority_backup_policy_enabled",
+                DEFAULT_PRIORITY_BACKUP_POLICY_ENABLED
+            )
             return data
 
-        return {}
+        return {
+            "priority_backup_policy_enabled": DEFAULT_PRIORITY_BACKUP_POLICY_ENABLED
+        }
 
     def save_config(self, data):
         os.makedirs("config", exist_ok=True)
+        data.setdefault(
+            "priority_backup_policy_enabled",
+            DEFAULT_PRIORITY_BACKUP_POLICY_ENABLED
+        )
 
         with open(CONFIG_PATH, "w", encoding="utf-8") as file:
             json.dump(data, file, indent=4, ensure_ascii=False)
@@ -1594,6 +1930,10 @@ class BackupGUI:
             )
 
         refresh_directory_table()
+        original_directories = {
+            os.path.normcase(os.path.abspath(directory))
+            for directory in self.directories
+        }
 
         buttons = tk.Frame(box, bg=PANEL_COLOR)
         buttons.grid(row=1, column=0, sticky="e", pady=(12, 0))
@@ -1632,12 +1972,39 @@ class BackupGUI:
             refresh_directory_table()
 
         def save_and_close():
+            new_directories = [
+                directory
+                for directory in self.directories
+                if os.path.normcase(os.path.abspath(directory))
+                not in original_directories
+                and os.path.isdir(directory)
+            ]
             self.save_directories()
             messagebox.showinfo(
                 "Sucesso",
                 "Diretorios salvos com sucesso!",
                 parent=self.root
             )
+
+            if new_directories:
+                if self.backup_in_progress:
+                    messagebox.showinfo(
+                        "Backup inicial pendente",
+                        (
+                            "As pastas foram salvas, mas ja existe um backup em "
+                            "execucao. Inicie o backup inicial quando a execucao "
+                            "atual terminar."
+                        ),
+                        parent=self.root
+                    )
+                    return
+
+                self.start_backup_execution(
+                    directories=new_directories,
+                    trigger="initial_folder_backup",
+                    backup_name="backup_inicial",
+                    backup_description="Backup inicial automatico de nova pasta monitorada."
+                )
 
         self.create_dialog_button(buttons, "Adicionar pasta", add_directory).grid(
             row=0, column=0, padx=6
@@ -1731,7 +2098,8 @@ class BackupGUI:
         parent,
         columns,
         selectmode="browse",
-        height=15
+        height=15,
+        show="headings"
     ):
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
@@ -1739,7 +2107,7 @@ class BackupGUI:
         tree = ttk.Treeview(
             parent,
             columns=columns,
-            show="headings",
+            show=show,
             selectmode=selectmode,
             height=height
         )
@@ -1907,7 +2275,28 @@ class BackupGUI:
             self.pending_backup_name = ""
             self.pending_backup_description = ""
 
+        self.start_backup_execution(
+            directories=list(self.directories),
+            trigger="manual"
+        )
+
+    def start_backup_execution(
+        self,
+        directories,
+        trigger,
+        backup_name=None,
+        backup_description=None
+    ):
         self.backup_in_progress = True
+        self.pending_backup_directories = list(directories)
+        self.pending_backup_trigger = trigger
+
+        if backup_name is not None:
+            self.pending_backup_name = backup_name
+
+        if backup_description is not None:
+            self.pending_backup_description = backup_description
+
         self.cancel_backup_requested.clear()
         self.open_progress_window()
         self.set_backup_button_state(tk.DISABLED)
@@ -1919,9 +2308,9 @@ class BackupGUI:
     def run_backup_in_background(self):
         try:
             result = run_backup_job(
-                directories=self.directories,
+                directories=self.pending_backup_directories or self.directories,
                 backup_destination=self.get_backup_destination(),
-                trigger="manual",
+                trigger=self.pending_backup_trigger,
                 username=self.current_user.get("username"),
                 user_role=self.current_user.get("role"),
                 backup_name=self.pending_backup_name,
@@ -2310,6 +2699,8 @@ class BackupGUI:
     def finish_backup_success(self, result):
         self.backup_in_progress = False
         self.cancel_backup_requested.clear()
+        self.pending_backup_directories = None
+        self.pending_backup_trigger = "manual"
         self.set_backup_button_state(tk.NORMAL)
         self.close_progress_window()
         self.refresh_footer()
@@ -2353,6 +2744,8 @@ class BackupGUI:
     def finish_backup_error(self, error_message):
         self.backup_in_progress = False
         self.cancel_backup_requested.clear()
+        self.pending_backup_directories = None
+        self.pending_backup_trigger = "manual"
         self.set_backup_button_state(tk.NORMAL)
         self.close_progress_window()
         messagebox.showerror("Erro", error_message)
@@ -2360,6 +2753,8 @@ class BackupGUI:
     def finish_backup_cancelled(self, message):
         self.backup_in_progress = False
         self.cancel_backup_requested.clear()
+        self.pending_backup_directories = None
+        self.pending_backup_trigger = "manual"
         self.set_backup_button_state(tk.NORMAL)
         self.close_progress_window()
         messagebox.showinfo("Backup cancelado", message)
@@ -2437,7 +2832,12 @@ class BackupGUI:
         schedule_data = self.load_schedule()
         config_data = self.load_config()
         priority_policy_var = tk.BooleanVar(
-            value=bool(config_data.get("priority_backup_policy_enabled", False))
+            value=bool(
+                config_data.get(
+                    "priority_backup_policy_enabled",
+                    DEFAULT_PRIORITY_BACKUP_POLICY_ENABLED
+                )
+            )
         )
 
         tk.Label(
@@ -2560,41 +2960,19 @@ class BackupGUI:
         if not self.require_permission("view_files"):
             return
 
-        dataset_path = os.path.join("dataset", "files_dataset.csv")
-
-        if not os.path.exists(dataset_path):
+        if not self.directories:
             self.show_message_panel(
-                "Sem arquivos",
-                "Nenhum arquivo foi listado ainda. Execute um backup primeiro."
+                "Sem diretorios monitorados",
+                "Adicione ao menos uma pasta em Gerenciar diretorios para listar os arquivos monitorados."
             )
             return
 
-        _panel, content = self.create_content_shell("Arquivos analisados")
+        _panel, content = self.create_content_shell(
+            "Arquivos monitorados",
+            subtitle="Visualize as pastas acompanhadas pelo sistema mesmo antes do primeiro backup."
+        )
         content.columnconfigure(0, weight=1)
         content.rowconfigure(1, weight=1)
-
-        columns = (
-            "name",
-            "extension",
-            "priority",
-            "priority_score",
-            "added_to_backup_at",
-            "added_in_backup",
-            "backup_status",
-            "size_mb",
-            "days_since_modified",
-        )
-        headings = {
-            "name": "Nome",
-            "extension": "Extensao",
-            "priority": "Prioridade",
-            "priority_score": "Score",
-            "added_to_backup_at": "Adicionado ao backup",
-            "added_in_backup": "Backup adicionado",
-            "backup_status": "Status backup",
-            "size_mb": "Tamanho (MB)",
-            "days_since_modified": "Dias sem alterar",
-        }
 
         top_bar = tk.Frame(content, bg=BG_COLOR)
         top_bar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
@@ -2607,7 +2985,7 @@ class BackupGUI:
             text="Buscar arquivo",
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
-            font=("Arial", 10, "bold")
+            font=BODY_BOLD_FONT
         ).grid(row=0, column=0, sticky="w", padx=(0, 10))
 
         file_search_entry = tk.Entry(
@@ -2620,22 +2998,6 @@ class BackupGUI:
         )
         file_search_entry.grid(row=0, column=1, sticky="ew")
 
-        file_suggestion_box = tk.Listbox(
-            top_bar,
-            height=4,
-            font=SUGGESTION_FONT,
-            bg="#F2F2F2",
-            fg=TEXT_COLOR,
-            selectbackground="#FFE0B2",
-            selectforeground=TEXT_COLOR,
-            relief="flat",
-            bd=0,
-            highlightthickness=2,
-            highlightbackground=TITLE_COLOR,
-            highlightcolor=TITLE_COLOR,
-            activestyle="none"
-        )
-
         self.create_dialog_button(
             top_bar,
             "Buscar",
@@ -2644,7 +3006,6 @@ class BackupGUI:
 
         def clear_file_search():
             file_search_var.set("")
-            hide_file_suggestions()
             refresh_table()
 
         self.create_dialog_button(
@@ -2655,47 +3016,76 @@ class BackupGUI:
 
         self.create_dialog_button(
             top_bar,
-            "Filtrar",
-            lambda: open_filter_window()
+            "Expandir",
+            lambda: set_all_nodes_open(True)
         ).grid(row=0, column=4, padx=(8, 0))
 
-        filter_summary_var = tk.StringVar(value="Filtros: todos os arquivos")
+        self.create_dialog_button(
+            top_bar,
+            "Recolher",
+            lambda: set_all_nodes_open(False)
+        ).grid(row=0, column=5, padx=(8, 0))
+
+        self.create_dialog_button(
+            top_bar,
+            "Atualizar",
+            lambda: refresh_table()
+        ).grid(row=0, column=6, padx=(8, 0))
+
+        filter_summary_var = tk.StringVar(value="Exibindo todos os arquivos monitorados")
         tk.Label(
             top_bar,
             textvariable=filter_summary_var,
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
-            font=("Arial", 10)
+            font=BODY_FONT
         ).grid(row=2, column=1, sticky="w", pady=(4, 0))
 
-        filter_state = {
-            "name": "",
-            "extension": "",
-            "added_from": "",
-            "added_to": "",
-            "size_mb": "",
-            "added_in_backup": "",
-            "backup_status": "Todos",
-            "days_since_modified": "",
-            "priority": "Todos",
-        }
+        status_var = tk.StringVar()
+        tk.Label(
+            top_bar,
+            textvariable=status_var,
+            bg=BG_COLOR,
+            fg=SUBTLE_TEXT,
+            font=BODY_FONT
+        ).grid(row=3, column=1, sticky="w", pady=(4, 0))
 
         table_frame = tk.Frame(content, bg=BG_COLOR)
         table_frame.grid(row=1, column=0, sticky="nsew")
 
-        tree = self.create_scrollable_tree(table_frame, columns, height=15)
+        columns = (
+            "extension",
+            "priority",
+            "priority_score",
+            "added_to_backup_at",
+            "added_in_backup",
+            "backup_status",
+            "size_mb",
+            "days_since_modified",
+        )
+        tree = self.create_scrollable_tree(
+            table_frame,
+            columns,
+            height=15,
+            show="tree headings"
+        )
+        tree.heading("#0", text="Nome")
+        tree.column("#0", width=420, minwidth=260, anchor="w", stretch=True)
         self.configure_tree_columns(
             tree,
-            headings,
             {
-                "name": {
-                    "width": 260,
-                    "minwidth": 220,
-                    "weight": 4,
-                    "anchor": "w",
-                },
+                "extension": "Extensao",
+                "priority": "Prioridade",
+                "priority_score": "Score",
+                "added_to_backup_at": "Adicionado ao backup",
+                "added_in_backup": "Backup adicionado",
+                "backup_status": "Status backup",
+                "size_mb": "Tamanho (MB)",
+                "days_since_modified": "Dias sem alterar",
+            },
+            {
                 "extension": {"width": 100, "minwidth": 80, "weight": 1},
-                "priority": {"width": 115, "minwidth": 95, "weight": 1},
+                "priority": {"width": 135, "minwidth": 115, "weight": 1},
                 "priority_score": {"width": 80, "minwidth": 70, "weight": 1},
                 "added_to_backup_at": {
                     "width": 155,
@@ -2709,8 +3099,8 @@ class BackupGUI:
                     "anchor": "w",
                 },
                 "backup_status": {
-                    "width": 125,
-                    "minwidth": 110,
+                    "width": 145,
+                    "minwidth": 125,
                     "weight": 1,
                     "anchor": "w",
                 },
@@ -2726,427 +3116,69 @@ class BackupGUI:
         tree.tag_configure("backup_ok", foreground="#111827")
         tree.tag_configure("backup_pending", foreground="#B45309")
         tree.tag_configure("backup_delete", foreground="#B91C1C")
-
-        dataset_rows = []
-        with open(dataset_path, "r", encoding="utf-8", newline="") as file:
-            reader = csv.DictReader(file)
-            dataset_rows = list(reader)
-
-        rows = build_file_status_rows(dataset_rows, self.load_history())
-
-        def parse_date(value):
-            value = value.strip()
-
-            if not value or value == "Todos":
-                return None
-
-            for date_format in ("%d/%m/%Y", "%d/%m/%Y %H:%M:%S"):
-                try:
-                    return datetime.strptime(value, date_format)
-                except ValueError:
-                    pass
-
-            return None
-
-        def parse_row_date(value):
-            if not value or value == "-":
-                return None
-
-            for date_format in ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
-                try:
-                    return datetime.strptime(value, date_format)
-                except ValueError:
-                    pass
-
-            return None
-
-        def get_file_date_options():
-            dated_options = {}
-
-            for row_values in rows:
-                row_date = parse_row_date(row_values["added_to_backup_at"])
-
-                if row_date:
-                    dated_options[row_date.date()] = row_date.strftime("%d/%m/%Y")
-
-            return [
-                dated_options[key]
-                for key in sorted(dated_options.keys(), reverse=True)
-            ]
-
-        def matches_filters(row_values):
-            text_filters = {
-                "name": filter_state["name"],
-                "extension": filter_state["extension"],
-                "size_mb": filter_state["size_mb"],
-                "added_in_backup": filter_state["added_in_backup"],
-                "days_since_modified": filter_state["days_since_modified"],
-            }
-
-            for key, filter_value in text_filters.items():
-                filter_value = filter_value.strip().lower()
-
-                if filter_value and filter_value not in str(row_values[key]).lower():
-                    return False
-
-            if (
-                filter_state["priority"] != "Todos"
-                and row_values["priority"] != filter_state["priority"]
-            ):
-                return False
-
-            if (
-                filter_state["backup_status"] != "Todos"
-                and row_values["backup_status"] != filter_state["backup_status"]
-            ):
-                return False
-
-            row_date = parse_row_date(row_values["added_to_backup_at"])
-            from_date = parse_date(filter_state["added_from"])
-            to_date = parse_date(filter_state["added_to"])
-
-            if from_date and (row_date is None or row_date < from_date):
-                return False
-
-            if to_date and (row_date is None or row_date.date() > to_date.date()):
-                return False
-
-            return True
-
-        def get_file_search_suggestions():
-            search_text = file_search_var.get().strip().lower()
-
-            if not search_text:
-                return []
-
-            suggestions = []
-            seen = set()
-
-            for row_values in rows:
-                for value in (
-                    row_values.get("name", ""),
-                    row_values.get("extension", ""),
-                    row_values.get("priority", ""),
-                    row_values.get("added_in_backup", ""),
-                    row_values.get("backup_status", "")
-                ):
-                    suggestion = str(value).strip()
-
-                    if not suggestion:
-                        continue
-
-                    suggestion_key = suggestion.lower()
-
-                    if (
-                        search_text in suggestion_key
-                        and suggestion_key not in seen
-                    ):
-                        suggestions.append(suggestion)
-                        seen.add(suggestion_key)
-
-                    if len(suggestions) >= 8:
-                        return suggestions
-
-            return suggestions
-
-        def hide_file_suggestions():
-            file_suggestion_box.grid_forget()
-
-        def update_file_suggestions():
-            file_suggestion_box.delete(0, tk.END)
-            suggestions = get_file_search_suggestions()
-
-            if not suggestions:
-                hide_file_suggestions()
-                return
-
-            for suggestion in suggestions:
-                file_suggestion_box.insert(tk.END, f"  {suggestion}")
-
-            file_suggestion_box.config(height=min(len(suggestions), 5))
-            file_suggestion_box.grid(
-                row=1,
-                column=1,
-                columnspan=4,
-                sticky="ew",
-                pady=(4, 0)
-            )
+        tree.tag_configure("file_monitored", foreground="#0F172A")
+        tree.tag_configure("directory_root", foreground=TITLE_COLOR, font=TABLE_FONT)
+        tree.tag_configure("directory_child", foreground="#1F2937")
+        tree.tag_configure("directory_missing", foreground="#D32F2F", font=TABLE_FONT)
 
         def apply_file_search(value=None):
             if value is not None:
                 file_search_var.set(value)
 
-            filter_state["name"] = file_search_var.get().strip()
-            hide_file_suggestions()
             refresh_table()
-
-        def select_file_suggestion(_event=None):
-            selection = file_suggestion_box.curselection()
-
-            if selection:
-                apply_file_search(file_suggestion_box.get(selection[0]).strip())
 
         def on_file_search_changed(*_args):
-            filter_state["name"] = file_search_var.get().strip()
-            update_file_suggestions()
             refresh_table()
 
-        def refresh_table(*args):
+        def toggle_node(item_id, expanded):
+            tree.item(item_id, open=expanded)
+
+            for child in tree.get_children(item_id):
+                toggle_node(child, expanded)
+
+        def set_all_nodes_open(expanded):
+            for item in tree.get_children():
+                toggle_node(item, expanded)
+
+        def count_visible_files(nodes):
+            total = 0
+
+            for node in nodes:
+                if node.get("is_dir"):
+                    total += count_visible_files(node.get("children", []))
+                else:
+                    total += 1
+
+            return total
+
+        def refresh_table(*_args):
             for item in tree.get_children():
                 tree.delete(item)
 
-            for row_values in rows:
-                if not matches_filters(row_values):
-                    continue
+            nodes, summary = self.build_monitored_file_nodes()
+            filtered_nodes = self.filter_monitored_nodes(
+                nodes,
+                file_search_var.get()
+            )
+            self.insert_monitored_file_nodes(tree, filtered_nodes)
 
-                tree.insert(
-                    "",
-                    tk.END,
-                    values=(
-                        row_values["name"],
-                        row_values["extension"],
-                        row_values["priority"],
-                        row_values["priority_score"],
-                        row_values["added_to_backup_at"],
-                        row_values["added_in_backup"],
-                        row_values["backup_status"],
-                        row_values["size_mb"],
-                        row_values["days_since_modified"],
-                    ),
-                    tags=self.get_file_backup_status_tag(
-                        row_values["backup_status"]
-                    )
+            if file_search_var.get().strip():
+                filter_summary_var.set(
+                    f"Filtro ativo: {file_search_var.get().strip()}"
                 )
-
-            active_filters = []
-
-            for key in (
-                "name",
-                "extension",
-                "size_mb",
-                "added_in_backup",
-                "days_since_modified",
-            ):
-                if filter_state[key].strip():
-                    active_filters.append(headings[key])
-
-            if filter_state["priority"] != "Todos":
-                active_filters.append("Prioridade")
-
-            if filter_state["backup_status"] != "Todos":
-                active_filters.append("Status backup")
-
-            if filter_state["added_from"] or filter_state["added_to"]:
-                active_filters.append("Periodo")
-
-            if active_filters:
-                filter_summary_var.set(f"Filtros: {', '.join(active_filters)}")
             else:
-                filter_summary_var.set("Filtros: todos os arquivos")
+                filter_summary_var.set("Exibindo todos os arquivos monitorados")
 
-        def open_filter_window():
-            filter_window = tk.Toplevel(self.root)
-            filter_window.title("Filtrar arquivos")
-            filter_window.geometry("620x520")
-            filter_window.minsize(600, 500)
-            filter_window.configure(bg=BG_COLOR)
-            filter_window.transient(self.root)
-            self.prepare_window(filter_window)
-            filter_window.grab_set()
-
-            tk.Label(
-                filter_window,
-                text="Filtrar Arquivos",
-                bg=BG_COLOR,
-                fg=TITLE_COLOR,
-                font=TITLE_FONT
-            ).pack(pady=(18, 12))
-
-            form = tk.Frame(filter_window, bg=BG_COLOR)
-            form.pack(fill="x", padx=28)
-            form.columnconfigure(1, weight=1)
-            form.columnconfigure(3, weight=1)
-
-            date_options = ["Todos"] + get_file_date_options()
-
-            field_vars = {
-                "name": tk.StringVar(value=filter_state["name"]),
-                "extension": tk.StringVar(value=filter_state["extension"]),
-                "added_from": tk.StringVar(
-                    value=filter_state["added_from"] or "Todos"
-                ),
-                "added_to": tk.StringVar(
-                    value=filter_state["added_to"] or "Todos"
-                ),
-                "size_mb": tk.StringVar(value=filter_state["size_mb"]),
-                "added_in_backup": tk.StringVar(value=filter_state["added_in_backup"]),
-                "backup_status": tk.StringVar(value=filter_state["backup_status"]),
-                "days_since_modified": tk.StringVar(value=filter_state["days_since_modified"]),
-                "priority": tk.StringVar(value=filter_state["priority"]),
-            }
-
-            def add_entry(label, key, row, column=0, columnspan=1):
-                tk.Label(
-                    form,
-                    text=label,
-                    bg=BG_COLOR,
-                    fg=SUBTLE_TEXT,
-                    font=("Arial", 10, "bold")
-                ).grid(
-                    row=row,
-                    column=column,
-                    sticky="w",
-                    padx=(0 if column == 0 else 14, 0),
-                    pady=(0, 4)
-                )
-
-                entry = tk.Entry(
-                    form,
-                    textvariable=field_vars[key],
-                    font=("Arial", 10),
-                    bg=LIGHT_BUTTON,
-                    fg=TEXT_COLOR,
-                    relief="flat"
-                )
-                entry.grid(
-                    row=row,
-                    column=column + 1,
-                    columnspan=columnspan,
-                    sticky="ew",
-                    padx=(10, 0),
-                    pady=(0, 8)
-                )
-                return entry
-
-            def add_combo(label, key, row, values, column=0, columnspan=1):
-                tk.Label(
-                    form,
-                    text=label,
-                    bg=BG_COLOR,
-                    fg=SUBTLE_TEXT,
-                    font=("Arial", 10, "bold")
-                ).grid(
-                    row=row,
-                    column=column,
-                    sticky="w",
-                    padx=(0 if column == 0 else 14, 0),
-                    pady=(0, 4)
-                )
-
-                combo = ttk.Combobox(
-                    form,
-                    textvariable=field_vars[key],
-                    values=values,
-                    state="readonly"
-                )
-                combo.grid(
-                    row=row,
-                    column=column + 1,
-                    columnspan=columnspan,
-                    sticky="ew",
-                    padx=(10, 0),
-                    pady=(0, 8)
-                )
-                return combo
-
-            add_entry("Nome", "name", 0, columnspan=3)
-            add_entry("Extensao", "extension", 1, columnspan=3)
-
-            tk.Label(
-                form,
-                text="Prioridade",
-                bg=BG_COLOR,
-                fg=SUBTLE_TEXT,
-                font=("Arial", 10, "bold")
-            ).grid(row=2, column=0, sticky="w", pady=(0, 4))
-
-            priority_combo = ttk.Combobox(
-                form,
-                textvariable=field_vars["priority"],
-                values=["Todos", "baixa", "media", "alta"],
-                state="readonly"
-            )
-            priority_combo.grid(
-                row=2,
-                column=1,
-                columnspan=3,
-                sticky="ew",
-                padx=(10, 0),
-                pady=(0, 8)
-            )
-
-            add_combo("Data inicial", "added_from", 4, date_options)
-            add_combo("Data final", "added_to", 4, date_options, column=2)
-            add_entry("Tamanho (MB)", "size_mb", 5)
-            add_entry(
-                "Dias sem alterar",
-                "days_since_modified",
-                5,
-                column=2
-            )
-            add_entry("Backup adicionado", "added_in_backup", 6, columnspan=3)
-            add_combo(
-                "Status backup",
-                "backup_status",
-                7,
-                ["Todos", *BACKUP_STATUS_OPTIONS],
-                columnspan=3
-            )
-
-            buttons = tk.Frame(filter_window, bg=BG_COLOR)
-            buttons.pack(pady=(10, 0))
-
-            def apply_filters():
-                from_date = parse_date(field_vars["added_from"].get())
-                to_date = parse_date(field_vars["added_to"].get())
-
-                if from_date and to_date and from_date.date() > to_date.date():
-                    messagebox.showwarning(
-                        "Periodo invalido",
-                        "A data inicial nao pode ser maior que a data final.",
-                        parent=filter_window
-                    )
-                    return
-
-                for key, variable in field_vars.items():
-                    value = variable.get().strip()
-
-                    if key in ("added_from", "added_to"):
-                        filter_state[key] = "" if value == "Todos" else value
-                    else:
-                        filter_state[key] = value
-
-                file_search_var.set(filter_state["name"])
-                refresh_table()
-                filter_window.destroy()
-
-            def clear_filters():
-                for key in filter_state:
-                    filter_state[key] = (
-                        "Todos"
-                        if key in {"priority", "backup_status"}
-                        else ""
-                    )
-
-                file_search_var.set("")
-                refresh_table()
-                filter_window.destroy()
-
-            self.create_dialog_button(buttons, "Aplicar", apply_filters).grid(
-                row=0, column=0, padx=5
-            )
-            self.create_dialog_button(buttons, "Limpar", clear_filters).grid(
-                row=0, column=1, padx=5
+            status_var.set(
+                f"{summary['directories']} diretorio(s) monitorado(s)  |  "
+                f"{count_visible_files(filtered_nodes)} arquivo(s) exibido(s)  |  "
+                f"{summary['missing_directories']} diretorio(s) indisponivel(is)"
             )
 
         file_search_var.trace_add("write", on_file_search_changed)
         file_search_entry.bind("<Return>", lambda _event: apply_file_search())
-        file_search_entry.bind("<Escape>", lambda _event: hide_file_suggestions())
-        file_suggestion_box.bind("<ButtonRelease-1>", select_file_suggestion)
-        file_suggestion_box.bind("<Double-Button-1>", select_file_suggestion)
-        file_suggestion_box.bind("<Return>", select_file_suggestion)
-
         refresh_table()
+        file_search_entry.focus_set()
 
     def format_float(self, value):
         try:
@@ -4604,7 +4636,6 @@ class BackupGUI:
         backup_columns = (
             "timestamp",
             "user",
-            "backup_name",
             "description",
             "trigger",
             "total",
@@ -4614,13 +4645,15 @@ class BackupGUI:
         backup_tree = self.create_scrollable_tree(
             backup_frame,
             backup_columns,
-            height=15
+            height=15,
+            show="tree headings"
         )
+        backup_tree.heading("#0", text="Nome")
+        backup_tree.column("#0", width=170, minwidth=130, anchor="w", stretch=False)
 
         backup_headings = {
             "timestamp": "Data",
             "user": "Usuario",
-            "backup_name": "Nome",
             "description": "Descricao",
             "trigger": "Tipo",
             "total": "Arquivos",
@@ -4633,12 +4666,6 @@ class BackupGUI:
             {
                 "timestamp": {"width": 135, "minwidth": 120, "weight": 2},
                 "user": {"width": 80, "minwidth": 65, "weight": 1},
-                "backup_name": {
-                    "width": 150,
-                    "minwidth": 120,
-                    "weight": 2,
-                    "anchor": "w",
-                },
                 "description": {
                     "width": 180,
                     "minwidth": 130,
@@ -4769,7 +4796,8 @@ class BackupGUI:
             backup_tree.insert(
                 "",
                 tk.END,
-                values=("Nenhum backup visivel", "-", "-", "-", "-", "-", "-")
+                text="Nenhum backup visivel",
+                values=("-", "-", "-", "-", "-", "-")
             )
             return
 
@@ -4948,7 +4976,40 @@ class BackupGUI:
 
             return entry_matches_file_search(entry)
 
-        indexed_history = []
+        indexed_history = {}
+
+        def is_priority_history_entry(entry):
+            return (
+                entry.get("history_group_type") == "priority_snapshot"
+                or entry.get("partial_backup")
+                or entry.get("priority_policy")
+            )
+
+        def is_full_history_entry(entry):
+            return not is_priority_history_entry(entry)
+
+        def get_history_tree_name(entry):
+            name = entry.get("backup_name", "") or entry.get("backup_file", "-")
+
+            if is_priority_history_entry(entry):
+                scope = entry.get("priority_scope", "")
+
+                if scope:
+                    return f"Snapshot {scope}"
+
+                return name
+
+            return name
+
+        def get_history_item_values(entry):
+            return (
+                entry.get("timestamp", "-"),
+                entry.get("user", "sistema"),
+                entry.get("backup_description", ""),
+                entry.get("trigger", "-"),
+                entry.get("total_files", 0),
+                len(entry.get("file_changes", []))
+            )
 
         def refresh_backup_table():
             nonlocal indexed_history
@@ -4956,26 +5017,68 @@ class BackupGUI:
             for item in backup_tree.get_children():
                 backup_tree.delete(item)
 
-            indexed_history = [
-                entry for entry in reversed(history)
+            indexed_history = {}
+            visible_entries = [
+                (index, entry)
+                for index, entry in enumerate(history)
                 if entry_matches_history_filters(entry)
             ]
+            full_entries = [
+                (index, entry)
+                for index, entry in visible_entries
+                if is_full_history_entry(entry)
+            ]
+            priority_entries = [
+                (index, entry)
+                for index, entry in visible_entries
+                if is_priority_history_entry(entry)
+            ]
+            full_item_by_history_index = {}
 
-            for index, entry in enumerate(indexed_history):
+            for index, entry in reversed(full_entries):
+                item_id = f"entry:{index}"
+                indexed_history[item_id] = entry
+                full_item_by_history_index[index] = item_id
                 backup_tree.insert(
                     "",
                     tk.END,
-                    iid=str(index),
-                    values=(
-                        entry.get("timestamp", "-"),
-                        entry.get("user", "sistema"),
-                        entry.get("backup_name", "") or entry.get("backup_file", "-"),
-                        entry.get("backup_description", ""),
-                        entry.get("trigger", "-"),
-                        entry.get("total_files", 0),
-                        len(entry.get("file_changes", []))
-                    )
+                    iid=item_id,
+                    text=get_history_tree_name(entry),
+                    values=get_history_item_values(entry),
+                    open=True
                 )
+
+            for index, entry in reversed(priority_entries):
+                next_full_indexes = [
+                        full_index
+                        for full_index in full_item_by_history_index
+                    if full_index > index
+                ]
+
+                parent_id = None
+
+                if next_full_indexes:
+                    parent_id = full_item_by_history_index[min(next_full_indexes)]
+
+                item_id = f"entry:{index}"
+                indexed_history[item_id] = entry
+
+                if parent_id:
+                    backup_tree.insert(
+                        parent_id,
+                        tk.END,
+                        iid=item_id,
+                        text=get_history_tree_name(entry),
+                        values=get_history_item_values(entry)
+                    )
+                else:
+                    backup_tree.insert(
+                        "",
+                        0,
+                        iid=item_id,
+                        text=get_history_tree_name(entry),
+                        values=get_history_item_values(entry)
+                    )
 
             active_filters = []
 
@@ -5003,8 +5106,10 @@ class BackupGUI:
             for item in change_tree.get_children():
                 change_tree.delete(item)
 
-            if indexed_history:
-                backup_tree.selection_set("0")
+            selectable_items = list(indexed_history.keys())
+
+            if selectable_items:
+                backup_tree.selection_set(selectable_items[0])
                 refresh_changes()
             else:
                 change_tree.insert(
@@ -5022,7 +5127,16 @@ class BackupGUI:
             if not selected:
                 return
 
-            entry = indexed_history[int(selected[0])]
+            entry = indexed_history.get(selected[0])
+
+            if not entry:
+                change_tree.insert(
+                    "",
+                    tk.END,
+                    values=("-", "Selecione um backup ou snapshot", "-", "", "-", "-")
+                )
+                return
+
             selected_action = action_var.get()
             file_name_filter = file_name_var.get().strip().lower()
             changes = self.get_history_entry_files(entry)
