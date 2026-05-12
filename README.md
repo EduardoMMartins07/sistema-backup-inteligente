@@ -13,6 +13,7 @@ Toda alteracao relevante no projeto deve ser refletida neste `README.md`, manten
 - **Interface Desktop:** Tkinter
 - **Monitoramento de arquivos:** watchdog
 - **Manipulacao de dados:** pandas
+- **Criptografia:** cryptography com AES-256-GCM e PBKDF2-SHA256
 - **Bandeja do sistema:** pystray
 - **Imagens/icones:** pillow
 - **Classificacao inteligente:** arvore de decisao local com integracao opcional via Gemini API
@@ -83,6 +84,7 @@ Toda alteracao relevante no projeto deve ser refletida neste `README.md`, manten
 - [x] Busca por nome de arquivo na tela de recuperacao para localizar rapidamente backups relacionados
 - [x] Busca com sugestoes de arquivos nas telas de recuperacao e historico de backups
 - [x] Tela de arquivos mostra o status de cobertura do backup: em backup, fara backup ou sera excluido no proximo backup
+- [x] Criptografia em envelope para backups de usuarios autenticados, com chave mestra por usuario e chave individual por backup/objeto
 - [x] Refinamento de UI/UX com fontes padronizadas, botoes com profundidade, scrollbars estilizados, campos mais destacados e abertura suave de janelas
 - [x] Melhor legibilidade nas tabelas e caixa de pre-pesquisa com destaque visual para sugestoes de arquivos e pastas
 - [ ] Visualizacao do tamanho dos backups e status da ultima execucao
@@ -105,6 +107,24 @@ backups/
 ```
 
 Os ZIPs gerados por versoes anteriores continuam legiveis para restauracao de historico, mas novas execucoes usam snapshots incrementais como artefato principal.
+
+### Criptografia dos Backups
+O sistema utiliza criptografia em envelope. A senha do usuario nao criptografa diretamente os arquivos de backup. Em vez disso, a senha e usada para derivar uma chave criptografica responsavel por proteger uma chave mestra do usuario. Essa chave mestra protege as chaves individuais utilizadas na criptografia dos backups compactados e dos objetos incrementais. Dessa forma, a troca de senha exige apenas a recriptografia da chave mestra, sem necessidade de reprocessar todos os arquivos armazenados.
+
+O algoritmo usado para conteudo e chaves envelopadas e `AES-256-GCM`, com nonces unicos por operacao. A derivacao a partir da senha usa `PBKDF2-SHA256` com salt unico por usuario. A tag de autenticacao do AES-GCM fica embutida no ciphertext gerado pela biblioteca `cryptography`, por isso os metadados registram `auth_tag` como `included_in_ciphertext`.
+
+Metadados sensiveis ficam em arquivos JSON locais:
+- `config/users.json`: hash da senha, salt do KDF, chave mestra criptografada e metadados de recuperacao.
+- `<backup_destination>/backup_storage/index.json`: metadados dos objetos incrementais, incluindo nonces e chaves de backup criptografadas.
+- `config/backup_history.json`: status criptografado, algoritmo usado e caminho do `.zip.enc` quando gerado.
+
+No login, a chave mestra e descriptografada apenas em memoria para a sessao atual. Em backups manuais feitos por usuario autenticado, novos objetos incrementais sao criptografados antes de serem gravados em `backup_storage/objects/`. O sistema tambem gera um artefato compactado criptografado em formato `.zip.enc`, mantendo o ZIP temporario apenas durante a criptografia e apagando-o em seguida.
+
+Na restauracao, o sistema usa a chave de sessao do usuario para abrir a chave do backup/objeto e descriptografar o conteudo antes de copiar para o destino. Se a senha estiver errada, a chave estiver ausente, os metadados forem alterados ou o arquivo estiver corrompido, o AES-GCM falha na autenticacao e a restauracao nao prossegue para aquele item.
+
+Na troca de senha com confirmacao da senha antiga, apenas a chave mestra criptografada e atualizada. Os backups antigos continuam acessiveis porque as chaves de backup continuam protegidas pela mesma chave mestra. Redefinicoes administrativas sem a senha antiga geram nova chave mestra e podem tornar backups criptografados antigos inacessiveis para aquele usuario.
+
+Na criacao de usuario, quando a dependencia de criptografia esta disponivel, o sistema gera uma chave de recuperacao exibida uma unica vez. Essa chave permite redefinir a senha preservando a chave mestra e o acesso aos backups antigos. Se o usuario perder a senha e tambem perder a chave de recuperacao, backups criptografados antigos nao poderao ser descriptografados.
 
 ### Exemplo de Configuracao
 ```json

@@ -4,9 +4,11 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import zipfile
 from datetime import datetime
 from datetime import timedelta
+from security import crypto_service
 from utils.file_hash import calculate_file_hash
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -870,9 +872,10 @@ def build_incremental_snapshot_entry(
     size,
     modified_at,
     status,
-    error=""
+    error="",
+    encryption=None
 ):
-    return {
+    entry = {
         "original_path": source_path,
         "source_path": source_path,
         "archive_name": normalize_archive_name(archive_name),
@@ -888,6 +891,11 @@ def build_incremental_snapshot_entry(
         "status": status,
         "error": error,
     }
+
+    if encryption:
+        entry["encryption"] = encryption
+
+    return entry
 
 
 def build_history_snapshot_from_incremental_files(files, snapshot_path):
@@ -915,6 +923,9 @@ def build_history_snapshot_from_incremental_files(files, snapshot_path):
             "storage_mode": "incremental",
         }
 
+        if file_data.get("encryption"):
+            snapshot[archive_name]["encryption"] = file_data.get("encryption")
+
     return snapshot
 
 
@@ -922,7 +933,15 @@ def increment_status_count(counts, status):
     counts[status] = counts.get(status, 0) + 1
 
 
-def update_object_index_entry(index, file_hash, object_path, source_path, size, now):
+def update_object_index_entry(
+    index,
+    file_hash,
+    object_path,
+    source_path,
+    size,
+    now,
+    encryption=None
+):
     objects = index.setdefault("objects", {})
     object_entry = objects.get(file_hash, {})
     original_names = object_entry.get("original_names", [])
@@ -945,6 +964,10 @@ def update_object_index_entry(index, file_hash, object_path, source_path, size, 
             "reference_count": parse_int(object_entry.get("reference_count")),
         }
     )
+
+    if encryption:
+        object_entry["encryption"] = encryption
+
     objects[file_hash] = object_entry
 
 
@@ -956,7 +979,8 @@ def update_file_index_entry(
     object_path,
     priority,
     stat_result,
-    now
+    now,
+    encryption=None
 ):
     files = index.setdefault("files", {})
     state_key = normalize_path(source_path)
@@ -973,6 +997,9 @@ def update_file_index_entry(
         "size": stat_result.st_size,
         "backup_count": backup_count,
     }
+
+    if encryption:
+        next_entry["encryption"] = encryption
 
     if priority == PRIORITY_HIGH:
         next_entry["last_daily_backup_date"] = now.date().isoformat()
@@ -1035,12 +1062,143 @@ def has_priority_file_changed(source_path, index_entry, metadata):
     return False, current_hash, "arquivo sem alteracao desde a ultima snapshot"
 
 
-def store_incremental_object(source_path, object_path):
+def normalize_master_key(master_key):
+    if not master_key:
+        return None
+
+    if isinstance(master_key, bytes):
+        return master_key
+
+    try:
+        return crypto_service.b64decode(master_key)
+    except (ValueError, TypeError):
+        return None
+
+
+def build_backup_encryption_context(encryption_context):
+    if not isinstance(encryption_context, dict):
+        return None
+
+    master_key = normalize_master_key(encryption_context.get("master_key"))
+
+    if not master_key:
+        return None
+
+    backup_key = crypto_service.generate_key()
+    wrapped_key = crypto_service.encrypt_key(
+        master_key,
+        backup_key,
+        b"incremental-backup-key",
+    )
+    return {
+        "enabled": True,
+        "algorithm": crypto_service.ENCRYPTION_ALGORITHM,
+        "master_key": master_key,
+        "backup_key": backup_key,
+        "encrypted_backup_key": wrapped_key["encrypted_key"],
+        "backup_key_nonce": wrapped_key["key_nonce"],
+        "user_id": encryption_context.get("user_id", ""),
+        "company_id": encryption_context.get("company_id", "default"),
+    }
+
+
+def build_object_encryption_metadata(backup_encryption, file_nonce):
+    if not backup_encryption:
+        return None
+
+    return {
+        "encrypted": True,
+        "algorithm": backup_encryption["algorithm"],
+        "encrypted_backup_key": backup_encryption["encrypted_backup_key"],
+        "backup_key_nonce": backup_encryption["backup_key_nonce"],
+        "file_nonce": file_nonce,
+        "auth_tag": "included_in_ciphertext",
+        "user_id": backup_encryption.get("user_id", ""),
+        "company_id": backup_encryption.get("company_id", "default"),
+    }
+
+
+def get_object_encryption_metadata(index, file_hash):
+    object_entry = index.get("objects", {}).get(file_hash, {})
+    metadata = object_entry.get("encryption")
+    return metadata if isinstance(metadata, dict) else None
+
+
+def decrypt_storage_object_to_path(object_abs_path, target_path, encryption_metadata, user_master_key):
+    if not encryption_metadata:
+        shutil.copy2(object_abs_path, target_path)
+        return
+
+    master_key = normalize_master_key(user_master_key)
+
+    if not master_key:
+        raise ValueError("Chave de sessao ausente para restaurar backup criptografado.")
+
+    backup_key = crypto_service.decrypt_key(
+        master_key,
+        encryption_metadata["encrypted_backup_key"],
+        encryption_metadata["backup_key_nonce"],
+        b"incremental-backup-key",
+    )
+    crypto_service.decrypt_file(
+        object_abs_path,
+        target_path,
+        backup_key,
+        encryption_metadata["file_nonce"],
+        b"incremental-object",
+    )
+
+
+def read_storage_object_bytes(object_abs_path, encryption_metadata, user_master_key):
+    if not encryption_metadata:
+        with open(object_abs_path, "rb") as source_file:
+            return source_file.read()
+
+    master_key = normalize_master_key(user_master_key)
+
+    if not master_key:
+        raise ValueError("Chave de sessao ausente para exportar backup criptografado.")
+
+    backup_key = crypto_service.decrypt_key(
+        master_key,
+        encryption_metadata["encrypted_backup_key"],
+        encryption_metadata["backup_key_nonce"],
+        b"incremental-backup-key",
+    )
+
+    with open(object_abs_path, "rb") as source_file:
+        ciphertext = source_file.read()
+
+    return crypto_service.decrypt_bytes(
+        backup_key,
+        crypto_service.b64decode(encryption_metadata["file_nonce"]),
+        ciphertext,
+        b"incremental-object",
+    )
+
+
+def store_incremental_object(source_path, object_path, backup_encryption=None):
     temporary_path = f"{object_path}.{os.getpid()}.tmp"
 
     try:
-        shutil.copy2(source_path, temporary_path)
+        encryption_metadata = None
+
+        if backup_encryption:
+            encrypted = crypto_service.encrypt_file(
+                source_path,
+                temporary_path,
+                backup_encryption["backup_key"],
+                b"incremental-object",
+            )
+            encryption_metadata = build_object_encryption_metadata(
+                backup_encryption,
+                encrypted["file_nonce"],
+            )
+        else:
+            shutil.copy2(source_path, temporary_path)
+
         os.replace(temporary_path, object_path)
+        return encryption_metadata
     except OSError:
         if os.path.exists(temporary_path):
             try:
@@ -1073,6 +1231,7 @@ def build_not_eligible_snapshot_entry(
         size=parse_int(index_entry.get("size")),
         modified_at=index_entry.get("last_modified_at", ""),
         status="skipped_not_eligible",
+        encryption=index_entry.get("encryption"),
     )
 
 
@@ -1086,7 +1245,8 @@ def run_incremental_backup(
     priority_index=None,
     trigger="manual",
     progress_callback=None,
-    cancel_callback=None
+    cancel_callback=None,
+    encryption_context=None
 ):
     config = config or load_config()
     directories = directories or get_monitored_directories(config)
@@ -1100,6 +1260,7 @@ def run_incremental_backup(
 
     storage_paths = ensure_incremental_storage(backup_destination)
     index = load_incremental_index(backup_destination)
+    backup_encryption = build_backup_encryption_context(encryption_context)
     priority_index = priority_index or load_dataset_priority_index()
     manifest = manifest if manifest is not None else build_backup_manifest(
         directories=directories,
@@ -1190,6 +1351,7 @@ def run_incremental_backup(
             object_path
         )
         previous_hash = index_entry.get("last_hash")
+        encryption_metadata = get_object_encryption_metadata(index, file_hash)
 
         if previous_hash == file_hash and os.path.exists(object_abs_path):
             status = "skipped_unchanged"
@@ -1212,7 +1374,11 @@ def run_incremental_backup(
             )
         else:
             try:
-                store_incremental_object(source_path, object_abs_path)
+                encryption_metadata = store_incremental_object(
+                    source_path,
+                    object_abs_path,
+                    backup_encryption=backup_encryption,
+                )
                 status = "stored_new_object"
                 log_backup_decision("INFO", f"Novo objeto armazenado: {source_path}")
             except OSError as error:
@@ -1247,7 +1413,8 @@ def run_incremental_backup(
             object_path,
             source_path,
             stat_result.st_size,
-            now
+            now,
+            encryption=encryption_metadata,
         )
         update_file_index_entry(
             index,
@@ -1257,7 +1424,8 @@ def run_incremental_backup(
             object_path,
             priority,
             stat_result,
-            now
+            now,
+            encryption=encryption_metadata,
         )
         entry = build_incremental_snapshot_entry(
             source_path=source_path,
@@ -1269,6 +1437,7 @@ def run_incremental_backup(
             size=stat_result.st_size,
             modified_at=format_stat_modified_at(stat_result),
             status=status,
+            encryption=encryption_metadata,
         )
         files.append(entry)
         increment_status_count(status_counts, status)
@@ -1287,6 +1456,15 @@ def run_incremental_backup(
         "status_counts": status_counts,
         "files": files,
     }
+
+    if backup_encryption:
+        snapshot["encryption"] = {
+            "enabled": True,
+            "algorithm": backup_encryption["algorithm"],
+            "key_scope": "incremental_objects",
+            "user_id": backup_encryption.get("user_id", ""),
+            "company_id": backup_encryption.get("company_id", "default"),
+        }
 
     save_json_atomic(snapshot_path, snapshot)
     save_incremental_index(backup_destination, index)
@@ -1313,6 +1491,7 @@ def run_incremental_backup(
         "files_unchanged": status_counts.get("skipped_unchanged", 0),
         "files_not_eligible": status_counts.get("skipped_not_eligible", 0),
         "errors": status_counts.get("error", 0),
+        "encryption": snapshot.get("encryption", {}),
     }
 
 
@@ -1392,6 +1571,77 @@ def create_versioned_backup(
     return zip_path, warnings
 
 
+def create_encrypted_snapshot_archive(
+    snapshot_path,
+    backup_destination,
+    master_key,
+    now=None,
+    backup_name=None,
+    user_id="",
+    company_id="default",
+    progress_callback=None
+):
+    master_key = normalize_master_key(master_key)
+
+    if not master_key:
+        return {}
+
+    now = now or datetime.now()
+    day_folder = now.strftime("%Y-%m-%d")
+    safe_backup_name = sanitize_backup_name(backup_name)
+    timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
+    original_zip_name = (
+        f"{safe_backup_name}_{timestamp}.zip"
+        if safe_backup_name
+        else f"backup_{timestamp}.zip"
+    )
+    target_directory = os.path.join(backup_destination, day_folder)
+    encrypted_path = os.path.join(target_directory, f"{original_zip_name}.enc")
+    temporary_zip_path = ""
+
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as temp_file:
+            temporary_zip_path = temp_file.name
+
+        export_snapshot_to_zip(
+            snapshot_path,
+            temporary_zip_path,
+            progress_callback=progress_callback,
+            user_master_key=crypto_service.b64encode(master_key),
+        )
+        backup_key = crypto_service.generate_key()
+        encrypted_file = crypto_service.encrypt_file(
+            temporary_zip_path,
+            encrypted_path,
+            backup_key,
+            b"encrypted-backup-archive",
+        )
+        encrypted_backup_key = crypto_service.encrypt_key(
+            master_key,
+            backup_key,
+            b"encrypted-backup-archive-key",
+        )
+        return {
+            "backup_id": os.path.splitext(os.path.basename(snapshot_path))[0],
+            "user_id": user_id,
+            "company_id": company_id,
+            "original_zip_name": original_zip_name,
+            "encrypted_file_path": encrypted_path,
+            "encryption_algorithm": crypto_service.ENCRYPTION_ALGORITHM,
+            "encrypted_backup_key": encrypted_backup_key["encrypted_key"],
+            "backup_key_nonce": encrypted_backup_key["key_nonce"],
+            "file_nonce": encrypted_file["file_nonce"],
+            "auth_tag": encrypted_file["auth_tag"],
+            "compacted_size_bytes": os.path.getsize(encrypted_path),
+        }
+    finally:
+        if temporary_zip_path and os.path.exists(temporary_zip_path):
+            try:
+                os.remove(temporary_zip_path)
+            except OSError:
+                pass
+
+
 def load_history():
     return load_json(HISTORY_PATH, [])
 
@@ -1408,6 +1658,8 @@ def run_backup_job(
     trigger="manual",
     username=None,
     user_role=None,
+    company_id=None,
+    user_master_key=None,
     backup_name=None,
     backup_description=None,
     run_scan_first=True,
@@ -1464,11 +1716,25 @@ def run_backup_job(
         config=config,
         trigger=trigger,
         progress_callback=on_incremental_progress,
-        cancel_callback=cancel_callback
+        cancel_callback=cancel_callback,
+        encryption_context={
+            "master_key": user_master_key,
+            "user_id": username or "sistema",
+            "company_id": company_id or "default",
+        } if user_master_key else None,
     )
     current_snapshot = incremental_result["file_snapshot"]
     file_changes = build_file_changes(previous_snapshot, current_snapshot)
     completed_at = datetime.now()
+    encrypted_archive = create_encrypted_snapshot_archive(
+        incremental_result["snapshot_path"],
+        backup_destination,
+        user_master_key,
+        now=completed_at,
+        backup_name=backup_name,
+        user_id=username or "sistema",
+        company_id=company_id or "default",
+    ) if user_master_key else {}
 
     history_entry = {
         "timestamp": completed_at.strftime("%d/%m/%Y %H:%M:%S"),
@@ -1476,6 +1742,8 @@ def run_backup_job(
         "backup_name": backup_name or "",
         "backup_description": backup_description or "",
         "backup_path": incremental_result["snapshot_path"],
+        "encrypted_file_path": encrypted_archive.get("encrypted_file_path", ""),
+        "original_zip_name": encrypted_archive.get("original_zip_name", ""),
         "backup_folder": incremental_result["backup_folder"],
         "snapshot_id": incremental_result["snapshot_id"],
         "snapshot_path": incremental_result["snapshot_path"],
@@ -1490,6 +1758,14 @@ def run_backup_job(
         "trigger": trigger,
         "user": username or "sistema",
         "user_role": user_role or "system",
+        "company_id": company_id or "default",
+        "encrypted": bool(incremental_result.get("encryption") or encrypted_archive),
+        "encryption_algorithm": encrypted_archive.get(
+            "encryption_algorithm",
+            crypto_service.ENCRYPTION_ALGORITHM if incremental_result.get("encryption") else ""
+        ),
+        "backup_encryption": encrypted_archive,
+        "compacted_size_bytes": encrypted_archive.get("compacted_size_bytes"),
         "file_changes": file_changes,
         "file_snapshot": current_snapshot,
         "status_counts": incremental_result["status_counts"],
@@ -1513,6 +1789,8 @@ def run_priority_backup_job(
     trigger="politica_prioridade",
     username=None,
     user_role=None,
+    company_id=None,
+    user_master_key=None,
     run_scan_first=True,
     progress_callback=None,
     cancel_callback=None
@@ -1597,7 +1875,12 @@ def run_priority_backup_job(
         priority_index=priority_index,
         trigger=trigger,
         progress_callback=on_incremental_progress,
-        cancel_callback=cancel_callback
+        cancel_callback=cancel_callback,
+        encryption_context={
+            "master_key": user_master_key,
+            "user_id": username or "sistema",
+            "company_id": company_id or "default",
+        } if user_master_key else None,
     )
     current_snapshot = incremental_result["file_snapshot"]
     file_changes = build_file_changes(
@@ -1608,6 +1891,15 @@ def run_priority_backup_job(
     completed_at = datetime.now()
     parent_entry = get_latest_full_history_entry()
     parent_snapshot_id = parent_entry.get("snapshot_id", "") if parent_entry else ""
+    encrypted_archive = create_encrypted_snapshot_archive(
+        incremental_result["snapshot_path"],
+        backup_destination,
+        user_master_key,
+        now=completed_at,
+        backup_name="prioridade",
+        user_id=username or "sistema",
+        company_id=company_id or "default",
+    ) if user_master_key else {}
 
     history_entry = {
         "timestamp": completed_at.strftime("%d/%m/%Y %H:%M:%S"),
@@ -1615,6 +1907,8 @@ def run_priority_backup_job(
         "backup_name": "prioridade",
         "backup_description": "Backup automatico pela politica de prioridade.",
         "backup_path": incremental_result["snapshot_path"],
+        "encrypted_file_path": encrypted_archive.get("encrypted_file_path", ""),
+        "original_zip_name": encrypted_archive.get("original_zip_name", ""),
         "backup_folder": incremental_result["backup_folder"],
         "snapshot_id": incremental_result["snapshot_id"],
         "snapshot_path": incremental_result["snapshot_path"],
@@ -1629,6 +1923,14 @@ def run_priority_backup_job(
         "trigger": trigger,
         "user": username or "sistema",
         "user_role": user_role or "system",
+        "company_id": company_id or "default",
+        "encrypted": bool(incremental_result.get("encryption") or encrypted_archive),
+        "encryption_algorithm": encrypted_archive.get(
+            "encryption_algorithm",
+            crypto_service.ENCRYPTION_ALGORITHM if incremental_result.get("encryption") else ""
+        ),
+        "backup_encryption": encrypted_archive,
+        "compacted_size_bytes": encrypted_archive.get("compacted_size_bytes"),
         "file_changes": file_changes,
         "file_snapshot": current_snapshot,
         "status_counts": incremental_result["status_counts"],
@@ -1823,7 +2125,8 @@ def restore_snapshot(
     snapshot_path,
     restore_destination,
     overwrite=False,
-    conflict_strategy="rename"
+    conflict_strategy="rename",
+    user_master_key=None
 ):
     snapshot_path = normalize_path(snapshot_path)
     restore_destination = normalize_path(restore_destination)
@@ -1898,7 +2201,12 @@ def restore_snapshot(
             if target_directory:
                 os.makedirs(target_directory, exist_ok=True)
 
-            shutil.copy2(object_abs_path, target_path)
+            decrypt_storage_object_to_path(
+                object_abs_path,
+                target_path,
+                file_data.get("encryption"),
+                user_master_key,
+            )
             modified_at = parse_iso_datetime(file_data.get("modified_at", ""))
 
             if modified_at:
@@ -1913,7 +2221,7 @@ def restore_snapshot(
                 result["message"] = "Arquivo restaurado."
 
             log_backup_decision("INFO", f"Arquivo restaurado do snapshot: {target_path}")
-        except OSError as error:
+        except (OSError, ValueError, crypto_service.CryptoError) as error:
             result["message"] = str(error)
             log_backup_decision(
                 "ERROR",
@@ -1925,7 +2233,12 @@ def restore_snapshot(
     return results
 
 
-def export_snapshot_to_zip(snapshot_path, destination_zip_path, progress_callback=None):
+def export_snapshot_to_zip(
+    snapshot_path,
+    destination_zip_path,
+    progress_callback=None,
+    user_master_key=None
+):
     snapshot_path = normalize_path(snapshot_path)
     destination_zip_path = normalize_path(destination_zip_path)
     snapshot = load_json(snapshot_path, {})
@@ -1980,9 +2293,22 @@ def export_snapshot_to_zip(snapshot_path, destination_zip_path, progress_callbac
                 continue
 
             try:
-                archive.write(object_abs_path, arcname=archive_name)
+                encryption_metadata = file_data.get("encryption")
+
+                if encryption_metadata:
+                    archive.writestr(
+                        archive_name,
+                        read_storage_object_bytes(
+                            object_abs_path,
+                            encryption_metadata,
+                            user_master_key,
+                        )
+                    )
+                else:
+                    archive.write(object_abs_path, arcname=archive_name)
+
                 exported_count += 1
-            except OSError as error:
+            except (OSError, ValueError, crypto_service.CryptoError) as error:
                 warnings.append(
                     {
                         "archive_name": archive_name,
@@ -2253,7 +2579,7 @@ def inspect_restore_change(
                 or calculate_file_hash(backup_source["object_path"])
             )
             existing_hash = calculate_file_hash(target_path)
-        except OSError as error:
+        except (OSError, ValueError, crypto_service.CryptoError) as error:
             result["message"] = str(error)
             return result
 
@@ -2318,7 +2644,8 @@ def restore_recoverable_change(
     backup_destination=None,
     overwrite=False,
     conflict_strategy="skip",
-    target_path_override=None
+    target_path_override=None,
+    user_master_key=None
 ):
     archive_name = change.get("archive_name", "")
     original_target_path = build_restore_target(change)
@@ -2392,7 +2719,12 @@ def restore_recoverable_change(
             if target_directory:
                 os.makedirs(target_directory, exist_ok=True)
 
-            shutil.copy2(object_path, target_path)
+            decrypt_storage_object_to_path(
+                object_path,
+                target_path,
+                backup_source.get("file_data", {}).get("encryption"),
+                user_master_key,
+            )
             modified_at = parse_iso_datetime(
                 backup_source.get("file_data", {}).get("modified_at", "")
             )
@@ -2473,7 +2805,8 @@ def restore_recoverable_changes(
     backup_destination=None,
     overwrite=False,
     conflict_strategy="skip",
-    target_overrides=None
+    target_overrides=None,
+    user_master_key=None
 ):
     results = []
     target_overrides = target_overrides or {}
@@ -2495,7 +2828,8 @@ def restore_recoverable_changes(
                 backup_destination=backup_destination,
                 overwrite=overwrite,
                 conflict_strategy=conflict_strategy,
-                target_path_override=normalized_overrides.get(archive_name)
+                target_path_override=normalized_overrides.get(archive_name),
+                user_master_key=user_master_key,
             )
         )
 

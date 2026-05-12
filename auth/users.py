@@ -7,9 +7,11 @@ import secrets
 from datetime import datetime
 
 from auth.permissions import ROLES
+from security import crypto_service
 
 USERS_PATH = os.path.join("config", "users.json")
 PBKDF2_ITERATIONS = 260000
+DEFAULT_COMPANY_ID = "default"
 
 
 def load_users():
@@ -30,9 +32,19 @@ def load_users():
 
 def save_users(users):
     os.makedirs(os.path.dirname(USERS_PATH), exist_ok=True)
+    persisted_users = []
+
+    for user in users:
+        persisted_users.append(
+            {
+                key: value
+                for key, value in user.items()
+                if not str(key).startswith("_")
+            }
+        )
 
     with open(USERS_PATH, "w", encoding="utf-8") as file:
-        json.dump(users, file, indent=4, ensure_ascii=False)
+        json.dump(persisted_users, file, indent=4, ensure_ascii=False)
 
 
 def users_exist():
@@ -93,22 +105,72 @@ def public_user(user):
     if not user:
         return None
 
-    return {
+    public_data = {
         "username": user.get("username"),
         "name": user.get("name", user.get("username")),
         "role": user.get("role"),
+        "company_id": user.get("company_id", DEFAULT_COMPANY_ID),
         "created_at": user.get("created_at"),
     }
 
+    if user.get("_session_master_key"):
+        public_data["session_master_key"] = user["_session_master_key"]
+
+    if user.get("_recovery_key"):
+        public_data["recovery_key"] = user["_recovery_key"]
+
+    return public_data
+
+
+def user_has_crypto_metadata(user):
+    return bool(
+        user.get("kdf_salt")
+        and user.get("encrypted_master_key")
+        and user.get("master_key_nonce")
+    )
+
+
+def attach_new_crypto_metadata(user, password):
+    metadata, master_key, recovery_key = crypto_service.create_user_crypto_metadata(password)
+    user.update(metadata)
+    user["_session_master_key"] = crypto_service.b64encode(master_key)
+
+    if recovery_key:
+        user["_recovery_key"] = recovery_key
+
+    return master_key
+
 
 def authenticate(username, password):
-    user = find_user(username)
+    normalized_username = normalize_username(username)
+    users = load_users()
+    user = None
+
+    for current_user in users:
+        if current_user.get("username") == normalized_username:
+            user = current_user
+            break
 
     if not user:
         return None
 
     if not verify_password(password, user.get("password", {})):
         return None
+
+    if not user.get("company_id"):
+        user["company_id"] = DEFAULT_COMPANY_ID
+
+    if crypto_service.is_crypto_available():
+        try:
+            if not user_has_crypto_metadata(user):
+                attach_new_crypto_metadata(user, password)
+                user["updated_at"] = datetime.now().isoformat(timespec="seconds")
+                save_users(users)
+            else:
+                master_key = crypto_service.decrypt_user_master_key(password, user)
+                user["_session_master_key"] = crypto_service.b64encode(master_key)
+        except (KeyError, TypeError, ValueError, crypto_service.CryptoError):
+            return None
 
     return public_user(user)
 
@@ -148,13 +210,75 @@ def create_user(username, password, role, name=None):
         "username": normalized_username,
         "name": display_name,
         "role": role,
+        "company_id": DEFAULT_COMPANY_ID,
         "password": hash_password(password),
         "created_at": now,
         "updated_at": now,
     }
+
+    if crypto_service.is_crypto_available():
+        attach_new_crypto_metadata(user, password)
+
     users.append(user)
     save_users(users)
     return public_user(user)
+
+
+def change_user_password(username, old_password, new_password):
+    normalized_username = normalize_username(username)
+    users = load_users()
+
+    for user in users:
+        if user.get("username") != normalized_username:
+            continue
+
+        validate_user_payload(normalized_username, new_password, user.get("role"))
+
+        if not verify_password(old_password, user.get("password", {})):
+            raise ValueError("Senha atual incorreta.")
+
+        if crypto_service.is_crypto_available():
+            if not user_has_crypto_metadata(user):
+                attach_new_crypto_metadata(user, old_password)
+
+            master_key = crypto_service.decrypt_user_master_key(old_password, user)
+            user.update(crypto_service.reencrypt_user_master_key(master_key, new_password))
+            user["_session_master_key"] = crypto_service.b64encode(master_key)
+
+        user["password"] = hash_password(new_password)
+        user["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        save_users(users)
+        return public_user(user)
+
+    raise ValueError("Usuario nao encontrado.")
+
+
+def reset_password_with_recovery(username, recovery_key, new_password):
+    normalized_username = normalize_username(username)
+    users = load_users()
+
+    for user in users:
+        if user.get("username") != normalized_username:
+            continue
+
+        validate_user_payload(normalized_username, new_password, user.get("role"))
+
+        if not user.get("recovery_key_enabled"):
+            raise ValueError("Este usuario nao possui chave de recuperacao.")
+
+        metadata, master_key = crypto_service.reset_user_password_with_recovery(
+            recovery_key,
+            new_password,
+            user,
+        )
+        user.update(metadata)
+        user["password"] = hash_password(new_password)
+        user["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        user["_session_master_key"] = crypto_service.b64encode(master_key)
+        save_users(users)
+        return public_user(user)
+
+    raise ValueError("Usuario nao encontrado.")
 
 
 def update_user(username, role=None, name=None, password=None):
@@ -190,6 +314,12 @@ def update_user(username, role=None, name=None, password=None):
             user["name"] = next_name
 
         if password:
+            if crypto_service.is_crypto_available():
+                if user_has_crypto_metadata(user):
+                    user["crypto_reset_without_old_password"] = True
+
+                attach_new_crypto_metadata(user, password)
+
             user["password"] = hash_password(password)
 
         user["updated_at"] = datetime.now().isoformat(timespec="seconds")

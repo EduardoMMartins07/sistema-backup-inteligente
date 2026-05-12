@@ -1243,7 +1243,11 @@ class BackupGUI:
                 with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as temp_file:
                     temporary_zip_path = temp_file.name
 
-                export_snapshot_to_zip(backup_path, temporary_zip_path)
+                export_snapshot_to_zip(
+                    backup_path,
+                    temporary_zip_path,
+                    user_master_key=self.current_user.get("session_master_key")
+                )
                 return os.path.getsize(temporary_zip_path)
             except Exception:
                 return 0
@@ -2989,6 +2993,8 @@ class BackupGUI:
                 trigger=self.pending_backup_trigger,
                 username=self.current_user.get("username"),
                 user_role=self.current_user.get("role"),
+                company_id=self.current_user.get("company_id", "default"),
+                user_master_key=self.current_user.get("session_master_key"),
                 backup_name=self.pending_backup_name,
                 backup_description=self.pending_backup_description,
                 progress_callback=self.enqueue_backup_progress,
@@ -4107,7 +4113,8 @@ class BackupGUI:
             results = restore_snapshot(
                 snapshot_path,
                 restore_destination,
-                conflict_strategy="rename"
+                conflict_strategy="rename",
+                user_master_key=self.current_user.get("session_master_key")
             )
         except Exception as error:
             messagebox.showerror("Erro", str(error), parent=parent)
@@ -5227,7 +5234,8 @@ class BackupGUI:
                     before_history_index=history_index,
                     backup_destination=self.get_backup_destination(),
                     conflict_strategy="rename",
-                    target_overrides=target_overrides
+                    target_overrides=target_overrides,
+                    user_master_key=self.current_user.get("session_master_key")
                 )
             except Exception as error:
                 messagebox.showerror("Erro", str(error), parent=window)
@@ -5791,16 +5799,17 @@ class BackupGUI:
 
         def get_history_tree_name(entry):
             name = entry.get("backup_name", "") or entry.get("backup_file", "-")
+            encrypted_suffix = " [criptografado]" if entry.get("encrypted") else ""
 
             if is_priority_history_entry(entry):
                 scope = entry.get("priority_scope", "")
 
                 if scope:
-                    return f"Snapshot {scope}"
+                    return f"Snapshot {scope}{encrypted_suffix}"
 
-                return name
+                return f"{name}{encrypted_suffix}"
 
-            return name
+            return f"{name}{encrypted_suffix}"
 
         def get_history_item_values(entry):
             return (
@@ -6253,7 +6262,8 @@ class BackupGUI:
                                     else f"Compactando: {current_entry}"
                                 )
                             )
-                        )
+                        ),
+                        user_master_key=self.current_user.get("session_master_key")
                     )
                     warning_count = len(export_result.get("warnings", []))
                     warning_text = ""
@@ -6682,12 +6692,23 @@ class BackupGUI:
                     ):
                         raise ValueError("Ja existe um usuario com esse nome.")
 
-                    create_user(
+                    created_user = create_user(
                         username,
                         password_var.get(),
                         role_var.get(),
                         name=name_var.get()
                     )
+
+                    if created_user.get("recovery_key"):
+                        messagebox.showinfo(
+                            "Chave de recuperacao",
+                            (
+                                "Guarde esta chave de recuperacao. "
+                                "Ela nao sera exibida novamente.\n\n"
+                                f"{created_user['recovery_key']}"
+                            ),
+                            parent=self.root
+                        )
             except ValueError as error:
                 messagebox.showwarning("Dados invalidos", str(error), parent=self.root)
                 return

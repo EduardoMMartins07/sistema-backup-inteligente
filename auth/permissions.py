@@ -53,8 +53,13 @@ def can_view_backup_entry(current_user, entry):
 
     current_username = current_user.get("username")
     current_role = current_user.get("role")
+    current_company = current_user.get("company_id", "default")
+    entry_company = entry.get("company_id", "default")
     entry_user = entry.get("user")
     entry_role = entry.get("user_role")
+
+    if entry_company != current_company:
+        return False
 
     if current_role == "admin":
         return True

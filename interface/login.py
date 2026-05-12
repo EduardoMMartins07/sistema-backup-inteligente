@@ -213,11 +213,16 @@ class LoginWindow:
             messagebox.showwarning("Dados invalidos", str(error), parent=self.root)
             return
 
-        messagebox.showinfo(
-            "Administrador criado",
-            f"Usuario administrador criado com perfil {ROLE_LABELS['admin']}.",
-            parent=self.root
-        )
+        message = f"Usuario administrador criado com perfil {ROLE_LABELS['admin']}."
+
+        if user.get("recovery_key"):
+            message += (
+                "\n\nChave de recuperacao do usuario:\n"
+                f"{user['recovery_key']}\n\n"
+                "Guarde esta chave. Ela nao sera exibida novamente."
+            )
+
+        messagebox.showinfo("Administrador criado", message, parent=self.root)
         self.user = user
         self.root.destroy()
 
