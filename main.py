@@ -42,10 +42,8 @@ if __name__ == "__main__":
     print("Iniciando Smart Backup...")
     ensure_folders()
 
-    # verificar primeira execução
     if first_run() or not users_exist():
         print("Primeira execução detectada")
-        start_gui()
 
     # iniciar monitoramento
     monitor_thread = threading.Thread(target=start_monitor)
@@ -57,5 +55,8 @@ if __name__ == "__main__":
     scheduler_thread.daemon = True
     scheduler_thread.start()
 
-    # iniciar tray icon
+    # abrir login/painel na thread principal do Tkinter
+    start_gui()
+
+    # iniciar tray icon depois que a janela principal for fechada
     start_tray()

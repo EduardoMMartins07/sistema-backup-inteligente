@@ -320,14 +320,192 @@ def format_files_view_days_since_modified(timestamp):
         return "-"
 
 
+class ScrollableFrame(tk.Frame):
+
+    def __init__(
+        self,
+        parent,
+        bg,
+        scrollbar_width=14,
+        stretch_body=False,
+        *args,
+        **kwargs
+    ):
+        super().__init__(parent, bg=bg, *args, **kwargs)
+        self.stretch_body = stretch_body
+        self.canvas = tk.Canvas(
+            self,
+            bg=bg,
+            bd=0,
+            highlightthickness=0,
+            relief="flat"
+        )
+        self.scrollbar = ttk.Scrollbar(
+            self,
+            orient="vertical",
+            command=self.canvas.yview,
+            style="Vertical.TScrollbar"
+        )
+        self.body = tk.Frame(self.canvas, bg=bg)
+        self.window_id = self.canvas.create_window(
+            (0, 0),
+            window=self.body,
+            anchor="nw"
+        )
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.scrollbar.grid(row=0, column=1, sticky="ns")
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+
+        self.body.bind("<Configure>", self.sync_scroll_region, add="+")
+        self.canvas.bind("<Configure>", self.sync_canvas_width, add="+")
+        self.canvas.bind("<Enter>", self.bind_mousewheel, add="+")
+        self.canvas.bind("<Leave>", self.unbind_mousewheel, add="+")
+
+        self.scrollbar_width = scrollbar_width
+
+    def sync_scroll_region(self, _event=None):
+        if self.stretch_body:
+            self.canvas.itemconfigure(
+                self.window_id,
+                height=max(self.canvas.winfo_height(), self.body.winfo_reqheight())
+            )
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        self.canvas.xview_moveto(0)
+        self.update_scrollbar_visibility()
+
+    def sync_canvas_width(self, event):
+        self.canvas.itemconfigure(self.window_id, width=event.width)
+        if self.stretch_body:
+            self.canvas.itemconfigure(
+                self.window_id,
+                height=max(event.height, self.body.winfo_reqheight())
+            )
+        self.canvas.xview_moveto(0)
+        self.update_scrollbar_visibility()
+
+    def update_scrollbar_visibility(self):
+        try:
+            body_height = self.body.winfo_reqheight()
+            canvas_height = self.canvas.winfo_height()
+        except tk.TclError:
+            return
+
+        if body_height > canvas_height + 1:
+            self.scrollbar.grid(row=0, column=1, sticky="ns")
+        else:
+            self.scrollbar.grid_remove()
+            self.canvas.yview_moveto(0)
+
+    def bind_mousewheel(self, _event=None):
+        self.canvas.bind_all("<MouseWheel>", self.on_mousewheel)
+
+    def unbind_mousewheel(self, _event=None):
+        self.canvas.unbind_all("<MouseWheel>")
+
+    def on_mousewheel(self, event):
+        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+
+class FlowFrame(tk.Frame):
+
+    def __init__(
+        self,
+        parent,
+        bg,
+        min_item_width=130,
+        hgap=8,
+        vgap=8,
+        max_columns=None,
+        equal_width=True,
+        *args,
+        **kwargs
+    ):
+        super().__init__(parent, bg=bg, *args, **kwargs)
+        self.min_item_width = min_item_width
+        self.hgap = hgap
+        self.vgap = vgap
+        self.max_columns = max_columns
+        self.equal_width = equal_width
+        self.items = []
+        self.current_columns = None
+        self.bind("<Configure>", self.reflow, add="+")
+
+    def add(self, widget):
+        self.items.append(widget)
+        widget.grid_remove()
+        self.after_idle(self.reflow)
+        return widget
+
+    def clear(self):
+        for widget in self.items:
+            widget.grid_forget()
+        self.items.clear()
+        self.current_columns = None
+
+    def get_column_count(self, width):
+        if not self.items:
+            return 1
+
+        item_width = max(self.min_item_width, 1)
+        columns = max(1, width // (item_width + self.hgap))
+
+        if self.max_columns is not None:
+            columns = min(columns, self.max_columns)
+
+        return min(columns, len(self.items))
+
+    def reflow(self, event=None):
+        width = event.width if event is not None else self.winfo_width()
+
+        if width <= 1:
+            width = self.winfo_reqwidth()
+
+        columns = self.get_column_count(width)
+
+        if columns == self.current_columns:
+            return
+
+        self.current_columns = columns
+
+        for widget in self.items:
+            widget.grid_forget()
+
+        rows = ((len(self.items) + columns - 1) // columns) + 1
+
+        for row in range(rows):
+            self.rowconfigure(row, weight=0, minsize=0)
+
+        for column in range(max(len(self.items), columns)):
+            self.columnconfigure(
+                column,
+                weight=1 if column < columns else 0,
+                minsize=0,
+                uniform="flow" if self.equal_width and column < columns else ""
+            )
+
+        for index, widget in enumerate(self.items):
+            row = index // columns
+            column = index % columns
+            widget.grid(
+                row=row,
+                column=column,
+                sticky="ew",
+                padx=(0 if column == 0 else self.hgap, 0),
+                pady=(0 if row == 0 else self.vgap, 0)
+            )
+
+
 class BackupGUI:
 
     def __init__(self, root, current_user):
         self.root = root
         self.current_user = current_user
         self.root.title("Sistema de Backup Inteligente")
-        self.root.geometry("1180x650")
-        self.root.minsize(980, 560)
+        self.root.geometry("1440x900")
+        self.root.minsize(1240, 760)
         self.root.configure(bg=BG_COLOR)
         self.window_icon_photo = None
 
@@ -365,11 +543,16 @@ class BackupGUI:
         self.pending_backup_directories = None
         self.pending_backup_trigger = "manual"
         self.cancel_backup_requested = threading.Event()
+        self.responsive_font_widgets = []
+        self.current_font_scale = None
+        self.ui_style = None
 
         self.configure_window_icon()
         self.configure_widget_styles()
         self.load_directories()
         self.build_layout()
+        self.root.bind("<Configure>", self.on_root_resize, add="+")
+        self.root.after_idle(self.update_responsive_fonts)
 
     def configure_window_icon(self):
         if os.name == "nt":
@@ -393,6 +576,7 @@ class BackupGUI:
 
     def configure_widget_styles(self):
         style = ttk.Style()
+        self.ui_style = style
 
         try:
             style.theme_use("clam")
@@ -434,29 +618,59 @@ class BackupGUI:
         )
         style.configure(
             "Vertical.TScrollbar",
-            background=LIGHT_BUTTON,
-            troughcolor=PANEL_COLOR,
-            bordercolor=BORDER_COLOR,
-            arrowcolor=TEXT_COLOR,
+            background="#56667C",
+            troughcolor="#18202B",
+            bordercolor="#18202B",
+            arrowcolor=TITLE_COLOR,
             relief="flat",
-            width=14
+            width=12,
+            arrowsize=12,
+            borderwidth=0,
+            lightcolor="#56667C",
+            darkcolor="#56667C",
+            gripcount=0
         )
         style.configure(
             "Horizontal.TScrollbar",
-            background=LIGHT_BUTTON,
-            troughcolor=PANEL_COLOR,
-            bordercolor=BORDER_COLOR,
-            arrowcolor=TEXT_COLOR,
+            background="#56667C",
+            troughcolor="#18202B",
+            bordercolor="#18202B",
+            arrowcolor=TITLE_COLOR,
             relief="flat",
-            width=14
+            width=12,
+            arrowsize=12,
+            borderwidth=0,
+            lightcolor="#56667C",
+            darkcolor="#56667C",
+            gripcount=0
         )
         style.map(
             "Vertical.TScrollbar",
-            background=[("active", TITLE_COLOR)]
+            background=[
+                ("pressed", TITLE_COLOR),
+                ("active", "#FFB347"),
+                ("disabled", "#2A3442"),
+            ],
+            arrowcolor=[
+                ("pressed", TEXT_COLOR),
+                ("active", TEXT_COLOR),
+                ("disabled", "#4A5568"),
+            ],
+            troughcolor=[("disabled", "#18202B")]
         )
         style.map(
             "Horizontal.TScrollbar",
-            background=[("active", TITLE_COLOR)]
+            background=[
+                ("pressed", TITLE_COLOR),
+                ("active", "#FFB347"),
+                ("disabled", "#2A3442"),
+            ],
+            arrowcolor=[
+                ("pressed", TEXT_COLOR),
+                ("active", TEXT_COLOR),
+                ("disabled", "#4A5568"),
+            ],
+            troughcolor=[("disabled", "#18202B")]
         )
         style.configure(
             "Horizontal.TProgressbar",
@@ -468,6 +682,65 @@ class BackupGUI:
             thickness=14
         )
 
+    def get_font_scale(self):
+        return 1.0
+
+    def scale_font(self, font_tuple, min_size=8, scale=None):
+        if scale is None:
+            scale = self.get_font_scale()
+
+        family = font_tuple[0]
+        size = max(min_size, int(round(font_tuple[1] * scale)))
+        options = font_tuple[2:]
+        return (family, size, *options)
+
+    def register_responsive_font(self, widget, font_tuple, min_size=8):
+        self.responsive_font_widgets.append((widget, font_tuple, min_size))
+
+        try:
+            widget.configure(font=self.scale_font(font_tuple, min_size))
+        except tk.TclError:
+            pass
+
+        return widget
+
+    def on_root_resize(self, event):
+        if event.widget == self.root:
+            self.update_responsive_fonts()
+
+    def update_responsive_fonts(self):
+        scale = round(self.get_font_scale(), 2)
+
+        if self.current_font_scale == scale:
+            return
+
+        self.current_font_scale = scale
+        live_widgets = []
+
+        for widget, font_tuple, min_size in self.responsive_font_widgets:
+            try:
+                if not widget.winfo_exists():
+                    continue
+
+                widget.configure(font=self.scale_font(font_tuple, min_size, scale))
+                live_widgets.append((widget, font_tuple, min_size))
+            except tk.TclError:
+                continue
+
+        self.responsive_font_widgets = live_widgets
+
+        if self.ui_style is not None:
+            self.ui_style.configure(
+                "Treeview",
+                font=self.scale_font(TABLE_FONT, 8, scale),
+                rowheight=max(23, int(round(30 * scale)))
+            )
+            self.ui_style.configure(
+                "Treeview.Heading",
+                font=self.scale_font(TABLE_HEADING_FONT, 8, scale),
+                padding=(8, max(5, int(round(7 * scale))))
+            )
+
     def build_layout(self):
         self.outer_frame = tk.Frame(
             self.root,
@@ -476,14 +749,12 @@ class BackupGUI:
             highlightthickness=7
         )
         self.outer_frame.pack(fill="both", expand=True)
+        self.outer_frame.columnconfigure(0, weight=1)
+        self.outer_frame.rowconfigure(0, weight=1)
+        self.outer_frame.rowconfigure(1, weight=0)
 
         self.main_frame = tk.Frame(self.outer_frame, bg=BG_COLOR)
-        self.main_frame.pack(
-            fill="both",
-            expand=True,
-            padx=18,
-            pady=(18, 54)
-        )
+        self.main_frame.grid(row=0, column=0, sticky="nsew", padx=18, pady=(18, 10))
         self.main_frame.columnconfigure(0, weight=0)
         self.main_frame.columnconfigure(1, weight=1)
         self.main_frame.rowconfigure(0, weight=1)
@@ -493,27 +764,41 @@ class BackupGUI:
             bg=PANEL_COLOR,
             highlightbackground=BORDER_COLOR,
             highlightthickness=1,
-            padx=14,
-            pady=16
+            padx=0,
+            pady=0
         )
         self.menu_frame.grid(row=0, column=0, sticky="nsw", padx=(0, 20))
         self.menu_frame.grid_propagate(False)
         self.menu_frame.configure(width=250)
-        self.menu_frame.rowconfigure(2, weight=1)
+        self.menu_frame.columnconfigure(0, weight=1)
+        self.menu_frame.rowconfigure(0, weight=1)
 
-        tk.Label(
+        self.sidebar_scroll = ScrollableFrame(
             self.menu_frame,
+            bg=PANEL_COLOR,
+            stretch_body=True
+        )
+        self.sidebar_scroll.grid(row=0, column=0, sticky="nsew")
+        self.sidebar_body = self.sidebar_scroll.body
+        self.sidebar_body.configure(padx=14, pady=16)
+        self.sidebar_body.columnconfigure(0, weight=1)
+        self.sidebar_body.rowconfigure(2, weight=1)
+
+        menu_title_label = tk.Label(
+            self.sidebar_body,
             text="MENU",
             bg=PANEL_COLOR,
             fg=TITLE_COLOR,
             font=MENU_TITLE_FONT,
             anchor="w"
-        ).grid(row=0, column=0, sticky="ew", pady=(2, 18))
+        )
+        self.register_responsive_font(menu_title_label, MENU_TITLE_FONT, min_size=22)
+        menu_title_label.grid(row=0, column=0, sticky="ew", pady=(2, 18))
 
-        self.sidebar_button_frame = tk.Frame(self.menu_frame, bg=PANEL_COLOR)
+        self.sidebar_button_frame = tk.Frame(self.sidebar_body, bg=PANEL_COLOR)
         self.sidebar_button_frame.grid(row=1, column=0, sticky="new")
 
-        self.sidebar_footer_frame = tk.Frame(self.menu_frame, bg=PANEL_COLOR)
+        self.sidebar_footer_frame = tk.Frame(self.sidebar_body, bg=PANEL_COLOR)
         self.sidebar_footer_frame.grid(row=3, column=0, sticky="sew", pady=(18, 0))
 
         self.content_frame = tk.Frame(
@@ -557,14 +842,16 @@ class BackupGUI:
             bg=LIGHT_BUTTON
         )
 
-        tk.Label(
+        user_label = tk.Label(
             self.sidebar_footer_frame,
             text=self.build_user_label(),
             bg=PANEL_COLOR,
             fg=SUBTLE_TEXT,
             font=BODY_FONT,
             justify="center"
-        ).pack(fill="x", pady=(0, 10))
+        )
+        self.register_responsive_font(user_label, BODY_FONT, min_size=8)
+        user_label.pack(fill="x", pady=(0, 10))
 
         self.manage_button = tk.Button(
             self.sidebar_footer_frame,
@@ -584,6 +871,7 @@ class BackupGUI:
             padx=10,
             pady=6
         )
+        self.register_responsive_font(self.manage_button, BUTTON_FONT, min_size=8)
         self.manage_button.pack(fill="x", pady=(0, 8))
         self.apply_button_feedback(self.manage_button)
 
@@ -605,6 +893,7 @@ class BackupGUI:
             padx=10,
             pady=6
         )
+        self.register_responsive_font(self.destination_button, BUTTON_FONT, min_size=8)
         self.destination_button.pack(fill="x", pady=(0, 8))
         self.apply_button_feedback(self.destination_button)
 
@@ -627,6 +916,7 @@ class BackupGUI:
                 padx=10,
                 pady=6
             )
+            self.register_responsive_font(self.users_button, BUTTON_FONT, min_size=8)
             self.users_button.pack(fill="x", pady=(0, 8))
             self.apply_button_feedback(self.users_button)
 
@@ -648,6 +938,7 @@ class BackupGUI:
             padx=10,
             pady=6
         )
+        self.register_responsive_font(logout_button, BUTTON_FONT, min_size=8)
         logout_button.pack(fill="x", pady=(6, 0))
         self.apply_button_feedback(logout_button)
 
@@ -660,8 +951,19 @@ class BackupGUI:
             justify="center",
             wraplength=720
         )
-        footer.place(relx=0.5, rely=1.0, anchor="s", y=-18)
+        self.register_responsive_font(footer, ("Segoe UI", 9), min_size=8)
+        footer.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 12))
         self.footer_label = footer
+
+        self.outer_frame.bind(
+            "<Configure>",
+            lambda event: self.footer_label.configure(
+                wraplength=max(event.width - 80, 260)
+            )
+            if event.widget == self.outer_frame
+            else None,
+            add="+"
+        )
 
         self.apply_permissions()
         self.show_welcome_panel()
@@ -682,11 +984,11 @@ class BackupGUI:
             highlightbackground="#101722",
             highlightcolor="#101722",
             cursor="hand2",
-            width=22,
             anchor="w",
             padx=14,
             pady=8
         )
+        self.register_responsive_font(button, MENU_BUTTON_FONT, min_size=10)
         button.pack(fill="x", pady=6)
         self.apply_button_feedback(button)
         return button
@@ -714,6 +1016,7 @@ class BackupGUI:
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(1, weight=1)
 
+        back_button = None
         if show_back_button:
             back_button = tk.Button(
                 header,
@@ -733,6 +1036,7 @@ class BackupGUI:
                 padx=12,
                 pady=6
             )
+            self.register_responsive_font(back_button, BUTTON_FONT, min_size=8)
             back_button.grid(row=0, column=0, sticky="w", padx=(0, 14))
             self.apply_button_feedback(back_button)
 
@@ -740,29 +1044,88 @@ class BackupGUI:
         title_box.grid(row=0, column=1, sticky="ew")
         title_box.columnconfigure(0, weight=1)
 
-        tk.Label(
+        title_label = tk.Label(
             title_box,
             text=title,
             bg=HOME_PANEL_COLOR,
             fg=TITLE_COLOR,
             font=TITLE_FONT,
             anchor="center"
-        ).grid(row=0, column=0, sticky="ew")
+        )
+        self.register_responsive_font(title_label, TITLE_FONT, min_size=16)
+        title_label.grid(row=0, column=0, sticky="ew")
 
+        subtitle_label = None
         if subtitle:
-            tk.Label(
+            subtitle_label = tk.Label(
                 title_box,
                 text=subtitle,
                 bg=HOME_PANEL_COLOR,
                 fg=SUBTLE_TEXT,
                 font=HOME_SUBTITLE_FONT,
-                anchor="center"
-            ).grid(row=1, column=0, sticky="ew", pady=(4, 0))
+                anchor="center",
+                justify="center",
+                wraplength=760
+            )
+            self.register_responsive_font(subtitle_label, HOME_SUBTITLE_FONT, min_size=9)
+            subtitle_label.grid(row=1, column=0, sticky="ew", pady=(4, 0))
 
         content = tk.Frame(panel, bg=HOME_PANEL_COLOR, padx=22, pady=0)
         content.grid(row=1, column=0, sticky="nsew")
         content.columnconfigure(0, weight=1)
         content.rowconfigure(0, weight=1)
+
+        layout_state = {"compact": None}
+
+        def configure_shell_layout(width=None):
+            if width is None:
+                width = panel.winfo_width()
+
+            compact = width < 700
+
+            if layout_state["compact"] == compact:
+                if subtitle_label is not None:
+                    subtitle_label.configure(wraplength=max(width - 80, 280))
+                return
+
+            layout_state["compact"] = compact
+            header.configure(
+                padx=12 if compact else 22,
+                pady=12 if compact else 18
+            )
+            content.configure(padx=12 if compact else 22)
+
+            for column in range(2):
+                header.columnconfigure(column, weight=0)
+
+            if back_button is not None:
+                back_button.grid_forget()
+            title_box.grid_forget()
+
+            if compact and back_button is not None:
+                header.columnconfigure(0, weight=1)
+                back_button.grid(row=0, column=0, sticky="w", padx=0)
+                title_box.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+            else:
+                header.columnconfigure(1, weight=1)
+
+                if back_button is not None:
+                    back_button.grid(row=0, column=0, sticky="w", padx=(0, 14))
+                    title_box.grid(row=0, column=1, sticky="ew")
+                else:
+                    title_box.grid(row=0, column=0, columnspan=2, sticky="ew")
+
+            if subtitle_label is not None:
+                subtitle_label.configure(wraplength=max(width - 80, 280))
+
+        panel.bind(
+            "<Configure>",
+            lambda event: configure_shell_layout(event.width)
+            if event.widget == panel
+            else None,
+            add="+"
+        )
+        panel.after_idle(configure_shell_layout)
         return panel, content
 
     def show_message_panel(self, title, message, action_text=None, action=None):
@@ -1055,7 +1418,7 @@ class BackupGUI:
             "backup_compacted_size": (
                 format_size_bytes_human(compacted_size_bytes)
                 if compacted_size_bytes is not None
-                else ("Calculando..." if latest_size_backup else "-")
+                else "-"
             ),
         }
 
@@ -1072,7 +1435,7 @@ class BackupGUI:
         accent_bar = tk.Frame(card, bg=accent, height=5)
         accent_bar.pack(fill="x", pady=(0, 14))
 
-        tk.Label(
+        title_label = tk.Label(
             card,
             text=title,
             bg=CARD_COLOR,
@@ -1080,9 +1443,11 @@ class BackupGUI:
             font=CARD_LABEL_FONT,
             anchor="w",
             justify="left"
-        ).pack(fill="x")
+        )
+        self.register_responsive_font(title_label, CARD_LABEL_FONT, min_size=9)
+        title_label.pack(fill="x")
 
-        tk.Label(
+        value_label = tk.Label(
             card,
             text=str(value),
             bg=CARD_COLOR,
@@ -1090,9 +1455,11 @@ class BackupGUI:
             font=CARD_VALUE_FONT,
             anchor="w",
             justify="left"
-        ).pack(fill="x", pady=(10, 6))
+        )
+        self.register_responsive_font(value_label, CARD_VALUE_FONT, min_size=18)
+        value_label.pack(fill="x", pady=(10, 6))
 
-        tk.Label(
+        note_label = tk.Label(
             card,
             text=note,
             bg=CARD_COLOR,
@@ -1101,20 +1468,35 @@ class BackupGUI:
             anchor="w",
             justify="left",
             wraplength=220
-        ).pack(fill="x")
+        )
+        self.register_responsive_font(note_label, ("Segoe UI", 9), min_size=8)
+        note_label.pack(fill="x")
+
+        def update_card_wrap(event=None):
+            width = event.width if event is not None else card.winfo_width()
+            wrap = max(width - 36, 150)
+            title_label.configure(wraplength=wrap)
+            value_label.configure(wraplength=wrap)
+            note_label.configure(wraplength=wrap)
+
+        card.bind("<Configure>", update_card_wrap, add="+")
+        card.after_idle(update_card_wrap)
 
         return card
 
     def render_dashboard(self):
         summary = self.build_dashboard_summary()
         latest_full_backup = summary["latest_full_backup"]
-        _panel, content = self.create_content_shell(
+        _panel, shell_content = self.create_content_shell(
             "Sistema de Backup",
             show_back_button=False,
             subtitle="Acompanhe rapidamente o status do sistema e das ultimas mudancas."
         )
+        scroll_content = ScrollableFrame(shell_content, bg=HOME_PANEL_COLOR)
+        scroll_content.grid(row=0, column=0, sticky="nsew")
+        content = scroll_content.body
         content.columnconfigure(0, weight=1)
-        content.rowconfigure(1, weight=1)
+        content.rowconfigure(1, weight=0)
         content.rowconfigure(2, weight=0)
 
         hero = tk.Frame(
@@ -1132,16 +1514,18 @@ class BackupGUI:
         left_hero = tk.Frame(hero, bg=PANEL_COLOR)
         left_hero.grid(row=0, column=0, sticky="nsew", padx=(0, 18))
 
-        tk.Label(
+        dashboard_title_label = tk.Label(
             left_hero,
             text="Painel inicial",
             bg=PANEL_COLOR,
             fg=TITLE_COLOR,
             font=HOME_TITLE_FONT,
             anchor="w"
-        ).pack(fill="x")
+        )
+        self.register_responsive_font(dashboard_title_label, HOME_TITLE_FONT, min_size=20)
+        dashboard_title_label.pack(fill="x")
 
-        tk.Label(
+        hero_description = tk.Label(
             left_hero,
             text=(
                 "Visualize os arquivos acompanhados e o impacto do ultimo backup "
@@ -1152,7 +1536,9 @@ class BackupGUI:
             font=HOME_SUBTITLE_FONT,
             justify="left",
             wraplength=460
-        ).pack(fill="x", pady=(10, 16))
+        )
+        self.register_responsive_font(hero_description, HOME_SUBTITLE_FONT, min_size=9)
+        hero_description.pack(fill="x", pady=(10, 16))
 
         quick_info = tk.Frame(left_hero, bg=PANEL_COLOR)
         quick_info.pack(fill="x")
@@ -1161,6 +1547,8 @@ class BackupGUI:
         backup_name = latest_backup.get("backup_name") or latest_backup.get("backup_file") or "Nenhum backup registrado"
         backup_time = latest_backup.get("timestamp", "Sem historico")
 
+        quick_value_labels = []
+
         for label_text, value_text in (
             ("Ultimo backup", backup_time),
             ("Identificacao", backup_name),
@@ -1168,7 +1556,7 @@ class BackupGUI:
         ):
             row = tk.Frame(quick_info, bg=PANEL_COLOR)
             row.pack(fill="x", pady=3)
-            tk.Label(
+            info_label = tk.Label(
                 row,
                 text=f"{label_text}:",
                 bg=PANEL_COLOR,
@@ -1176,8 +1564,10 @@ class BackupGUI:
                 font=("Segoe UI", 10, "bold"),
                 width=15,
                 anchor="w"
-            ).pack(side="left")
-            tk.Label(
+            )
+            self.register_responsive_font(info_label, ("Segoe UI", 10, "bold"), min_size=8)
+            info_label.pack(side="left")
+            value_label = tk.Label(
                 row,
                 text=value_text,
                 bg=PANEL_COLOR,
@@ -1186,7 +1576,10 @@ class BackupGUI:
                 anchor="w",
                 justify="left",
                 wraplength=360
-            ).pack(side="left", fill="x", expand=True)
+            )
+            self.register_responsive_font(value_label, ("Segoe UI", 10), min_size=8)
+            value_label.pack(side="left", fill="x", expand=True)
+            quick_value_labels.append(value_label)
 
         right_hero = tk.Frame(
             hero,
@@ -1198,15 +1591,17 @@ class BackupGUI:
         )
         right_hero.grid(row=0, column=1, sticky="nsew")
 
-        tk.Label(
+        backup_summary_title = tk.Label(
             right_hero,
             text="Resumo do ultimo backup",
             bg=HOME_PANEL_COLOR,
             fg=TITLE_COLOR,
             font=("Segoe UI", 12, "bold")
-        ).pack(fill="x")
+        )
+        self.register_responsive_font(backup_summary_title, ("Segoe UI", 12, "bold"), min_size=9)
+        backup_summary_title.pack(fill="x")
 
-        tk.Label(
+        backup_summary_label = tk.Label(
             right_hero,
             text=(
                 "Os indicadores abaixo refletem o dataset atual e as mudancas "
@@ -1217,31 +1612,51 @@ class BackupGUI:
             font=("Segoe UI", 10),
             justify="left",
             wraplength=280
-        ).pack(fill="x", pady=(8, 12))
+        )
+        self.register_responsive_font(backup_summary_label, ("Segoe UI", 10), min_size=8)
+        backup_summary_label.pack(fill="x", pady=(8, 12))
 
-        tk.Label(
+        def update_dashboard_text_wrap(_event=None):
+            left_width = max(left_hero.winfo_width() - 28, 220)
+            right_width = max(right_hero.winfo_width() - 36, 180)
+            hero_description.configure(wraplength=left_width)
+            backup_summary_label.configure(wraplength=right_width)
+
+            for value_label in quick_value_labels:
+                value_label.configure(wraplength=max(left_width - 130, 180))
+
+        left_hero.bind("<Configure>", update_dashboard_text_wrap, add="+")
+        right_hero.bind("<Configure>", update_dashboard_text_wrap, add="+")
+
+        change_count_label = tk.Label(
             right_hero,
             text=f"{summary['added_files'] + summary['changed_files'] + summary['deleted_files']}",
             bg=HOME_PANEL_COLOR,
             fg="white",
             font=("Segoe UI Black", 28, "bold")
-        ).pack(anchor="w")
+        )
+        self.register_responsive_font(change_count_label, ("Segoe UI Black", 28, "bold"), min_size=20)
+        change_count_label.pack(anchor="w")
 
-        tk.Label(
+        change_caption_label = tk.Label(
             right_hero,
             text="mudancas registradas no ultimo backup",
             bg=HOME_PANEL_COLOR,
             fg=SUBTLE_TEXT,
             font=("Segoe UI", 10)
-        ).pack(anchor="w", pady=(4, 0))
+        )
+        self.register_responsive_font(change_caption_label, ("Segoe UI", 10), min_size=8)
+        change_caption_label.pack(anchor="w", pady=(4, 0))
 
-        cards_frame = tk.Frame(content, bg=HOME_PANEL_COLOR)
+        cards_frame = FlowFrame(
+            content,
+            bg=HOME_PANEL_COLOR,
+            min_item_width=205,
+            hgap=8,
+            vgap=8,
+            max_columns=4
+        )
         cards_frame.grid(row=1, column=0, sticky="nsew")
-        cards_frame.columnconfigure(0, weight=1)
-        cards_frame.columnconfigure(1, weight=1)
-        cards_frame.columnconfigure(2, weight=1)
-        cards_frame.columnconfigure(3, weight=1)
-
         cards = (
             ("Arquivos totais", summary["total_files"], TITLE_COLOR, "Arquivos atualmente presentes no dataset analisado."),
             ("Adicionados", summary["added_files"], "#22C55E", "Novos arquivos incluidos no ultimo backup."),
@@ -1249,15 +1664,21 @@ class BackupGUI:
             ("Excluidos", summary["deleted_files"], "#EF4444", "Arquivos removidos em relacao ao backup anterior."),
         )
 
+        summary_cards = []
         for column_index, (title, value, accent, note) in enumerate(cards):
             card = self.create_summary_card(cards_frame, title, value, accent, note)
-            card.grid(row=0, column=column_index, sticky="nsew", padx=(0 if column_index == 0 else 8, 0), pady=(0, 8))
+            cards_frame.add(card)
+            summary_cards.append(card)
 
-        size_cards_frame = tk.Frame(content, bg=HOME_PANEL_COLOR)
+        size_cards_frame = FlowFrame(
+            content,
+            bg=HOME_PANEL_COLOR,
+            min_item_width=260,
+            hgap=8,
+            vgap=8,
+            max_columns=3
+        )
         size_cards_frame.grid(row=2, column=0, sticky="ew", pady=(8, 0))
-        size_cards_frame.columnconfigure(0, weight=1)
-        size_cards_frame.columnconfigure(1, weight=1)
-        size_cards_frame.columnconfigure(2, weight=1)
 
         monitored_card = self.create_summary_card(
             size_cards_frame,
@@ -1266,7 +1687,7 @@ class BackupGUI:
             "#38BDF8",
             "Soma atual de todos os arquivos presentes nas pastas monitoradas."
         )
-        monitored_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=(0, 8))
+        size_cards_frame.add(monitored_card)
 
         backup_card = self.create_summary_card(
             size_cards_frame,
@@ -1275,7 +1696,7 @@ class BackupGUI:
             "#22C55E",
             "Volume real dos arquivos registrados no ultimo backup."
         )
-        backup_card.grid(row=0, column=1, sticky="nsew", padx=(8, 8), pady=(0, 8))
+        size_cards_frame.add(backup_card)
 
         compacted_card = self.create_summary_card(
             size_cards_frame,
@@ -1284,13 +1705,56 @@ class BackupGUI:
             "#F97316",
             "Tamanho final estimado do ZIP gerado a partir do ultimo backup."
         )
-        compacted_card.grid(row=0, column=2, sticky="nsew", padx=(8, 0), pady=(0, 8))
+        size_cards_frame.add(compacted_card)
+
+        dashboard_layout_state = {"compact": None}
+
+        def configure_dashboard_layout(width=None):
+            if width is None:
+                width = scroll_content.canvas.winfo_width()
+
+            compact = width < 900
+
+            if dashboard_layout_state["compact"] == compact:
+                update_dashboard_text_wrap()
+                return
+
+            dashboard_layout_state["compact"] = compact
+
+            left_hero.grid_forget()
+            right_hero.grid_forget()
+            self.clear_grid_layout(hero, rows=3, columns=2)
+
+            if compact:
+                hero.configure(padx=16, pady=16)
+                hero.columnconfigure(0, weight=1)
+                hero.rowconfigure(0, weight=0)
+                hero.rowconfigure(1, weight=0)
+                left_hero.grid(row=0, column=0, sticky="nsew")
+                right_hero.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
+            else:
+                hero.configure(padx=28, pady=24)
+                hero.columnconfigure(0, weight=3)
+                hero.columnconfigure(1, weight=2)
+                left_hero.grid(row=0, column=0, sticky="nsew", padx=(0, 18))
+                right_hero.grid(row=0, column=1, sticky="nsew")
+
+            hero.after_idle(update_dashboard_text_wrap)
+
+        scroll_content.canvas.bind(
+            "<Configure>",
+            lambda event: configure_dashboard_layout(event.width)
+            if event.widget == scroll_content.canvas
+            else None,
+            add="+"
+        )
+        content.after_idle(configure_dashboard_layout)
 
         if summary["monitored_total_size"] == "Calculando":
             self.ensure_dashboard_monitored_size_async()
 
-        if latest_full_backup and summary["backup_compacted_size"] == "Calculando...":
-            self.ensure_dashboard_compacted_size_async(latest_full_backup)
+        # Exibe apenas o valor compactado ja salvo no historico.
+        # Quando nao houver valor anterior persistido, mantem "-".
 
     def show_backup_panel(self):
         if not self.require_permission("run_backup"):
@@ -2035,8 +2499,218 @@ class BackupGUI:
             padx=12,
             pady=5
         )
+        self.register_responsive_font(button, BUTTON_FONT, min_size=8)
         self.apply_button_feedback(button)
         return button
+
+    def clear_grid_layout(self, parent, rows=8, columns=8):
+        for row in range(rows):
+            parent.rowconfigure(row, weight=0, minsize=0)
+
+        for column in range(columns):
+            parent.columnconfigure(column, weight=0, minsize=0, uniform="")
+
+    def bind_responsive_button_grid(
+        self,
+        parent,
+        buttons,
+        compact_width=680,
+        wide_sticky="e",
+        compact_columns=2
+    ):
+        state = {"mode": None}
+
+        def configure(width=None):
+            if width is None:
+                width = parent.winfo_width()
+
+            mode = "compact" if width < compact_width else "wide"
+
+            if state["mode"] == mode:
+                return
+
+            state["mode"] = mode
+
+            for button in buttons:
+                button.grid_forget()
+
+            self.clear_grid_layout(parent, rows=4, columns=max(len(buttons), compact_columns, 1))
+
+            if mode == "wide":
+                for index, button in enumerate(buttons):
+                    button.grid(
+                        row=0,
+                        column=index,
+                        sticky=wide_sticky,
+                        padx=(0 if index == 0 else 8, 0)
+                    )
+                return
+
+            columns = max(1, min(compact_columns, len(buttons)))
+
+            for column in range(columns):
+                parent.columnconfigure(column, weight=1, uniform="buttons")
+
+            for index, button in enumerate(buttons):
+                row = index // columns
+                column = index % columns
+                button.grid(
+                    row=row,
+                    column=column,
+                    sticky="ew",
+                    padx=(0 if column == 0 else 8, 0),
+                    pady=(0 if row == 0 else 8, 0)
+                )
+
+        parent.bind(
+            "<Configure>",
+            lambda event: configure(event.width)
+            if event.widget == parent
+            else None,
+            add="+"
+        )
+        parent.after_idle(configure)
+
+    def bind_responsive_search_bar(
+        self,
+        parent,
+        label,
+        entry,
+        buttons,
+        detail_widgets=None,
+        compact_width=760,
+        compact_columns=3
+    ):
+        detail_widgets = detail_widgets or []
+        state = {"mode": None}
+
+        def configure(width=None):
+            if width is None:
+                width = parent.winfo_width()
+
+            mode = "compact" if width < compact_width else "wide"
+
+            if state["mode"] == mode:
+                return
+
+            state["mode"] = mode
+
+            for widget in [label, entry, *buttons, *detail_widgets]:
+                widget.grid_forget()
+
+            self.clear_grid_layout(parent, rows=8, columns=max(len(buttons) + 2, compact_columns))
+
+            if mode == "wide":
+                parent.columnconfigure(1, weight=1)
+                label.grid(row=0, column=0, sticky="w", padx=(0, 10))
+                entry.grid(row=0, column=1, sticky="ew")
+
+                for index, button in enumerate(buttons):
+                    button.grid(
+                        row=0,
+                        column=index + 2,
+                        sticky="ew",
+                        padx=(10 if index == 0 else 8, 0)
+                    )
+
+                for index, widget in enumerate(detail_widgets):
+                    widget.grid(
+                        row=index + 1,
+                        column=1,
+                        columnspan=len(buttons) + 1,
+                        sticky="w",
+                        pady=(4, 0)
+                    )
+                return
+
+            columns = max(1, min(compact_columns, len(buttons) or 1))
+
+            for column in range(columns):
+                parent.columnconfigure(column, weight=1, uniform="actions")
+
+            label.grid(row=0, column=0, columnspan=columns, sticky="w")
+            entry.grid(row=1, column=0, columnspan=columns, sticky="ew", pady=(4, 0))
+
+            for index, button in enumerate(buttons):
+                row = 2 + (index // columns)
+                column = index % columns
+                button.grid(
+                    row=row,
+                    column=column,
+                    sticky="ew",
+                    padx=(0 if column == 0 else 8, 0),
+                    pady=(8, 0)
+                )
+
+            details_start_row = 2 + ((len(buttons) + columns - 1) // columns)
+
+            for index, widget in enumerate(detail_widgets):
+                widget.grid(
+                    row=details_start_row + index,
+                    column=0,
+                    columnspan=columns,
+                    sticky="w",
+                    pady=(4, 0)
+                )
+
+        parent.bind(
+            "<Configure>",
+            lambda event: configure(event.width)
+            if event.widget == parent
+            else None,
+            add="+"
+        )
+        parent.after_idle(configure)
+
+    def bind_responsive_card_grid(self, parent, cards, columns_by_width):
+        state = {"columns": None}
+
+        def get_columns(width):
+            for min_width, columns in columns_by_width:
+                if width >= min_width:
+                    return columns
+
+            return 1
+
+        def configure(width=None):
+            if width is None:
+                width = parent.winfo_width()
+
+            columns = max(1, min(get_columns(width), len(cards) or 1))
+
+            if state["columns"] == columns:
+                return
+
+            state["columns"] = columns
+
+            for card in cards:
+                card.grid_forget()
+
+            rows = ((len(cards) + columns - 1) // columns) + 1
+            self.clear_grid_layout(parent, rows=rows, columns=max(len(cards), columns))
+
+            for column in range(columns):
+                parent.columnconfigure(column, weight=1, uniform=str(id(parent)))
+
+            for index, card in enumerate(cards):
+                row = index // columns
+                column = index % columns
+                card.grid(
+                    row=row,
+                    column=column,
+                    sticky="nsew",
+                    padx=(0 if column == 0 else 8, 0),
+                    pady=(0 if row == 0 else 8, 8)
+                )
+
+        parent.bind(
+            "<Configure>",
+            lambda event: configure(event.width)
+            if event.widget == parent
+            else None,
+            add="+"
+        )
+        parent.after_idle(configure)
 
     def prepare_window(self, window):
         self.configure_child_icon(window)
@@ -2116,14 +2790,16 @@ class BackupGUI:
         vertical_scrollbar = ttk.Scrollbar(
             parent,
             orient="vertical",
-            command=tree.yview
+            command=tree.yview,
+            style="Vertical.TScrollbar"
         )
         vertical_scrollbar.grid(row=0, column=1, sticky="ns")
 
         horizontal_scrollbar = ttk.Scrollbar(
             parent,
             orient="horizontal",
-            command=tree.xview
+            command=tree.xview,
+            style="Horizontal.TScrollbar"
         )
         horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
 
@@ -2967,88 +3643,117 @@ class BackupGUI:
             )
             return
 
-        _panel, content = self.create_content_shell(
+        _panel, shell_content = self.create_content_shell(
             "Arquivos monitorados",
             subtitle="Visualize as pastas acompanhadas pelo sistema mesmo antes do primeiro backup."
         )
+        scroll_content = ScrollableFrame(shell_content, bg=HOME_PANEL_COLOR)
+        scroll_content.grid(row=0, column=0, sticky="nsew")
+        content = scroll_content.body
         content.columnconfigure(0, weight=1)
         content.rowconfigure(1, weight=1)
 
         top_bar = tk.Frame(content, bg=BG_COLOR)
         top_bar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        top_bar.columnconfigure(1, weight=1)
+        top_bar.columnconfigure(0, weight=1)
 
         file_search_var = tk.StringVar()
 
-        tk.Label(
-            top_bar,
+        search_line = tk.Frame(top_bar, bg=BG_COLOR)
+        search_line.grid(row=0, column=0, sticky="ew")
+        search_line.columnconfigure(1, weight=1)
+
+        search_label = tk.Label(
+            search_line,
             text="Buscar arquivo",
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
             font=BODY_BOLD_FONT
-        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
+        )
+        self.register_responsive_font(search_label, BODY_BOLD_FONT, min_size=8)
+        search_label.grid(row=0, column=0, sticky="w", padx=(0, 10))
 
         file_search_entry = tk.Entry(
-            top_bar,
+            search_line,
             textvariable=file_search_var,
             font=TABLE_FONT,
             bg=LIGHT_BUTTON,
             fg=TEXT_COLOR,
             relief="flat"
         )
+        self.register_responsive_font(file_search_entry, TABLE_FONT, min_size=8)
         file_search_entry.grid(row=0, column=1, sticky="ew")
 
-        self.create_dialog_button(
+        action_flow = FlowFrame(
             top_bar,
+            bg=BG_COLOR,
+            min_item_width=120,
+            hgap=8,
+            vgap=8,
+            max_columns=5
+        )
+        action_flow.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+
+        search_button = self.create_dialog_button(
+            action_flow,
             "Buscar",
             lambda: apply_file_search()
-        ).grid(row=0, column=2, padx=(10, 0))
+        )
+        action_flow.add(search_button)
 
         def clear_file_search():
             file_search_var.set("")
             refresh_table()
 
-        self.create_dialog_button(
-            top_bar,
+        clear_button = self.create_dialog_button(
+            action_flow,
             "Limpar",
             clear_file_search
-        ).grid(row=0, column=3, padx=(8, 0))
+        )
+        action_flow.add(clear_button)
 
-        self.create_dialog_button(
-            top_bar,
+        expand_button = self.create_dialog_button(
+            action_flow,
             "Expandir",
             lambda: set_all_nodes_open(True)
-        ).grid(row=0, column=4, padx=(8, 0))
+        )
+        action_flow.add(expand_button)
 
-        self.create_dialog_button(
-            top_bar,
+        collapse_button = self.create_dialog_button(
+            action_flow,
             "Recolher",
             lambda: set_all_nodes_open(False)
-        ).grid(row=0, column=5, padx=(8, 0))
+        )
+        action_flow.add(collapse_button)
 
-        self.create_dialog_button(
-            top_bar,
+        refresh_button = self.create_dialog_button(
+            action_flow,
             "Atualizar",
             lambda: refresh_table()
-        ).grid(row=0, column=6, padx=(8, 0))
+        )
+        action_flow.add(refresh_button)
 
         filter_summary_var = tk.StringVar(value="Exibindo todos os arquivos monitorados")
-        tk.Label(
+        filter_summary_label = tk.Label(
             top_bar,
             textvariable=filter_summary_var,
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
             font=BODY_FONT
-        ).grid(row=2, column=1, sticky="w", pady=(4, 0))
+        )
+        self.register_responsive_font(filter_summary_label, BODY_FONT, min_size=8)
+        filter_summary_label.grid(row=2, column=0, sticky="w", pady=(4, 0))
 
         status_var = tk.StringVar()
-        tk.Label(
+        status_label = tk.Label(
             top_bar,
             textvariable=status_var,
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
             font=BODY_FONT
-        ).grid(row=3, column=1, sticky="w", pady=(4, 0))
+        )
+        self.register_responsive_font(status_label, BODY_FONT, min_size=8)
+        status_label.grid(row=3, column=0, sticky="w", pady=(4, 0))
 
         table_frame = tk.Frame(content, bg=BG_COLOR)
         table_frame.grid(row=1, column=0, sticky="nsew")
@@ -3482,20 +4187,25 @@ class BackupGUI:
             "modified_to": "",
         }
 
-        window, content = self.create_content_shell("Recuperar Arquivos e Versoes")
+        window, shell_content = self.create_content_shell("Recuperar Arquivos e Versoes")
+        scroll_content = ScrollableFrame(shell_content, bg=HOME_PANEL_COLOR)
+        scroll_content.grid(row=0, column=0, sticky="nsew")
+        content = scroll_content.body
 
         search_bar = tk.Frame(content, bg=BG_COLOR)
         search_bar.columnconfigure(1, weight=1)
 
         search_var = tk.StringVar()
 
-        tk.Label(
+        restore_search_label = tk.Label(
             search_bar,
             text="Buscar arquivo",
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
             font=("Arial", 10, "bold")
-        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
+        )
+        self.register_responsive_font(restore_search_label, ("Arial", 10, "bold"), min_size=8)
+        restore_search_label.grid(row=0, column=0, sticky="w", padx=(0, 10))
 
         search_entry = tk.Entry(
             search_bar,
@@ -3505,6 +4215,7 @@ class BackupGUI:
             fg=TEXT_COLOR,
             relief="flat"
         )
+        self.register_responsive_font(search_entry, TABLE_FONT, min_size=8)
         search_entry.grid(row=0, column=1, sticky="ew")
 
         suggestion_box = tk.Listbox(
@@ -3522,23 +4233,88 @@ class BackupGUI:
             highlightcolor=TITLE_COLOR,
             activestyle="none"
         )
+        self.register_responsive_font(suggestion_box, SUGGESTION_FONT, min_size=8)
 
-        self.create_dialog_button(
+        restore_search_button = self.create_dialog_button(
             search_bar,
             "Buscar",
             lambda: apply_restore_search()
-        ).grid(row=0, column=2, padx=(10, 0))
+        )
+        restore_search_button.grid(row=0, column=2, padx=(10, 0))
 
         def clear_file_search():
             search_var.set("")
             hide_restore_suggestions()
             refresh_backups()
 
-        self.create_dialog_button(
+        restore_clear_button = self.create_dialog_button(
             search_bar,
             "Limpar",
             clear_file_search
-        ).grid(row=0, column=3, padx=(8, 0))
+        )
+        restore_clear_button.grid(row=0, column=3, padx=(8, 0))
+
+        restore_search_layout = {"mode": None, "suggestion_row": 1}
+
+        def configure_restore_search_bar(width=None):
+            if width is None:
+                width = search_bar.winfo_width()
+
+            mode = "compact" if width < 560 else "wide"
+
+            if restore_search_layout["mode"] == mode:
+                return
+
+            suggestions_visible = suggestion_box.winfo_manager() == "grid"
+
+            restore_search_layout["mode"] = mode
+
+            for widget in (
+                restore_search_label,
+                search_entry,
+                restore_search_button,
+                restore_clear_button,
+                suggestion_box,
+            ):
+                widget.grid_forget()
+
+            self.clear_grid_layout(search_bar, rows=4, columns=4)
+
+            if mode == "wide":
+                search_bar.columnconfigure(1, weight=1)
+                restore_search_label.grid(row=0, column=0, sticky="w", padx=(0, 10))
+                search_entry.grid(row=0, column=1, sticky="ew")
+                restore_search_button.grid(row=0, column=2, padx=(10, 0))
+                restore_clear_button.grid(row=0, column=3, padx=(8, 0))
+                restore_search_layout["suggestion_row"] = 1
+
+                if suggestions_visible:
+                    suggestion_box.grid(
+                        row=1,
+                        column=1,
+                        columnspan=3,
+                        sticky="ew",
+                        pady=(4, 0)
+                    )
+                return
+
+            for column in range(2):
+                search_bar.columnconfigure(column, weight=1, uniform="restore_search")
+
+            restore_search_label.grid(row=0, column=0, columnspan=2, sticky="w")
+            search_entry.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+            restore_search_button.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+            restore_clear_button.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+            restore_search_layout["suggestion_row"] = 3
+
+            if suggestions_visible:
+                suggestion_box.grid(
+                    row=3,
+                    column=0,
+                    columnspan=2,
+                    sticky="ew",
+                    pady=(4, 0)
+                )
 
         def get_restore_search_suggestions():
             search_text = search_var.get().strip().lower()
@@ -3591,9 +4367,9 @@ class BackupGUI:
 
             suggestion_box.config(height=min(len(suggestions), 5))
             suggestion_box.grid(
-                row=1,
-                column=1,
-                columnspan=3,
+                row=restore_search_layout["suggestion_row"],
+                column=0 if restore_search_layout["mode"] == "compact" else 1,
+                columnspan=2 if restore_search_layout["mode"] == "compact" else 3,
                 sticky="ew",
                 pady=(4, 0)
             )
@@ -3617,6 +4393,14 @@ class BackupGUI:
         suggestion_box.bind("<ButtonRelease-1>", select_restore_suggestion)
         suggestion_box.bind("<Double-Button-1>", select_restore_suggestion)
         suggestion_box.bind("<Return>", select_restore_suggestion)
+        search_bar.bind(
+            "<Configure>",
+            lambda event: configure_restore_search_bar(event.width)
+            if event.widget == search_bar
+            else None,
+            add="+"
+        )
+        search_bar.after_idle(configure_restore_search_bar)
 
         backup_label = tk.Label(
             content,
@@ -3625,6 +4409,7 @@ class BackupGUI:
             fg=SUBTLE_TEXT,
             font=("Arial", 10, "bold")
         )
+        self.register_responsive_font(backup_label, ("Arial", 10, "bold"), min_size=8)
 
         recoverable_summary = tk.StringVar(value="Arquivos recuperaveis")
         recoverable_label = tk.Label(
@@ -3634,6 +4419,7 @@ class BackupGUI:
             fg=SUBTLE_TEXT,
             font=("Arial", 10, "bold")
         )
+        self.register_responsive_font(recoverable_label, ("Arial", 10, "bold"), min_size=8)
 
         backup_frame = tk.Frame(content, bg=BG_COLOR)
 
@@ -3810,7 +4596,7 @@ class BackupGUI:
                     pady=(10, 6)
                 )
                 file_frame.grid(row=4, column=0, sticky="nsew")
-                button_bar.grid(row=5, column=0, sticky="e", pady=(10, 0))
+                button_bar.grid(row=5, column=0, sticky="ew", pady=(10, 0))
 
         def on_restore_resize(event):
             if event.widget == window:
@@ -4487,29 +5273,44 @@ class BackupGUI:
                 folder_path=folder_path
             )
 
-        self.create_dialog_button(
+        button_bar.columnconfigure(0, weight=1)
+        restore_action_flow = FlowFrame(
             button_bar,
+            bg=BG_COLOR,
+            min_item_width=170,
+            hgap=8,
+            vgap=8,
+            max_columns=4
+        )
+        restore_action_flow.grid(row=0, column=0, sticky="ew")
+
+        restore_selected_button = self.create_dialog_button(
+            restore_action_flow,
             "Recuperar selecionados",
             restore_selected_files
-        ).pack(side="left", padx=(0, 8))
+        )
+        restore_action_flow.add(restore_selected_button)
 
-        self.create_dialog_button(
-            button_bar,
+        restore_folder_button = self.create_dialog_button(
+            restore_action_flow,
             "Recuperar pasta do item",
             restore_selected_folder
-        ).pack(side="left", padx=(0, 8))
+        )
+        restore_action_flow.add(restore_folder_button)
 
-        self.create_dialog_button(
-            button_bar,
+        filter_files_button = self.create_dialog_button(
+            restore_action_flow,
             "Filtrar arquivos",
             lambda: open_restore_filter_window()
-        ).pack(side="left", padx=(0, 8))
+        )
+        restore_action_flow.add(filter_files_button)
 
-        self.create_dialog_button(
-            button_bar,
+        restore_snapshot_button = self.create_dialog_button(
+            restore_action_flow,
             "Restaurar snapshot",
             lambda: self.restore_incremental_snapshot_from_file(window)
-        ).pack(side="left")
+        )
+        restore_action_flow.add(restore_snapshot_button)
 
         backup_tree.bind("<<TreeviewSelect>>", refresh_recoverable_files)
         refresh_backups()
@@ -5491,25 +6292,29 @@ class BackupGUI:
         latest_entry = self.get_latest_visible_history_entry()
         latest_full_entry = self.get_latest_visible_full_backup_entry()
 
-        _panel, content = self.create_content_shell(
+        _panel, shell_content = self.create_content_shell(
             "Baixar Backups",
             subtitle="Exporte o ultimo backup, um backup completo de recuperacao ou um backup especifico."
         )
+        scroll_content = ScrollableFrame(shell_content, bg=HOME_PANEL_COLOR)
+        scroll_content.grid(row=0, column=0, sticky="nsew")
+        content = scroll_content.body
         content.columnconfigure(0, weight=1)
         content.rowconfigure(1, weight=1)
 
-        options_box = tk.Frame(
+        options_box = FlowFrame(
             content,
             bg=PANEL_COLOR,
+            min_item_width=250,
+            hgap=8,
+            vgap=8,
+            max_columns=3,
             highlightbackground=BORDER_COLOR,
             highlightthickness=1,
             padx=18,
             pady=18
         )
         options_box.grid(row=0, column=0, sticky="ew", pady=(0, 14))
-        options_box.columnconfigure(0, weight=1)
-        options_box.columnconfigure(1, weight=1)
-        options_box.columnconfigure(2, weight=1)
 
         def add_download_option(column, title, description, button_text, command, enabled=True):
             card = tk.Frame(
@@ -5520,7 +6325,7 @@ class BackupGUI:
                 padx=16,
                 pady=16
             )
-            card.grid(row=0, column=column, sticky="nsew", padx=(0 if column == 0 else 10, 0))
+            options_box.add(card)
 
             tk.Label(
                 card,
@@ -5532,7 +6337,7 @@ class BackupGUI:
                 anchor="w"
             ).pack(fill="x")
 
-            tk.Label(
+            description_label = tk.Label(
                 card,
                 text=description,
                 bg=HOME_PANEL_COLOR,
@@ -5541,37 +6346,48 @@ class BackupGUI:
                 justify="left",
                 anchor="w",
                 wraplength=250
-            ).pack(fill="x", pady=(8, 14))
+            )
+            description_label.pack(fill="x", pady=(8, 14))
 
             button = self.create_dialog_button(card, button_text, command)
             if not enabled:
                 button.config(state=tk.DISABLED, cursor="arrow")
             button.pack(anchor="w")
 
-        add_download_option(
+            def update_description_wrap(event=None):
+                width = event.width if event is not None else card.winfo_width()
+                description_label.configure(wraplength=max(width - 34, 160))
+
+            card.bind("<Configure>", update_description_wrap, add="+")
+            card.after_idle(update_description_wrap)
+            return card
+
+        download_cards = []
+
+        download_cards.append(add_download_option(
             0,
             "Ultimo backup",
             "Exporta exatamente o backup mais recente visivel no historico, mesmo se ele for parcial por prioridade.",
             "Baixar ultimo",
             lambda: self.export_history_entry(latest_entry, "do ultimo backup"),
             enabled=latest_entry is not None
-        )
-        add_download_option(
+        ))
+        download_cards.append(add_download_option(
             1,
             "Backup completo",
             "Exporta o backup completo mais recente para recuperacao de todos os arquivos, ignorando snapshots parciais.",
             "Baixar completo",
             lambda: self.export_history_entry(latest_full_entry, "do backup completo"),
             enabled=latest_full_entry is not None
-        )
-        add_download_option(
+        ))
+        download_cards.append(add_download_option(
             2,
             "Backup especifico",
             "Selecione qualquer backup da lista abaixo para exportar exatamente a execucao desejada.",
             "Baixar selecionado",
             lambda: export_selected_backup(),
             enabled=bool(history)
-        )
+        ))
 
         table_box = tk.Frame(
             content,
@@ -5660,12 +6476,14 @@ class BackupGUI:
 
         button_bar = tk.Frame(table_box, bg=PANEL_COLOR)
         button_bar.grid(row=2, column=0, sticky="e", pady=(10, 0))
+        button_bar.columnconfigure(0, weight=1)
 
-        self.create_dialog_button(
+        selected_download_button = self.create_dialog_button(
             button_bar,
             "Baixar backup selecionado",
             export_selected_backup
-        ).pack(side="left")
+        )
+        selected_download_button.grid(row=0, column=0, sticky="ew")
 
     def open_user_manager(self):
         if not self.require_permission("manage_users"):
@@ -5938,6 +6756,9 @@ def start_gui(current_user=None):
 
         root = tk.Tk()
         gui = BackupGUI(root, current_user)
+        root.deiconify()
+        root.lift()
+        root.focus_force()
         root.mainloop()
 
         if not gui.logout_requested:
