@@ -83,15 +83,16 @@ class EncryptionTests(unittest.TestCase):
                 "company_id": session["company_id"],
             },
         )
-        object_path = destination / "backup_storage" / "objects" / source_file.read_bytes().hex()
         snapshot = json.loads(Path(result["snapshot_path"]).read_text(encoding="utf-8"))
         stored_object = Path(result["backup_storage"]) / snapshot["files"][0]["object_path"]
+        legacy_storage = destination / "backup_storage"
 
         self.assertTrue(stored_object.exists())
+        self.assertEqual("arquivos_relacionados", stored_object.parent.name)
         self.assertNotEqual(b"conteudo secreto", stored_object.read_bytes())
         self.assertEqual("AES-256-GCM", snapshot["encryption"]["algorithm"])
         self.assertTrue(snapshot["files"][0]["encryption"]["encrypted"])
-        self.assertFalse(object_path.exists())
+        self.assertFalse(legacy_storage.exists())
 
         restore_destination = self.root / "restore"
         restored = restore_snapshot(

@@ -23,6 +23,7 @@ from backup.backup_manager import build_recovered_file_path
 from backup.backup_manager import build_recovered_folder_path
 from backup.backup_manager import build_restore_target
 from backup.backup_manager import get_latest_backup_path
+from backup.backup_manager import get_user_backup_destination
 from backup.backup_manager import inspect_restore_changes
 from backup.backup_manager import is_path_ignored
 from backup.backup_manager import export_snapshot_to_zip
@@ -1410,7 +1411,7 @@ class BackupGUI:
             "deleted_files": action_counts["excluido"],
             "latest_backup": latest_backup,
             "latest_full_backup": latest_size_backup,
-            "backup_destination": self.get_backup_destination(),
+            "backup_destination": self.get_current_user_backup_destination(),
             "monitored_total_size": monitored_size,
             "backup_recovery_size": (
                 format_size_bytes_human(
@@ -1990,7 +1991,7 @@ class BackupGUI:
 
     def build_footer_text(self):
         latest_backup = self.get_latest_history_entry()
-        backup_destination = self.get_backup_destination()
+        backup_destination = self.get_current_user_backup_destination()
 
         if latest_backup:
             backup_text = (
@@ -2283,6 +2284,12 @@ class BackupGUI:
 
     def get_backup_destination(self):
         return self.backup_destination or BACKUP_DIR
+
+    def get_current_user_backup_destination(self):
+        return get_user_backup_destination(
+            self.get_backup_destination(),
+            self.current_user.get("username")
+        )
 
     def choose_backup_destination(self):
         if not self.require_permission("change_backup_destination"):
@@ -4067,11 +4074,7 @@ class BackupGUI:
 
     def restore_incremental_snapshot_from_file(self, parent=None):
         parent = parent or self.root
-        snapshots_directory = os.path.join(
-            self.get_backup_destination(),
-            "backup_storage",
-            "snapshots"
-        )
+        snapshots_directory = self.get_current_user_backup_destination()
         initial_directory = (
             snapshots_directory
             if os.path.isdir(snapshots_directory)
@@ -6199,7 +6202,7 @@ class BackupGUI:
         self.export_history_entry(latest_entry, title_suffix="do ultimo backup")
 
     def get_latest_backup(self):
-        return get_latest_backup_path(self.get_backup_destination())
+        return get_latest_backup_path(self.get_current_user_backup_destination())
 
     def get_latest_visible_full_backup_entry(self):
         history = self.get_visible_history()

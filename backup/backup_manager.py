@@ -21,7 +21,7 @@ PRIORITY_STATE_PATH = os.path.join(PROJECT_ROOT, "config", "priority_backup_stat
 ZIP_COMPRESSION_METHOD = zipfile.ZIP_LZMA
 RECOVERABLE_ACTIONS = {"alterado", "excluido"}
 INCREMENTAL_STORAGE_DIRNAME = "backup_storage"
-OBJECTS_DIRNAME = "objects"
+OBJECTS_DIRNAME = "arquivos_relacionados"
 SNAPSHOTS_DIRNAME = "snapshots"
 INDEX_FILENAME = "index.json"
 INDEX_VERSION = 1
@@ -148,6 +148,18 @@ def get_monitored_directories(config=None):
 def get_backup_destination(config=None):
     config = config or load_config()
     return resolve_configured_path(config.get("backup_destination"))
+
+
+def sanitize_storage_segment(value, default="sistema"):
+    segment = str(value or "").strip().lower()
+    segment = re.sub(r"[^a-z0-9._-]+", "_", segment)
+    segment = segment.strip("._-")
+    return segment or default
+
+
+def get_user_backup_destination(backup_destination=None, username=None):
+    destination = resolve_configured_path(backup_destination or get_backup_destination())
+    return os.path.join(destination, sanitize_storage_segment(username))
 
 
 def is_deduplication_enabled(config=None):
@@ -573,10 +585,26 @@ def update_priority_state_after_backup(manifest, current_snapshot, now=None, pri
     save_priority_state(state)
 
 
-def get_latest_history_snapshot(include_partial=False):
+def history_entry_matches_scope(entry, username=None, company_id=None):
+    if not isinstance(entry, dict):
+        return False
+
+    if username is not None and entry.get("user", "sistema") != username:
+        return False
+
+    if company_id is not None and entry.get("company_id", "default") != company_id:
+        return False
+
+    return True
+
+
+def get_latest_history_snapshot(include_partial=False, username=None, company_id=None):
     history = load_history()
 
     for entry in reversed(history):
+        if not history_entry_matches_scope(entry, username, company_id):
+            continue
+
         if entry.get("partial_backup") and not include_partial:
             continue
 
@@ -598,10 +626,13 @@ def is_full_history_entry(entry):
     return bool(entry.get("file_snapshot"))
 
 
-def get_latest_full_history_entry():
+def get_latest_full_history_entry(username=None, company_id=None):
     history = load_history()
 
     for entry in reversed(history):
+        if not history_entry_matches_scope(entry, username, company_id):
+            continue
+
         if is_full_history_entry(entry):
             return entry
 
@@ -774,20 +805,23 @@ def parse_int(value, default=0):
         return default
 
 
-def get_incremental_storage_paths(backup_destination=None):
+def get_incremental_storage_paths(backup_destination=None, now=None):
     destination = resolve_configured_path(backup_destination or get_backup_destination())
-    storage_root = os.path.join(destination, INCREMENTAL_STORAGE_DIRNAME)
+    now = now or datetime.now()
+    day_folder = now.strftime("%Y-%m-%d")
+    day_root = os.path.join(destination, day_folder)
 
     return {
-        "root": storage_root,
-        "objects": os.path.join(storage_root, OBJECTS_DIRNAME),
-        "snapshots": os.path.join(storage_root, SNAPSHOTS_DIRNAME),
-        "index": os.path.join(storage_root, INDEX_FILENAME),
+        "root": destination,
+        "day_root": day_root,
+        "objects": os.path.join(day_root, OBJECTS_DIRNAME),
+        "snapshots": os.path.join(day_root, SNAPSHOTS_DIRNAME),
+        "index": os.path.join(destination, INDEX_FILENAME),
     }
 
 
-def ensure_incremental_storage(backup_destination=None):
-    paths = get_incremental_storage_paths(backup_destination)
+def ensure_incremental_storage(backup_destination=None, now=None):
+    paths = get_incremental_storage_paths(backup_destination, now=now)
     os.makedirs(paths["objects"], exist_ok=True)
     os.makedirs(paths["snapshots"], exist_ok=True)
     return paths
@@ -827,8 +861,10 @@ def save_incremental_index(backup_destination, index):
     save_json_atomic(paths["index"], normalize_incremental_index(index))
 
 
-def build_object_relative_path(file_hash):
-    return f"{OBJECTS_DIRNAME}/{file_hash}"
+def build_object_relative_path(file_hash, now=None):
+    now = now or datetime.now()
+    day_folder = now.strftime("%Y-%m-%d")
+    return f"{day_folder}/{OBJECTS_DIRNAME}/{file_hash}"
 
 
 def resolve_storage_relative_path(storage_root, relative_path):
@@ -1258,7 +1294,7 @@ def run_incremental_backup(
     if not directories and manifest is None:
         raise ValueError("Adicione ao menos um diretorio antes de iniciar o backup.")
 
-    storage_paths = ensure_incremental_storage(backup_destination)
+    storage_paths = ensure_incremental_storage(backup_destination, now=now)
     index = load_incremental_index(backup_destination)
     backup_encryption = build_backup_encryption_context(encryption_context)
     priority_index = priority_index or load_dataset_priority_index()
@@ -1345,7 +1381,11 @@ def run_incremental_backup(
 
             continue
 
-        object_path = build_object_relative_path(file_hash)
+        existing_object = index.get("objects", {}).get(file_hash, {})
+        object_path = existing_object.get("object_path") or build_object_relative_path(
+            file_hash,
+            now=now
+        )
         object_abs_path = resolve_storage_relative_path(
             storage_paths["root"],
             object_path
@@ -1662,13 +1702,23 @@ def run_backup_job(
     user_master_key=None,
     backup_name=None,
     backup_description=None,
+    now=None,
     run_scan_first=True,
     progress_callback=None,
     cancel_callback=None
 ):
     config = load_config()
     directories = directories or get_monitored_directories(config)
-    backup_destination = resolve_configured_path(backup_destination or get_backup_destination(config))
+    base_backup_destination = resolve_configured_path(
+        backup_destination or get_backup_destination(config)
+    )
+    effective_username = username or "sistema"
+    effective_company_id = company_id or "default"
+    backup_destination = get_user_backup_destination(
+        base_backup_destination,
+        effective_username
+    )
+    started_at = now or datetime.now()
 
     if progress_callback:
         progress_callback(0, "Iniciando backup...")
@@ -1691,7 +1741,10 @@ def run_backup_job(
 
     ensure_not_cancelled(cancel_callback)
 
-    previous_snapshot = get_latest_history_snapshot()
+    previous_snapshot = get_latest_history_snapshot(
+        username=effective_username,
+        company_id=effective_company_id
+    )
 
     if progress_callback:
         progress_callback(40, "Criando snapshot incremental...")
@@ -1714,26 +1767,27 @@ def run_backup_job(
         directories=directories,
         backup_destination=backup_destination,
         config=config,
+        now=started_at,
         trigger=trigger,
         progress_callback=on_incremental_progress,
         cancel_callback=cancel_callback,
         encryption_context={
             "master_key": user_master_key,
-            "user_id": username or "sistema",
-            "company_id": company_id or "default",
+            "user_id": effective_username,
+            "company_id": effective_company_id,
         } if user_master_key else None,
     )
     current_snapshot = incremental_result["file_snapshot"]
     file_changes = build_file_changes(previous_snapshot, current_snapshot)
-    completed_at = datetime.now()
+    completed_at = started_at
     encrypted_archive = create_encrypted_snapshot_archive(
         incremental_result["snapshot_path"],
         backup_destination,
         user_master_key,
         now=completed_at,
         backup_name=backup_name,
-        user_id=username or "sistema",
-        company_id=company_id or "default",
+        user_id=effective_username,
+        company_id=effective_company_id,
     ) if user_master_key else {}
 
     history_entry = {
@@ -1742,6 +1796,8 @@ def run_backup_job(
         "backup_name": backup_name or "",
         "backup_description": backup_description or "",
         "backup_path": incremental_result["snapshot_path"],
+        "backup_base_destination": base_backup_destination,
+        "backup_user_directory": backup_destination,
         "encrypted_file_path": encrypted_archive.get("encrypted_file_path", ""),
         "original_zip_name": encrypted_archive.get("original_zip_name", ""),
         "backup_folder": incremental_result["backup_folder"],
@@ -1756,9 +1812,9 @@ def run_backup_job(
         "files_not_eligible": incremental_result["files_not_eligible"],
         "duplicate_files_skipped": len(incremental_result["skipped_duplicates"]),
         "trigger": trigger,
-        "user": username or "sistema",
+        "user": effective_username,
         "user_role": user_role or "system",
-        "company_id": company_id or "default",
+        "company_id": effective_company_id,
         "encrypted": bool(incremental_result.get("encryption") or encrypted_archive),
         "encryption_algorithm": encrypted_archive.get(
             "encryption_algorithm",
@@ -1791,6 +1847,7 @@ def run_priority_backup_job(
     user_role=None,
     company_id=None,
     user_master_key=None,
+    now=None,
     run_scan_first=True,
     progress_callback=None,
     cancel_callback=None
@@ -1804,8 +1861,16 @@ def run_priority_backup_job(
         }
 
     directories = directories or get_monitored_directories(config)
-    backup_destination = resolve_configured_path(backup_destination or get_backup_destination(config))
-    started_at = datetime.now()
+    base_backup_destination = resolve_configured_path(
+        backup_destination or get_backup_destination(config)
+    )
+    effective_username = username or "sistema"
+    effective_company_id = company_id or "default"
+    backup_destination = get_user_backup_destination(
+        base_backup_destination,
+        effective_username
+    )
+    started_at = now or datetime.now()
 
     if progress_callback:
         progress_callback(0, "Verificando politica de prioridade...")
@@ -1825,7 +1890,10 @@ def run_priority_backup_job(
 
     ensure_not_cancelled(cancel_callback)
 
-    previous_snapshot = get_latest_history_snapshot()
+    previous_snapshot = get_latest_history_snapshot(
+        username=effective_username,
+        company_id=effective_company_id
+    )
     priority_index = load_dataset_priority_index()
     incremental_index = load_incremental_index(backup_destination)
     eligible_manifest, priority_decisions, priority_index = build_priority_eligible_manifest(
@@ -1878,8 +1946,8 @@ def run_priority_backup_job(
         cancel_callback=cancel_callback,
         encryption_context={
             "master_key": user_master_key,
-            "user_id": username or "sistema",
-            "company_id": company_id or "default",
+            "user_id": effective_username,
+            "company_id": effective_company_id,
         } if user_master_key else None,
     )
     current_snapshot = incremental_result["file_snapshot"]
@@ -1888,8 +1956,11 @@ def run_priority_backup_job(
         current_snapshot,
         detect_deletions=False
     )
-    completed_at = datetime.now()
-    parent_entry = get_latest_full_history_entry()
+    completed_at = started_at
+    parent_entry = get_latest_full_history_entry(
+        username=effective_username,
+        company_id=effective_company_id
+    )
     parent_snapshot_id = parent_entry.get("snapshot_id", "") if parent_entry else ""
     encrypted_archive = create_encrypted_snapshot_archive(
         incremental_result["snapshot_path"],
@@ -1897,8 +1968,8 @@ def run_priority_backup_job(
         user_master_key,
         now=completed_at,
         backup_name="prioridade",
-        user_id=username or "sistema",
-        company_id=company_id or "default",
+        user_id=effective_username,
+        company_id=effective_company_id,
     ) if user_master_key else {}
 
     history_entry = {
@@ -1907,6 +1978,8 @@ def run_priority_backup_job(
         "backup_name": "prioridade",
         "backup_description": "Backup automatico pela politica de prioridade.",
         "backup_path": incremental_result["snapshot_path"],
+        "backup_base_destination": base_backup_destination,
+        "backup_user_directory": backup_destination,
         "encrypted_file_path": encrypted_archive.get("encrypted_file_path", ""),
         "original_zip_name": encrypted_archive.get("original_zip_name", ""),
         "backup_folder": incremental_result["backup_folder"],
@@ -1921,9 +1994,9 @@ def run_priority_backup_job(
         "files_not_eligible": incremental_result["files_not_eligible"],
         "duplicate_files_skipped": len(incremental_result["skipped_duplicates"]),
         "trigger": trigger,
-        "user": username or "sistema",
+        "user": effective_username,
         "user_role": user_role or "system",
-        "company_id": company_id or "default",
+        "company_id": effective_company_id,
         "encrypted": bool(incremental_result.get("encryption") or encrypted_archive),
         "encryption_algorithm": encrypted_archive.get(
             "encryption_algorithm",

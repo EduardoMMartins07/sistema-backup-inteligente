@@ -20,6 +20,7 @@ from backup.backup_manager import normalize_archive_name
 from backup.backup_manager import normalize_path
 from backup.backup_manager import restore_snapshot
 from backup.backup_manager import run_incremental_backup
+from backup.backup_manager import run_backup_job
 from backup.backup_manager import run_priority_backup_job
 
 
@@ -156,12 +157,11 @@ class IncrementalBackupTests(unittest.TestCase):
         dataset_path.write_text("".join(rows), encoding="utf-8")
 
     def object_paths(self):
-        objects_dir = self.destination / "backup_storage" / "objects"
-
-        if not objects_dir.exists():
-            return []
-
-        return [path for path in objects_dir.iterdir() if path.is_file()]
+        return [
+            path
+            for path in self.destination.rglob("*")
+            if path.is_file() and path.parent.name == backup_manager.OBJECTS_DIRNAME
+        ]
 
     def load_snapshot(self, snapshot_path):
         return json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
@@ -170,6 +170,27 @@ class IncrementalBackupTests(unittest.TestCase):
         return run_incremental_backup(
             directories=[str(self.source)],
             backup_destination=str(self.destination),
+            manifest=manifest,
+            now=now or self.now,
+            priority_policy=priority_policy,
+            priority_index=self.priority_index_for(manifest, priority),
+        )
+
+    def run_user_backup(
+        self,
+        manifest,
+        username="sistema",
+        now=None,
+        priority_policy=False,
+        priority="media"
+    ):
+        user_destination = backup_manager.get_user_backup_destination(
+            str(self.destination),
+            username
+        )
+        return run_incremental_backup(
+            directories=[str(self.source)],
+            backup_destination=user_destination,
             manifest=manifest,
             now=now or self.now,
             priority_policy=priority_policy,
@@ -210,7 +231,7 @@ class IncrementalBackupTests(unittest.TestCase):
         file_path = self.write_file("A.txt", "v1")
         manifest = self.manifest_for(file_path)
         self.configure_priority_job_environment([file_path], "alta")
-        self.run_backup(manifest, now=datetime.now(), priority="alta")
+        self.run_user_backup(manifest, now=datetime.now(), priority="alta")
 
         result = run_priority_backup_job(
             run_scan_first=False,
@@ -357,6 +378,11 @@ class IncrementalBackupTests(unittest.TestCase):
 
         self.assertEqual(3, len(self.object_paths()))
         self.assertTrue(Path(result["snapshot_path"]).exists())
+        self.assertEqual(
+            self.destination / "2026-05-08" / backup_manager.SNAPSHOTS_DIRNAME,
+            Path(result["snapshot_path"]).parent
+        )
+        self.assertEqual(str(self.destination), result["backup_storage"])
         self.assertEqual(3, len(self.load_snapshot(result["snapshot_path"])["files"]))
         self.assertEqual(
             3,
@@ -588,7 +614,7 @@ class IncrementalBackupTests(unittest.TestCase):
         file_path = self.write_file("A.txt", "v1")
         manifest = self.manifest_for(file_path)
         self.configure_priority_job_environment([file_path], "alta")
-        self.run_backup(
+        self.run_user_backup(
             manifest,
             now=datetime.now() - timedelta(minutes=6),
             priority="alta"
@@ -613,7 +639,7 @@ class IncrementalBackupTests(unittest.TestCase):
         file_path = self.write_file("A.txt", "v1")
         manifest = self.manifest_for(file_path)
         self.configure_priority_job_environment([file_path], "alta")
-        self.run_backup(
+        self.run_user_backup(
             manifest,
             now=datetime.now() - timedelta(minutes=6),
             priority="alta"
@@ -655,7 +681,10 @@ class IncrementalBackupTests(unittest.TestCase):
 
         full_result = run_incremental_backup(
             directories=[str(self.source)],
-            backup_destination=str(self.destination),
+            backup_destination=backup_manager.get_user_backup_destination(
+                str(self.destination),
+                "sistema"
+            ),
             manifest=manifest,
             now=self.now,
             priority_index=mixed_priority_index,
@@ -671,6 +700,9 @@ class IncrementalBackupTests(unittest.TestCase):
                 "storage_mode": "incremental",
                 "file_snapshot": full_result["file_snapshot"],
                 "file_changes": [],
+                "user": "sistema",
+                "user_role": "system",
+                "company_id": "default",
                 "history_group_type": "full",
             }
         )
@@ -759,6 +791,109 @@ class IncrementalBackupTests(unittest.TestCase):
                 "b",
                 archive.read("source/docs/B.txt").decode("utf-8")
             )
+
+    def test_backup_job_separates_storage_by_user(self):
+        backup_manager.HISTORY_PATH = str(self.root / "config" / "backup_history.json")
+        file_path = self.write_file("A.txt", "a")
+
+        alice = run_backup_job(
+            directories=[str(self.source)],
+            backup_destination=str(self.destination),
+            username="Alice",
+            user_role="operator",
+            company_id="default",
+            now=self.now,
+            run_scan_first=False,
+        )
+        bob = run_backup_job(
+            directories=[str(self.source)],
+            backup_destination=str(self.destination),
+            username="Bob",
+            user_role="operator",
+            company_id="default",
+            now=self.now,
+            run_scan_first=False,
+        )
+
+        self.assertTrue(file_path.exists())
+        self.assertTrue(Path(alice["snapshot_path"]).exists())
+        self.assertTrue(Path(bob["snapshot_path"]).exists())
+        self.assertEqual(
+            self.destination / "alice",
+            Path(alice["backup_storage"])
+        )
+        self.assertEqual(
+            self.destination / "bob",
+            Path(bob["backup_storage"])
+        )
+        self.assertEqual(2, len(self.object_paths()))
+
+    def test_backup_job_separates_snapshots_by_date(self):
+        backup_manager.HISTORY_PATH = str(self.root / "config" / "backup_history.json")
+        file_path = self.write_file("A.txt", "a")
+        manifest = self.manifest_for(file_path)
+
+        first = run_backup_job(
+            directories=[str(self.source)],
+            backup_destination=str(self.destination),
+            username="Alice",
+            user_role="operator",
+            company_id="default",
+            now=self.now,
+            run_scan_first=False,
+        )
+        file_path.write_text("a2", encoding="utf-8")
+        second = run_backup_job(
+            directories=[str(self.source)],
+            backup_destination=str(self.destination),
+            username="Alice",
+            user_role="operator",
+            company_id="default",
+            now=self.now + timedelta(days=1),
+            run_scan_first=False,
+        )
+
+        self.assertEqual(1, len(manifest))
+        self.assertIn("2026-05-08", first["snapshot_path"])
+        self.assertIn("2026-05-09", second["snapshot_path"])
+        self.assertTrue((self.destination / "alice" / "index.json").exists())
+
+    def test_backup_job_history_comparison_is_scoped_by_user(self):
+        backup_manager.HISTORY_PATH = str(self.root / "config" / "backup_history.json")
+        file_path = self.write_file("A.txt", "a")
+
+        alice_first = run_backup_job(
+            directories=[str(self.source)],
+            backup_destination=str(self.destination),
+            username="Alice",
+            user_role="operator",
+            company_id="default",
+            now=self.now,
+            run_scan_first=False,
+        )
+        bob_first = run_backup_job(
+            directories=[str(self.source)],
+            backup_destination=str(self.destination),
+            username="Bob",
+            user_role="operator",
+            company_id="default",
+            now=self.now,
+            run_scan_first=False,
+        )
+        alice_second = run_backup_job(
+            directories=[str(self.source)],
+            backup_destination=str(self.destination),
+            username="Alice",
+            user_role="operator",
+            company_id="default",
+            now=self.now + timedelta(seconds=1),
+            run_scan_first=False,
+        )
+
+        self.assertTrue(file_path.exists())
+        self.assertEqual(["adicionado"], [item["action"] for item in alice_first["file_changes"]])
+        self.assertEqual(["adicionado"], [item["action"] for item in bob_first["file_changes"]])
+        self.assertEqual([], alice_second["file_changes"])
 
 
 if __name__ == "__main__":
