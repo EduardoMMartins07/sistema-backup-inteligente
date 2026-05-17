@@ -1287,35 +1287,15 @@ class BackupGUI:
 
         backup_path = entry.get("backup_path") or entry.get("snapshot_path", "")
 
+        # Se ja existe um ZIP, retorna o tamanho dele
         if backup_path and str(backup_path).lower().endswith(".zip") and os.path.exists(backup_path):
             return os.path.getsize(backup_path)
 
-        if not backup_path or not os.path.exists(backup_path):
-            return 0
-
-        if str(backup_path).lower().endswith(".json"):
-            temporary_zip_path = ""
-
-            try:
-                with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as temp_file:
-                    temporary_zip_path = temp_file.name
-
-                export_snapshot_to_zip(
-                    backup_path,
-                    temporary_zip_path,
-                    user_master_key=self.current_user.get("session_master_key")
-                )
-                return os.path.getsize(temporary_zip_path)
-            except Exception:
-                return 0
-            finally:
-                if temporary_zip_path and os.path.exists(temporary_zip_path):
-                    try:
-                        os.remove(temporary_zip_path)
-                    except OSError:
-                        pass
-
-        return 0
+        # Estima o tamanho do ZIP a partir do tamanho real dos objetos comprimidos
+        # em disco. zstd nivel 19 e LZMA (usado no ZIP) tem taxas equivalentes,
+        # entao esta estimativa e precisa o suficiente para o dashboard.
+        estimated = self.get_history_snapshot_real_storage_size_bytes(entry)
+        return estimated if estimated > 0 else 0
 
     def get_history_entry_identity(self, entry):
         if not isinstance(entry, dict):
@@ -1515,7 +1495,22 @@ class BackupGUI:
         latest_full_backup = self.get_latest_visible_full_backup_entry()
         latest_size_backup = latest_full_backup or latest_backup
         action_counts = self.count_backup_actions(latest_backup)
+
+        # Tamanho real em disco dos objetos comprimidos (zstd)
+        real_storage_bytes = (
+            self.get_history_snapshot_real_storage_size_bytes(latest_size_backup)
+            if latest_size_backup
+            else 0
+        )
+
+        # Tamanho do ZIP (calculado async se necessario)
         compacted_size_bytes = self.get_history_compacted_size_bytes(latest_size_backup)
+        compacted_size_known = compacted_size_bytes is not None
+
+        if not compacted_size_known and latest_size_backup:
+            # Dispara calculo do ZIP em background se ainda nao foi calculado
+            self.ensure_dashboard_compacted_size_async(latest_size_backup)
+
         monitored_size = (
             format_size_bytes_human(self.dashboard_monitored_size_bytes)
             if self.dashboard_monitored_size_bytes is not None
@@ -1532,16 +1527,14 @@ class BackupGUI:
             "backup_destination": self.get_current_user_backup_destination(),
             "monitored_total_size": monitored_size,
             "backup_recovery_size": (
-                format_size_bytes_human(
-                    self.get_history_snapshot_real_storage_size_bytes(latest_size_backup)
-                )
+                format_size_bytes_human(real_storage_bytes)
                 if latest_size_backup
                 else "-"
             ),
             "backup_compacted_size": (
                 format_size_bytes_human(compacted_size_bytes)
-                if compacted_size_bytes is not None
-                else "-"
+                if compacted_size_known
+                else "Calculando"
             ),
         }
 
@@ -1826,7 +1819,7 @@ class BackupGUI:
             "Backup compactado",
             summary["backup_compacted_size"],
             "#F97316",
-            "Tamanho final estimado do ZIP gerado a partir do ultimo backup."
+            "Tamanho estimado do ZIP exportado a partir do ultimo backup."
         )
         size_cards_frame.add(compacted_card)
 

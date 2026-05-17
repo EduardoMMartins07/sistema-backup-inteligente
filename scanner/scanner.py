@@ -244,6 +244,17 @@ def apply_classification(files, config=None, should_cancel=None, progress_callba
     return files
 
 
+def mark_classification_pending(files):
+    for file_data in files:
+        for field in CLASSIFICATION_FIELDS:
+            file_data[field] = ""
+
+        file_data["classification_source"] = "pending_background"
+        file_data["important"] = 0
+
+    return files
+
+
 def scan_directory(
     directory,
     should_cancel=None,
@@ -331,7 +342,7 @@ def scan_directory(
     return results
 
 
-def run_scanner(should_cancel=None, progress_callback=None):
+def run_scanner(should_cancel=None, progress_callback=None, classify_files=True):
     print("\nIniciando scanner...\n")
 
     config = load_config()
@@ -374,12 +385,16 @@ def run_scanner(should_cancel=None, progress_callback=None):
         return
 
     annotate_duplicates(all_files)
-    apply_classification(
-        all_files,
-        config=config,
-        should_cancel=should_cancel,
-        progress_callback=progress_callback,
-    )
+
+    if classify_files:
+        apply_classification(
+            all_files,
+            config=config,
+            should_cancel=should_cancel,
+            progress_callback=progress_callback,
+        )
+    else:
+        mark_classification_pending(all_files)
 
     df = pd.DataFrame(all_files)
 

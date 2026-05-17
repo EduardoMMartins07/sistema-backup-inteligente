@@ -1,4 +1,3 @@
-import gzip
 import hashlib
 import csv
 import json
@@ -6,9 +5,11 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import zipfile
 from datetime import datetime
 from datetime import timedelta
+import zstandard as zstd
 from security import crypto_service
 from utils.file_hash import calculate_file_hash
 
@@ -20,7 +21,7 @@ HISTORY_PATH = os.path.join(PROJECT_ROOT, "config", "backup_history.json")
 SCHEDULE_PATH = os.path.join(PROJECT_ROOT, "config", "backup_schedule.json")
 PRIORITY_STATE_PATH = os.path.join(PROJECT_ROOT, "config", "priority_backup_state.json")
 ZIP_COMPRESSION_METHOD = zipfile.ZIP_LZMA
-OBJECT_COMPRESSION_LEVEL = 9
+OBJECT_COMPRESSION_LEVEL = 19
 RECOVERABLE_ACTIONS = {"alterado", "excluido"}
 INCREMENTAL_STORAGE_DIRNAME = "backup_storage"
 OBJECTS_DIRNAME = "arquivos_relacionados"
@@ -863,6 +864,28 @@ def save_incremental_index(backup_destination, index):
     save_json_atomic(paths["index"], normalize_incremental_index(index))
 
 
+def is_first_incremental_backup(backup_destination):
+    index = load_incremental_index(backup_destination)
+    return not index.get("files") and not index.get("objects")
+
+
+def start_background_classification_scan():
+    def worker():
+        try:
+            from scanner.scanner import run_scanner
+
+            run_scanner()
+        except Exception as error:
+            log_backup_decision(
+                "ERROR",
+                f"Falha na classificacao em segundo plano: {error}"
+            )
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    return thread
+
+
 def build_object_relative_path(file_hash, now=None):
     now = now or datetime.now()
     day_folder = now.strftime("%Y-%m-%d")
@@ -1231,16 +1254,30 @@ def read_storage_object_bytes(object_abs_path, encryption_metadata, user_master_
     return decompress_bytes(compressed_data)
 
 
+def _get_zstd_compressor():
+    """Retorna (e cacheia) um compressor zstd com o nível configurado."""
+    if not hasattr(_get_zstd_compressor, "_cached"):
+        _get_zstd_compressor._cached = zstd.ZstdCompressor(level=OBJECT_COMPRESSION_LEVEL)
+    return _get_zstd_compressor._cached
+
+
+def _get_zstd_decompressor():
+    """Retorna (e cacheia) um decompressor zstd."""
+    if not hasattr(_get_zstd_decompressor, "_cached"):
+        _get_zstd_decompressor._cached = zstd.ZstdDecompressor()
+    return _get_zstd_decompressor._cached
+
+
 def read_and_compress_file(source_path):
-    """Lê o arquivo e retorna os bytes comprimidos com gzip."""
+    """Lê o arquivo e retorna os bytes comprimidos com zstandard (zstd) nível 19."""
     with open(source_path, "rb") as source_file:
         raw_data = source_file.read()
-    return gzip.compress(raw_data, compresslevel=OBJECT_COMPRESSION_LEVEL)
+    return _get_zstd_compressor().compress(raw_data)
 
 
 def decompress_bytes(data):
-    """Descomprime dados que foram comprimidos com gzip."""
-    return gzip.decompress(data)
+    """Descomprime dados que foram comprimidos com zstandard (zstd)."""
+    return _get_zstd_decompressor().decompress(data)
 
 
 def store_incremental_object(source_path, object_path, backup_encryption=None):
@@ -1755,6 +1792,7 @@ def run_backup_job(
         effective_username
     )
     started_at = now or datetime.now()
+    first_incremental_backup = is_first_incremental_backup(backup_destination)
 
     if progress_callback:
         progress_callback(0, "Iniciando backup...")
@@ -1765,15 +1803,25 @@ def run_backup_job(
         from scanner.scanner import run_scanner
 
         if progress_callback:
-            progress_callback(5, "Executando scanner...")
+            if first_incremental_backup:
+                progress_callback(5, "Mapeando arquivos do primeiro backup...")
+            else:
+                progress_callback(5, "Executando scanner...")
 
         run_scanner(
             should_cancel=cancel_callback,
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            classify_files=not first_incremental_backup,
         )
 
         if progress_callback:
-            progress_callback(35, "Scanner concluido.")
+            if first_incremental_backup:
+                progress_callback(
+                    35,
+                    "Arquivos mapeados. Classificacao sera feita em segundo plano."
+                )
+            else:
+                progress_callback(35, "Scanner concluido.")
 
     ensure_not_cancelled(cancel_callback)
 
@@ -1868,6 +1916,9 @@ def run_backup_job(
 
     if progress_callback:
         progress_callback(100, "Backup incremental concluido.")
+
+    if run_scan_first and first_incremental_backup:
+        start_background_classification_scan()
 
     history_entry["warnings"] = incremental_result["warnings"]
     history_entry["skipped_duplicates"] = incremental_result["skipped_duplicates"]
@@ -2404,17 +2455,14 @@ def export_snapshot_to_zip(
             try:
                 encryption_metadata = file_data.get("encryption")
 
-                if encryption_metadata:
-                    archive.writestr(
-                        archive_name,
-                        read_storage_object_bytes(
-                            object_abs_path,
-                            encryption_metadata,
-                            user_master_key,
-                        )
-                    )
-                else:
-                    archive.write(object_abs_path, arcname=archive_name)
+                # Sempre descomprimir os dados antes de adicionar ao ZIP
+                # (objetos estao armazenados comprimidos com zstd)
+                raw_data = read_storage_object_bytes(
+                    object_abs_path,
+                    encryption_metadata,
+                    user_master_key,
+                )
+                archive.writestr(archive_name, raw_data)
 
                 exported_count += 1
             except (OSError, ValueError, crypto_service.CryptoError) as error:

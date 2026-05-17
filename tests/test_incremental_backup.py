@@ -7,6 +7,7 @@ import zipfile
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import backup.backup_manager as backup_manager
 from backup.backup_manager import build_priority_eligible_manifest
@@ -830,6 +831,79 @@ class IncrementalBackupTests(unittest.TestCase):
             Path(bob["backup_storage"])
         )
         self.assertEqual(2, len(self.object_paths()))
+
+    def test_first_backup_defers_classification_to_background(self):
+        backup_manager.HISTORY_PATH = str(self.root / "config" / "backup_history.json")
+        self.write_file("A.txt", "a")
+        events = []
+
+        def progress_callback(percent, message):
+            if percent == 100:
+                events.append("backup_complete")
+
+        with patch("scanner.scanner.run_scanner") as run_scanner_mock:
+            with patch(
+                "backup.backup_manager.start_background_classification_scan"
+            ) as background_scan_mock:
+                background_scan_mock.side_effect = lambda: events.append(
+                    "background_classification"
+                )
+                run_backup_job(
+                    directories=[str(self.source)],
+                    backup_destination=str(self.destination),
+                    username="Alice",
+                    user_role="operator",
+                    company_id="default",
+                    now=self.now,
+                    run_scan_first=True,
+                    progress_callback=progress_callback,
+                )
+
+        run_scanner_mock.assert_called_once()
+        self.assertIs(
+            False,
+            run_scanner_mock.call_args.kwargs.get("classify_files")
+        )
+        background_scan_mock.assert_called_once()
+        self.assertEqual(
+            ["backup_complete", "background_classification"],
+            events
+        )
+
+    def test_followup_backup_runs_full_scan_before_incremental_snapshot(self):
+        backup_manager.HISTORY_PATH = str(self.root / "config" / "backup_history.json")
+        self.write_file("A.txt", "a")
+
+        run_backup_job(
+            directories=[str(self.source)],
+            backup_destination=str(self.destination),
+            username="Alice",
+            user_role="operator",
+            company_id="default",
+            now=self.now,
+            run_scan_first=False,
+        )
+
+        with patch("scanner.scanner.run_scanner") as run_scanner_mock:
+            with patch(
+                "backup.backup_manager.start_background_classification_scan"
+            ) as background_scan_mock:
+                run_backup_job(
+                    directories=[str(self.source)],
+                    backup_destination=str(self.destination),
+                    username="Alice",
+                    user_role="operator",
+                    company_id="default",
+                    now=self.now + timedelta(seconds=1),
+                    run_scan_first=True,
+                )
+
+        run_scanner_mock.assert_called_once()
+        self.assertIs(
+            True,
+            run_scanner_mock.call_args.kwargs.get("classify_files")
+        )
+        background_scan_mock.assert_not_called()
 
     def test_backup_job_separates_snapshots_by_date(self):
         backup_manager.HISTORY_PATH = str(self.root / "config" / "backup_history.json")
