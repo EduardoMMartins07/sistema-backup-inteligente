@@ -1227,6 +1227,48 @@ class BackupGUI:
 
         return total_size
 
+    def get_history_snapshot_real_storage_size_bytes(self, entry):
+        """
+        Calcula o tamanho real em disco dos objetos armazenados no backup
+        (arquivos comprimidos com gzip no diretorio arquivos_relacionados).
+        """
+        if not isinstance(entry, dict):
+            return 0
+
+        snapshot = entry.get("file_snapshot", {})
+        if not isinstance(snapshot, dict):
+            return 0
+
+        backup_storage = entry.get("backup_storage", "")
+        if not backup_storage or not os.path.isdir(backup_storage):
+            return 0
+
+        total_size = 0
+        checked_paths = set()
+
+        for file_data in snapshot.values():
+            if not isinstance(file_data, dict):
+                continue
+
+            object_path = file_data.get("object_path", "")
+            if not object_path:
+                continue
+
+            abs_path = os.path.join(backup_storage, object_path.replace("/", "\\"))
+            normalized = os.path.normcase(os.path.abspath(abs_path))
+
+            if normalized in checked_paths:
+                continue
+            checked_paths.add(normalized)
+
+            if os.path.isfile(normalized):
+                try:
+                    total_size += os.path.getsize(normalized)
+                except OSError:
+                    continue
+
+        return total_size
+
     def get_history_compacted_size_bytes(self, entry):
         if not isinstance(entry, dict):
             return None
@@ -1491,7 +1533,7 @@ class BackupGUI:
             "monitored_total_size": monitored_size,
             "backup_recovery_size": (
                 format_size_bytes_human(
-                    self.get_history_snapshot_total_size_bytes(latest_size_backup)
+                    self.get_history_snapshot_real_storage_size_bytes(latest_size_backup)
                 )
                 if latest_size_backup
                 else "-"
@@ -1775,7 +1817,7 @@ class BackupGUI:
             "Tamanho do ultimo backup",
             summary["backup_recovery_size"],
             "#22C55E",
-            "Volume real dos arquivos registrados no ultimo backup."
+            "Tamanho real ocupado em disco pelos objetos comprimidos do backup."
         )
         size_cards_frame.add(backup_card)
 
