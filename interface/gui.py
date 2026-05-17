@@ -73,6 +73,9 @@ BACKUP_STATUS_OPTIONS = (
     BACKUP_STATUS_PENDING_DELETE,
 )
 
+_background_root = None
+_background_gui = None
+
 
 def normalize_file_source_key(path):
     if not path:
@@ -507,6 +510,7 @@ class BackupGUI:
         self.root.title("Sistema de Backup Inteligente")
         self.root.geometry("1440x900")
         self.root.minsize(1240, 760)
+        self.root.resizable(True, True)
         self.root.configure(bg=BG_COLOR)
         self.window_icon_photo = None
 
@@ -538,7 +542,10 @@ class BackupGUI:
         self.dashboard_compacted_size_job_key = None
         self.dashboard_monitored_size_job_key = None
         self.dashboard_monitored_size_bytes = None
+        self.dashboard_event_queue = queue.Queue()
+        self.dashboard_poll_scheduled = False
         self.logout_requested = False
+        self.is_closing = False
         self.pending_backup_name = ""
         self.pending_backup_description = ""
         self.pending_backup_directories = None
@@ -552,6 +559,7 @@ class BackupGUI:
         self.configure_widget_styles()
         self.load_directories()
         self.build_layout()
+        self.root.protocol("WM_DELETE_WINDOW", self.request_close)
         self.root.bind("<Configure>", self.on_root_resize, add="+")
         self.root.after_idle(self.update_responsive_fonts)
 
@@ -706,10 +714,16 @@ class BackupGUI:
         return widget
 
     def on_root_resize(self, event):
+        if self.is_closing:
+            return
+
         if event.widget == self.root:
             self.update_responsive_fonts()
 
     def update_responsive_fonts(self):
+        if self.is_closing:
+            return
+
         scale = round(self.get_font_scale(), 2)
 
         if self.current_font_scale == scale:
@@ -1292,8 +1306,74 @@ class BackupGUI:
         with open(HISTORY_PATH, "w", encoding="utf-8") as file:
             json.dump(history[-50:], file, indent=4, ensure_ascii=False)
 
+    def can_schedule_ui_callback(self):
+        if self.is_closing:
+            return False
+
+        try:
+            return bool(self.root.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def schedule_dashboard_event_poll(self):
+        if self.dashboard_poll_scheduled or not self.can_schedule_ui_callback():
+            return
+
+        self.dashboard_poll_scheduled = True
+
+        try:
+            self.root.after(120, self.process_dashboard_events)
+        except tk.TclError:
+            self.dashboard_poll_scheduled = False
+
+    def process_dashboard_events(self):
+        self.dashboard_poll_scheduled = False
+
+        if self.is_closing:
+            return
+
+        should_refresh_dashboard = False
+
+        while True:
+            try:
+                event = self.dashboard_event_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            event_type = event[0]
+
+            if event_type == "compacted_size_done":
+                _, job_key = event
+
+                if self.dashboard_compacted_size_job_key == job_key:
+                    self.dashboard_compacted_size_job_key = None
+                    should_refresh_dashboard = True
+            elif event_type == "monitored_size_done":
+                _, job_key, total_size = event
+
+                if self.dashboard_monitored_size_job_key == job_key:
+                    self.dashboard_monitored_size_job_key = None
+                    self.dashboard_monitored_size_bytes = total_size
+                    should_refresh_dashboard = True
+
+        if should_refresh_dashboard and self.current_view == "home":
+            try:
+                self.render_dashboard()
+            except tk.TclError:
+                return
+
+        if (
+            self.dashboard_compacted_size_job_key is not None
+            or self.dashboard_monitored_size_job_key is not None
+            or not self.dashboard_event_queue.empty()
+        ):
+            self.schedule_dashboard_event_poll()
+
     def ensure_dashboard_compacted_size_async(self, entry):
         if not isinstance(entry, dict):
+            return
+
+        if self.is_closing:
             return
 
         if self.get_history_compacted_size_bytes(entry) is not None:
@@ -1307,21 +1387,16 @@ class BackupGUI:
         self.dashboard_compacted_size_job_key = job_key
 
         def worker():
-            compacted_size = self.compute_history_compacted_size_bytes(entry)
-
             try:
+                compacted_size = self.compute_history_compacted_size_bytes(entry)
                 self.persist_history_compacted_size(entry, compacted_size)
-            finally:
-                def finish():
-                    if self.dashboard_compacted_size_job_key == job_key:
-                        self.dashboard_compacted_size_job_key = None
+            except Exception:
+                pass
 
-                    if self.current_view == "home":
-                        self.render_dashboard()
-
-                self.root.after(0, finish)
+            self.dashboard_event_queue.put(("compacted_size_done", job_key))
 
         threading.Thread(target=worker, daemon=True).start()
+        self.schedule_dashboard_event_poll()
 
     def get_monitored_size_job_key(self):
         return tuple(
@@ -1365,6 +1440,9 @@ class BackupGUI:
     def ensure_dashboard_monitored_size_async(self):
         job_key = self.get_monitored_size_job_key()
 
+        if self.is_closing:
+            return
+
         if not job_key:
             self.dashboard_monitored_size_bytes = 0
             return
@@ -1378,19 +1456,17 @@ class BackupGUI:
         self.dashboard_monitored_size_job_key = job_key
 
         def worker():
-            total_size = self.compute_monitored_total_size_bytes()
+            try:
+                total_size = self.compute_monitored_total_size_bytes()
+            except Exception:
+                total_size = 0
 
-            def finish():
-                if self.dashboard_monitored_size_job_key == job_key:
-                    self.dashboard_monitored_size_job_key = None
-                    self.dashboard_monitored_size_bytes = total_size
-
-                if self.current_view == "home":
-                    self.render_dashboard()
-
-            self.root.after(0, finish)
+            self.dashboard_event_queue.put(
+                ("monitored_size_done", job_key, total_size)
+            )
 
         threading.Thread(target=worker, daemon=True).start()
+        self.schedule_dashboard_event_poll()
 
     def build_dashboard_summary(self):
         latest_backup = self.get_latest_visible_history_entry()
@@ -1978,16 +2054,54 @@ class BackupGUI:
             if button is not None and not can(self.current_user, permission):
                 button.config(state=tk.DISABLED, cursor="arrow")
 
+    def request_close(self):
+        if self.is_closing:
+            return
+
+        if self.backup_in_progress:
+            messagebox.showwarning(
+                "Backup em andamento",
+                "Aguarde o backup terminar ou cancele a operacao antes de sair.",
+                parent=self.root
+            )
+            return
+
+        self.is_closing = True
+
+        try:
+            self.root.withdraw()
+            self.root.quit()
+        except tk.TclError:
+            pass
+
     def logout(self):
         if self.backup_in_progress:
             messagebox.showwarning(
                 "Backup em andamento",
-                "Aguarde o backup terminar ou cancele a operacao antes de sair."
+                "Aguarde o backup terminar ou cancele a operacao antes de sair.",
+                parent=self.root
             )
             return
 
         self.logout_requested = True
-        self.root.destroy()
+        self.is_closing = True
+
+        try:
+            self.root.quit()
+        except tk.TclError:
+            pass
+
+    def show_window(self):
+        self.is_closing = False
+
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+        except tk.TclError:
+            return
+
+        self.schedule_dashboard_event_poll()
 
     def build_footer_text(self):
         latest_backup = self.get_latest_history_entry()
@@ -3124,6 +3238,9 @@ class BackupGUI:
         return self.cancel_backup_requested.is_set()
 
     def process_backup_events(self):
+        if self.is_closing:
+            return
+
         should_continue = True
 
         while True:
@@ -3151,7 +3268,7 @@ class BackupGUI:
                 _, error_message = event
                 self.finish_backup_error(error_message)
 
-        if should_continue and self.backup_in_progress:
+        if should_continue and self.backup_in_progress and not self.is_closing:
             self.root.after(120, self.process_backup_events)
 
     def open_progress_window(self):
@@ -3300,6 +3417,9 @@ class BackupGUI:
         self.download_queue.put(("progress", percent, message))
 
     def process_download_events(self):
+        if self.is_closing:
+            return
+
         should_continue = True
 
         while True:
@@ -3338,7 +3458,7 @@ class BackupGUI:
                     parent=self.root
                 )
 
-        if should_continue and self.download_window is not None:
+        if should_continue and self.download_window is not None and not self.is_closing:
             self.root.after(120, self.process_download_events)
 
     def copy_file_with_progress(self, source_path, destination_path):
@@ -6768,37 +6888,73 @@ class BackupGUI:
         refresh_users()
 
 
-def start_gui(current_user=None):
-    from interface.login import login_user
+def root_exists(root):
+    if root is None:
+        return False
 
-    while True:
-        if current_user is None:
-            current_user = login_user()
+    try:
+        return bool(root.winfo_exists())
+    except tk.TclError:
+        return False
 
-        if current_user is None:
-            return
 
-        root = tk.Tk()
-        gui = BackupGUI(root, current_user)
-        root.deiconify()
-        root.lift()
-        root.focus_force()
-        root.mainloop()
-
-        logout_requested = gui.logout_requested
-
-        # destruir completamente o Tkinter para evitar Tcl_AsyncDelete
+def clear_root_widgets(root):
+    for widget in root.winfo_children():
         try:
-            root.update()
-            root.destroy()
+            widget.destroy()
         except tk.TclError:
             pass
 
-        # limpar referência global do Tkinter
-        if tk._default_root is root:
-            tk._default_root = None
+
+def start_gui(current_user=None):
+    from interface.login import login_user
+
+    global _background_root
+    global _background_gui
+
+    if (
+        current_user is None
+        and _background_gui is not None
+        and root_exists(_background_root)
+    ):
+        _background_gui.show_window()
+        _background_root.mainloop()
+
+        if not _background_gui.logout_requested:
+            return
+
+        current_user = None
+        clear_root_widgets(_background_root)
+        _background_gui = None
+
+    if not root_exists(_background_root):
+        _background_root = tk.Tk()
+
+    root = _background_root
+
+    while True:
+        if current_user is None:
+            current_user = login_user(root=root)
+
+        if current_user is None:
+            try:
+                root.withdraw()
+            except tk.TclError:
+                pass
+            return
+
+        clear_root_widgets(root)
+        gui = BackupGUI(root, current_user)
+        _background_gui = gui
+        gui.show_window()
+        root.mainloop()
+
+        logout_requested = gui.logout_requested
+        gui.is_closing = True
 
         if not logout_requested:
             return
 
+        clear_root_widgets(root)
+        _background_gui = None
         current_user = None

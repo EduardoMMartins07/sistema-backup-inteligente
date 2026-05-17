@@ -15,19 +15,23 @@ SUBTLE_TEXT = "#E7EAF0"
 
 
 class LoginWindow:
-    def __init__(self):
-        self.root = tk.Tk()
+    def __init__(self, root=None):
+        self.owns_root = root is None
+        self.root = root if root is not None else tk.Tk()
         self.root.title("Login - Sistema de Backup Inteligente")
         self.root.geometry("520x500")
         self.root.minsize(480, 460)
         self.root.resizable(False, False)
         self.root.configure(bg=BG_COLOR)
+        self.root.deiconify()
         self.user = None
+        self.clear_window()
+        self.root.protocol("WM_DELETE_WINDOW", self.cancel)
 
-        self.username_var = tk.StringVar()
-        self.password_var = tk.StringVar()
-        self.name_var = tk.StringVar()
-        self.confirm_password_var = tk.StringVar()
+        self.username_var = tk.StringVar(master=self.root)
+        self.password_var = tk.StringVar(master=self.root)
+        self.name_var = tk.StringVar(master=self.root)
+        self.confirm_password_var = tk.StringVar(master=self.root)
 
         if users_exist():
             self.build_login_form()
@@ -188,7 +192,7 @@ class LoginWindow:
             return
 
         self.user = user
-        self.root.destroy()
+        self.close()
 
     def submit_initial_admin(self):
         password = self.password_var.get()
@@ -224,13 +228,27 @@ class LoginWindow:
 
         messagebox.showinfo("Administrador criado", message, parent=self.root)
         self.user = user
-        self.root.destroy()
+        self.close()
+
+    def cancel(self):
+        self.user = None
+        self.close()
+
+    def close(self):
+        self.root.unbind("<Return>")
+
+        if self.owns_root:
+            self.root.destroy()
+            return
+
+        self.clear_window()
+        self.root.quit()
 
     def run(self):
         self.root.mainloop()
         return self.user
 
 
-def login_user():
-    login_window = LoginWindow()
+def login_user(root=None):
+    login_window = LoginWindow(root=root)
     return login_window.run()
