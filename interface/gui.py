@@ -6785,7 +6785,20 @@ def start_gui(current_user=None):
         root.focus_force()
         root.mainloop()
 
-        if not gui.logout_requested:
+        logout_requested = gui.logout_requested
+
+        # destruir completamente o Tkinter para evitar Tcl_AsyncDelete
+        try:
+            root.update()
+            root.destroy()
+        except tk.TclError:
+            pass
+
+        # limpar referência global do Tkinter
+        if tk._default_root is root:
+            tk._default_root = None
+
+        if not logout_requested:
             return
 
         current_user = None

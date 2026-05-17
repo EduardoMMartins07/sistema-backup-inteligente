@@ -109,6 +109,19 @@ def encrypt_file(input_path, output_path, key, associated_data=None):
     }
 
 
+def encrypt_bytes_raw_data(raw_data, key, associated_data=None):
+    """Criptografa dados binários já carregados em memória.
+    Retorna dict com 'nonce' (em bytes) e 'ciphertext' (bytes).
+    Útil quando os dados já foram processados (ex: compressão) antes da criptografia.
+    """
+    encrypted = encrypt_bytes(key, raw_data, associated_data)
+    return {
+        "file_nonce": b64encode(encrypted["nonce"]),
+        "nonce": encrypted["nonce"],
+        "ciphertext": encrypted["ciphertext"],
+    }
+
+
 def decrypt_file(input_path, output_path, key, file_nonce, associated_data=None):
     with open(input_path, "rb") as source_file:
         ciphertext = source_file.read()

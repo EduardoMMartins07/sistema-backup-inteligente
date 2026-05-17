@@ -1,20 +1,27 @@
 import pystray
 from pystray import MenuItem as item
 from PIL import Image, ImageDraw
-import threading
 import os
 import json
-
-from auth.permissions import can
-from interface.login import login_user
-from interface.gui import start_gui
-from scanner.scanner import run_scanner
 
 ICON_PATH = os.path.join("assets", "nuvem.png")
 CONFIG_PATH = os.path.join("config", "config.json")
 HISTORY_PATH = os.path.join("config", "backup_history.json")
 MAX_TRAY_TITLE_LENGTH = 120
 MAX_MENU_PATH_LENGTH = 48
+_on_open_gui = None
+_on_run_backup = None
+_on_exit = None
+
+
+def configure_tray_callbacks(on_open_gui=None, on_run_backup=None, on_exit=None):
+    global _on_open_gui
+    global _on_run_backup
+    global _on_exit
+
+    _on_open_gui = on_open_gui
+    _on_run_backup = on_run_backup
+    _on_exit = on_exit
 
 
 def create_image():
@@ -96,28 +103,37 @@ def build_menu():
 
 def open_gui(icon, item):
 
-    threading.Thread(target=start_gui).start()
+    if callable(_on_open_gui):
+        _on_open_gui()
+        return
+
+    print("Painel nao pode ser aberto: callback da interface nao configurado.")
 
 
 def run_backup(icon, item):
 
-    user = login_user()
-
-    if not can(user, "run_backup"):
-        print("Acesso negado para executar scanner manual.")
+    if callable(_on_run_backup):
+        _on_run_backup()
         return
 
-    print(f"Executando scanner manual por {user.get('username')}...")
-    run_scanner()
+    print("Scanner nao pode ser executado: callback nao configurado.")
 
 
 def exit_app(icon, item):
 
     print("Encerrando sistema...")
+    if callable(_on_exit):
+        _on_exit()
     icon.stop()
 
 
-def start_tray():
+def start_tray(on_open_gui=None, on_run_backup=None, on_exit=None):
+
+    configure_tray_callbacks(
+        on_open_gui=on_open_gui,
+        on_run_backup=on_run_backup,
+        on_exit=on_exit,
+    )
 
     icon = pystray.Icon(
         "SmartBackup",

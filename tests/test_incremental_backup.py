@@ -63,6 +63,9 @@ class IncrementalBackupTests(unittest.TestCase):
         path.write_text(content, encoding="utf-8")
         return path
 
+    def test_incremental_objects_use_maximum_gzip_compression_level(self):
+        self.assertEqual(backup_manager.OBJECT_COMPRESSION_LEVEL, 9)
+
     def manifest_for(self, *paths):
         return [
             (

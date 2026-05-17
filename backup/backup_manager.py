@@ -1,3 +1,4 @@
+import gzip
 import hashlib
 import csv
 import json
@@ -19,6 +20,7 @@ HISTORY_PATH = os.path.join(PROJECT_ROOT, "config", "backup_history.json")
 SCHEDULE_PATH = os.path.join(PROJECT_ROOT, "config", "backup_schedule.json")
 PRIORITY_STATE_PATH = os.path.join(PROJECT_ROOT, "config", "priority_backup_state.json")
 ZIP_COMPRESSION_METHOD = zipfile.ZIP_LZMA
+OBJECT_COMPRESSION_LEVEL = 9
 RECOVERABLE_ACTIONS = {"alterado", "excluido"}
 INCREMENTAL_STORAGE_DIRNAME = "backup_storage"
 OBJECTS_DIRNAME = "arquivos_relacionados"
@@ -1162,7 +1164,12 @@ def get_object_encryption_metadata(index, file_hash):
 
 def decrypt_storage_object_to_path(object_abs_path, target_path, encryption_metadata, user_master_key):
     if not encryption_metadata:
-        shutil.copy2(object_abs_path, target_path)
+        with open(object_abs_path, "rb") as source_file:
+            compressed_data = source_file.read()
+        raw_data = decompress_bytes(compressed_data)
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        with open(target_path, "wb") as target_file:
+            target_file.write(raw_data)
         return
 
     master_key = normalize_master_key(user_master_key)
@@ -1176,19 +1183,28 @@ def decrypt_storage_object_to_path(object_abs_path, target_path, encryption_meta
         encryption_metadata["backup_key_nonce"],
         b"incremental-backup-key",
     )
-    crypto_service.decrypt_file(
-        object_abs_path,
-        target_path,
+
+    with open(object_abs_path, "rb") as source_file:
+        ciphertext = source_file.read()
+
+    compressed_data = crypto_service.decrypt_bytes(
         backup_key,
-        encryption_metadata["file_nonce"],
+        crypto_service.b64decode(encryption_metadata["file_nonce"]),
+        ciphertext,
         b"incremental-object",
     )
+
+    raw_data = decompress_bytes(compressed_data)
+    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+    with open(target_path, "wb") as target_file:
+        target_file.write(raw_data)
 
 
 def read_storage_object_bytes(object_abs_path, encryption_metadata, user_master_key):
     if not encryption_metadata:
         with open(object_abs_path, "rb") as source_file:
-            return source_file.read()
+            compressed_data = source_file.read()
+        return decompress_bytes(compressed_data)
 
     master_key = normalize_master_key(user_master_key)
 
@@ -1205,24 +1221,40 @@ def read_storage_object_bytes(object_abs_path, encryption_metadata, user_master_
     with open(object_abs_path, "rb") as source_file:
         ciphertext = source_file.read()
 
-    return crypto_service.decrypt_bytes(
+    compressed_data = crypto_service.decrypt_bytes(
         backup_key,
         crypto_service.b64decode(encryption_metadata["file_nonce"]),
         ciphertext,
         b"incremental-object",
     )
 
+    return decompress_bytes(compressed_data)
+
+
+def read_and_compress_file(source_path):
+    """Lê o arquivo e retorna os bytes comprimidos com gzip."""
+    with open(source_path, "rb") as source_file:
+        raw_data = source_file.read()
+    return gzip.compress(raw_data, compresslevel=OBJECT_COMPRESSION_LEVEL)
+
+
+def decompress_bytes(data):
+    """Descomprime dados que foram comprimidos com gzip."""
+    return gzip.decompress(data)
+
 
 def store_incremental_object(source_path, object_path, backup_encryption=None):
     temporary_path = f"{object_path}.{os.getpid()}.tmp"
 
     try:
+        # Comprimir o arquivo em memória antes de armazenar
+        compressed_data = read_and_compress_file(source_path)
         encryption_metadata = None
 
         if backup_encryption:
-            encrypted = crypto_service.encrypt_file(
-                source_path,
-                temporary_path,
+            # Criptografar o dado já comprimido
+            encrypted = crypto_service.encrypt_bytes_raw_data(
+                compressed_data,
                 backup_encryption["backup_key"],
                 b"incremental-object",
             )
@@ -1230,8 +1262,12 @@ def store_incremental_object(source_path, object_path, backup_encryption=None):
                 backup_encryption,
                 encrypted["file_nonce"],
             )
+            with open(temporary_path, "wb") as target_file:
+                target_file.write(encrypted["ciphertext"])
         else:
-            shutil.copy2(source_path, temporary_path)
+            # Salvar o dado comprimido diretamente
+            with open(temporary_path, "wb") as target_file:
+                target_file.write(compressed_data)
 
         os.replace(temporary_path, object_path)
         return encryption_metadata

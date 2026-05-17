@@ -3,29 +3,35 @@
 Aplicacao desktop para acompanhar diretorios importantes, identificar alteracoes nos arquivos e centralizar a rotina de backup em uma interface simples. O sistema combina monitoramento continuo, geracao de dataset com metadados dos arquivos e criacao de backups incrementais com deduplicacao por hash SHA-256, snapshots JSON e restauracao por manifesto.
 
 ## Objetivo
+
 Oferecer uma base para backup automatizado e inteligente de arquivos relevantes, permitindo que o usuario configure os diretorios de interesse, acompanhe mudancas no sistema, mantenha um historico das execucoes e tenha copias de seguranca organizadas para consulta e recuperacao futura.
 
 ## Regra de Documentacao
+
 Toda alteracao relevante no projeto deve ser refletida neste `README.md`, mantendo a documentacao sempre atualizada com funcionalidades, fluxos, requisitos e mudancas importantes do sistema.
 
 ## Stack Tecnologica
+
 - **Runtime:** Python 3.13+
 - **Interface Desktop:** Tkinter
 - **Monitoramento de arquivos:** watchdog
 - **Manipulacao de dados:** pandas
 - **Criptografia:** cryptography com AES-256-GCM e PBKDF2-SHA256
+- **Compressao de objetos:** gzip (nivel 6) integrado ao pipeline de armazenamento
 - **Bandeja do sistema:** pystray
 - **Imagens/icones:** pillow
 - **Classificacao inteligente:** arvore de decisao local com integracao opcional via Gemini API
 - **LLM externa opcional:** Gemini API via REST, usando apenas metadados dos arquivos
 
 ## Requisitos
+
 - Python 3.13 ou superior
 - pip
 - Ambiente Windows recomendado
 - Chave `GEMINI_API_KEY` opcional para ativar classificacao com Gemini API
 
 ## Instalacao e Execucao
+
 1. Clone o repositorio
 2. Crie e ative um ambiente virtual:
    ```bash
@@ -42,6 +48,7 @@ Toda alteracao relevante no projeto deve ser refletida neste `README.md`, manten
    ```
 
 ## Funcionalidades
+
 - [x] Configuracao inicial e gerenciamento dos diretorios que serao acompanhados pelo sistema
 - [x] Monitoramento continuo de criacao, alteracao, remocao e movimentacao de arquivos
 - [x] Scanner automatico para varredura dos diretorios monitorados sempre que ha mudancas relevantes
@@ -52,6 +59,7 @@ Toda alteracao relevante no projeto deve ser refletida neste `README.md`, manten
 - [x] Cache local das respostas da LLM para evitar chamadas repetidas para o mesmo arquivo/hash
 - [x] Registro observado de modificacoes e acessos entre varreduras para alimentar a arvore de decisao
 - [x] Backup manual e backup agendado com armazenamento incremental em `backup_storage/`
+- [x] Objetos comprimidos com gzip antes do armazenamento, reduzindo o uso de disco sem impacto na deduplicacao ou na estrutura de indices
 - [x] Deduplicacao persistente por hash SHA-256, evitando salvar o mesmo conteudo mais de uma vez
 - [x] Snapshots JSON restauraveis para representar o estado logico de cada execucao
 - [x] Politica opcional de backup por prioridade: baixa semanal, media a cada 2 dias e alta no inicio do dia + a cada 4 horas quando alterada
@@ -94,6 +102,7 @@ Toda alteracao relevante no projeto deve ser refletida neste `README.md`, manten
 ## Exemplos de Uso
 
 ### Estrutura dos Backups Gerados
+
 ```text
 backups/
   backup_storage/
@@ -109,11 +118,13 @@ backups/
 Os ZIPs gerados por versoes anteriores continuam legiveis para restauracao de historico, mas novas execucoes usam snapshots incrementais como artefato principal.
 
 ### Criptografia dos Backups
+
 O sistema utiliza criptografia em envelope. A senha do usuario nao criptografa diretamente os arquivos de backup. Em vez disso, a senha e usada para derivar uma chave criptografica responsavel por proteger uma chave mestra do usuario. Essa chave mestra protege as chaves individuais utilizadas na criptografia dos backups compactados e dos objetos incrementais. Dessa forma, a troca de senha exige apenas a recriptografia da chave mestra, sem necessidade de reprocessar todos os arquivos armazenados.
 
 O algoritmo usado para conteudo e chaves envelopadas e `AES-256-GCM`, com nonces unicos por operacao. A derivacao a partir da senha usa `PBKDF2-SHA256` com salt unico por usuario. A tag de autenticacao do AES-GCM fica embutida no ciphertext gerado pela biblioteca `cryptography`, por isso os metadados registram `auth_tag` como `included_in_ciphertext`.
 
 Metadados sensiveis ficam em arquivos JSON locais:
+
 - `config/users.json`: hash da senha, salt do KDF, chave mestra criptografada e metadados de recuperacao.
 - `<backup_destination>/backup_storage/index.json`: metadados dos objetos incrementais, incluindo nonces e chaves de backup criptografadas.
 - `config/backup_history.json`: status criptografado, algoritmo usado e caminho do `.zip.enc` quando gerado.
@@ -127,6 +138,7 @@ Na troca de senha com confirmacao da senha antiga, apenas a chave mestra criptog
 Na criacao de usuario, quando a dependencia de criptografia esta disponivel, o sistema gera uma chave de recuperacao exibida uma unica vez. Essa chave permite redefinir a senha preservando a chave mestra e o acesso aos backups antigos. Se o usuario perder a senha e tambem perder a chave de recuperacao, backups criptografados antigos nao poderao ser descriptografados.
 
 ### Exemplo de Configuracao
+
 ```json
 {
   "directories": [
@@ -145,9 +157,11 @@ Na criacao de usuario, quando a dependencia de criptografia esta disponivel, o s
 `deduplicate_backup` e mantido por compatibilidade com configuracoes antigas; no fluxo incremental novo a deduplicacao por hash e sempre aplicada.
 
 ### Classificacao LLM com Gemini API
+
 O sistema usa a LLM somente com metadados, sem enviar o conteudo completo dos arquivos. A chamada inclui dados como nome, extensao, tamanho, caminho/contexto, hash, dias desde a ultima modificacao e contadores observados de modificacao/acesso.
 
 Para pegar a chave:
+
 1. Acesse a pagina oficial de chaves do Google AI Studio: https://aistudio.google.com/app/apikey
 2. Entre com sua conta Google.
 3. Clique em `Create API key` ou `Criar chave de API`.
@@ -160,11 +174,13 @@ Para colocar a chave no projeto, nao salve a chave dentro do codigo. Use uma das
 Opcao 1: variavel de ambiente do Windows.
 
 No PowerShell, apenas para a sessao atual:
+
 ```powershell
 $env:GEMINI_API_KEY="SUA_CHAVE_AQUI"
 ```
 
 No Windows, de forma persistente para o usuario:
+
 ```powershell
 [Environment]::SetEnvironmentVariable("GEMINI_API_KEY", "SUA_CHAVE_AQUI", "User")
 ```
@@ -186,6 +202,7 @@ Opcao 2: arquivo `.env` local na raiz do projeto.
 O arquivo `.env` fica no `.gitignore` e nao deve ser enviado ao Git. O projeto carrega esse arquivo automaticamente em `ml/llm_classifier.py` sem dependencia extra.
 
 Onde a chave e lida na implementacao:
+
 - `ml/llm_classifier.py`: carrega `.env` e depois le `GEMINI_API_KEY` ou `GOOGLE_API_KEY` pelas variaveis de ambiente.
 - `config/config.json`: controla se a classificacao LLM fica ativa com `llm_classification_enabled`.
 - `gemini_model`: define o modelo usado. O padrao documentado no projeto e `gemini-2.5-flash`.
@@ -193,7 +210,9 @@ Onde a chave e lida na implementacao:
 Se a chave nao existir, se `llm_classification_enabled` estiver `false` ou se a API falhar, o sistema usa automaticamente a arvore de decisao local como fallback.
 
 ### Arvore de Decisao Implementada
+
 A classificacao combina regras locais e, quando disponivel, Gemini API. A arvore considera:
+
 - quantidade observada de modificacoes;
 - tipo/extensao do arquivo;
 - quantidade observada de acessos;
@@ -201,6 +220,7 @@ A classificacao combina regras locais e, quando disponivel, Gemini API. A arvore
 - diretorio/contexto onde o arquivo esta inserido.
 
 O resultado gravado em `dataset/files_dataset.csv` inclui:
+
 - `priority`: `baixa`, `media` ou `alta`;
 - `priority_score`: pontuacao de 0 a 100;
 - `priority_reason`: motivos resumidos da decisao;
@@ -210,7 +230,9 @@ O resultado gravado em `dataset/files_dataset.csv` inclui:
 - `decision_tree`: decisoes estruturadas da arvore.
 
 ### Politica de Backup por Prioridade
+
 A politica por prioridade fica desativada por padrao para evitar backups automaticos inesperados. Para ativar:
+
 ```json
 {
   "priority_backup_policy_enabled": true
@@ -218,6 +240,7 @@ A politica por prioridade fica desativada por padrao para evitar backups automat
 ```
 
 Quando ativada, o agendador em segundo plano verifica a politica periodicamente:
+
 - **baixa prioridade:** backup a cada 7 dias;
 - **media prioridade:** backup a cada 2 dias;
 - **alta prioridade:** backup no primeiro inicio do programa no dia e novamente a cada 4 horas se o arquivo tiver mudado.
@@ -227,36 +250,43 @@ Em producao, o agendador checa a politica de prioridade a cada 10 minutos. Com `
 O estado persistente dessa politica fica em `<backup_destination>/backup_storage/index.json`. Backups manuais e agendados avaliam todos os arquivos; backups automaticos por prioridade respeitam as janelas de tempo e registram `skipped_not_eligible` no snapshot quando um arquivo ainda nao deve ser reavaliado.
 
 ### DEV MODE para Testes Locais
+
 O projeto aceita um modo de desenvolvimento controlado exclusivamente pela variavel de ambiente `BACKUP_DEV_MODE`. Quando desativado, a politica usa os intervalos reais de producao. Quando ativado, apenas os intervalos de tempo sao reduzidos para facilitar testes locais.
 
 Intervalos usados:
+
 - **producao:** baixa = 7 dias, media = 2 dias, alta = primeiro inicio do dia + a cada 4 horas
 - **DEV MODE:** baixa = 30 minutos, media = 15 minutos, alta = 5 minutos
 
 Como ativar no PowerShell:
+
 ```powershell
 $env:BACKUP_DEV_MODE="true"
 python main.py
 ```
 
 Como desativar no PowerShell:
+
 ```powershell
 $env:BACKUP_DEV_MODE="false"
 python main.py
 ```
 
 Como ativar no Linux/macOS:
+
 ```bash
 export BACKUP_DEV_MODE=true
 python main.py
 ```
 
 Como usar no `.env`:
+
 ```text
 BACKUP_DEV_MODE=true
 ```
 
 Exemplos de logs:
+
 ```text
 [DEV MODE] Intervalos reduzidos ativos
 [DEV MODE] baixa=30min media=15min alta=5min
@@ -266,11 +296,13 @@ Exemplos de logs:
 O DEV MODE nao altera prioridade, score, LLM, hash, snapshots, armazenamento incremental, deduplicacao ou restauracao. Ele afeta somente a janela temporal da politica por prioridade.
 
 ### Backup Incremental e Restauracao por Snapshot
+
 Cada execucao cria um snapshot JSON em `backup_storage/snapshots/` e salva conteudo fisico apenas quando o hash SHA-256 ainda nao existe em `backup_storage/objects/`. Arquivos inalterados ou duplicados ficam apenas referenciados no snapshot, sem novo objeto fisico.
 
 Para validar a deduplicacao, execute dois backups sem alterar os arquivos e compare a quantidade de arquivos em `backup_storage/objects/`: ela deve permanecer igual enquanto novos snapshots aparecem em `backup_storage/snapshots/`.
 
 Para restaurar um snapshot pela interface, acesse **Recuperar arquivos** e use **Restaurar snapshot**. Pelo codigo, use:
+
 ```python
 from backup.backup_manager import restore_snapshot
 
@@ -281,6 +313,7 @@ restore_snapshot(
 ```
 
 ### Exemplo de Historico de Backup
+
 ```json
 [
   {
@@ -312,6 +345,7 @@ restore_snapshot(
 ```
 
 ### Perfis de Usuario
+
 - **Administrador:** acessa todas as funcionalidades, incluindo gerenciamento de usuarios, diretorios e destino de backup.
 - **Operador:** pode realizar backup, agendar backup, visualizar arquivos, consultar historico e baixar o ultimo backup.
 - **Visualizador:** possui acesso somente leitura aos arquivos analisados e ao historico de backups.
@@ -320,6 +354,7 @@ restore_snapshot(
 Os usuarios ficam em `config/users.json`. As senhas nao sao salvas em texto puro; o sistema armazena hash PBKDF2 com salt individual.
 
 ### Filtro de Historico por Perfil
+
 - **Visualizador:** visualiza somente backups executados pelo proprio usuario e seus arquivos adicionados, alterados ou excluidos.
 - **Operador:** visualiza os proprios backups e backups executados por visualizadores.
 - **Administrador:** visualiza backups de administradores, operadores, visualizadores e execucoes do sistema.
@@ -327,12 +362,14 @@ Os usuarios ficam em `config/users.json`. As senhas nao sao salvas em texto puro
 Cada backup novo registra um snapshot dos arquivos e compara com o snapshot anterior para montar a lista de mudancas. Backups antigos, criados antes dessa funcionalidade, podem aparecer sem detalhes de mudancas.
 
 ### Execucao do Backup na Interface
+
 - Ao iniciar um backup manual, a aplicacao abre uma barra de loading para acompanhar o progresso da operacao.
 - O processamento acontece em segundo plano para evitar que a interface principal fique travada.
 - O usuario pode cancelar a operacao durante o scanner ou durante a copia dos objetos incrementais.
 - Se o cancelamento ocorrer no meio da execucao, o sistema encerra o processo com seguranca e remove arquivos parciais de backup.
 
 ### Fluxo Atual da Aplicacao
+
 1. O usuario seleciona os diretorios na interface.
 2. O sistema monitora alteracoes nesses diretorios.
 3. Quando um arquivo e criado, alterado, removido ou movido, o scanner atualiza o dataset, registra hash, duplicidade, contadores observados e classificacao por prioridade.
@@ -346,6 +383,7 @@ Cada backup novo registra um snapshot dos arquivos e compara com o snapshot ante
 11. Ao recuperar, arquivos existentes no destino sao comparados por hash; conflitos podem ser renomeados, usando `_recuperado` como nome padrao.
 
 ## Estrutura do Projeto
+
 - `main.py`: ponto de entrada da aplicacao.
 - `auth/`: autenticacao local, hash de senhas e regras de permissao por perfil.
 - `interface/gui.py`: interface principal e janelas auxiliares.
@@ -364,6 +402,7 @@ Cada backup novo registra um snapshot dos arquivos e compara com o snapshot ante
 - `ml/`: modulos de classificacao local e integracao opcional com Gemini API.
 
 ## Proximos Passos Sugeridos
+
 - [x] Adicionar restauracao de backup e versoes anteriores pela interface
 - [ ] Mostrar tamanho, data e origem do ultimo backup na tela principal
 - [ ] Permitir exclusao ou limpeza de backups antigos
@@ -375,9 +414,9 @@ Cada backup novo registra um snapshot dos arquivos e compara com o snapshot ante
 - [ ] Adicionar troca de senha pelo proprio usuario
 
 ## Comandos Uteis
+
 - `python main.py`: inicia a aplicacao.
 - `python -m py_compile main.py auth/users.py auth/permissions.py monitor/monitor.py interface/login.py interface/gui.py backup/backup_manager.py scheduler/scheduler.py scanner/scanner.py utils/file_hash.py ml/llm_classifier.py`: valida a sintaxe dos modulos principais.
 - `python -m unittest discover -s tests`: executa os testes automatizados do backup incremental.
 - `python scanner/scanner.py`: executa o scanner manualmente.
 - `pip install -r requirements.txt`: instala as dependencias do projeto.
-

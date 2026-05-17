@@ -1,0 +1,1895 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Smart Backup - Especificação do Sistema</title>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Fira+Code:wght@400;500&display=swap");
+
+      :root {
+        --bg: #0f1117;
+        --bg-card: #181b24;
+        --bg-hover: #1e2230;
+        --border: #2a2e3a;
+        --text: #e1e4ea;
+        --text-secondary: #8b92a5;
+        --accent: #ff990f;
+        --accent-dim: #cc7a0c;
+        --green: #22c55e;
+        --blue: #3b82f6;
+        --red: #ef4444;
+        --purple: #a855f7;
+        --cyan: #06b6d4;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family:
+          "Inter",
+          -apple-system,
+          sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.7;
+        font-size: 15px;
+      }
+
+      /* Header */
+      .header {
+        background: linear-gradient(135deg, #1a1d2e 0%, #0f1117 100%);
+        border-bottom: 1px solid var(--border);
+        padding: 60px 40px 50px;
+        text-align: center;
+        position: relative;
+        overflow: hidden;
+      }
+      .header::before {
+        content: "";
+        position: absolute;
+        top: -50%;
+        left: -50%;
+        width: 200%;
+        height: 200%;
+        background: radial-gradient(
+          circle at 30% 50%,
+          rgba(255, 153, 15, 0.04) 0%,
+          transparent 50%
+        );
+        pointer-events: none;
+      }
+      .header-badge {
+        display: inline-block;
+        background: rgba(255, 153, 15, 0.12);
+        color: var(--accent);
+        font-weight: 700;
+        font-size: 13px;
+        padding: 6px 18px;
+        border-radius: 20px;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        margin-bottom: 20px;
+        border: 1px solid rgba(255, 153, 15, 0.25);
+      }
+      .header h1 {
+        font-size: 42px;
+        font-weight: 900;
+        background: linear-gradient(135deg, var(--accent) 0%, #ffb84d 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        letter-spacing: -1px;
+        margin-bottom: 12px;
+        position: relative;
+      }
+      .header p {
+        color: var(--text-secondary);
+        font-size: 18px;
+        max-width: 700px;
+        margin: 0 auto;
+        position: relative;
+      }
+      .header-meta {
+        display: flex;
+        justify-content: center;
+        gap: 40px;
+        margin-top: 30px;
+        flex-wrap: wrap;
+        position: relative;
+      }
+      .header-meta span {
+        color: var(--text-secondary);
+        font-size: 13px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .header-meta strong {
+        color: var(--text);
+        font-weight: 600;
+      }
+
+      /* Container */
+      .container {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 40px 30px;
+      }
+
+      /* TOC */
+      .toc {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 30px 35px;
+        margin-bottom: 50px;
+      }
+      .toc h2 {
+        font-size: 18px;
+        font-weight: 700;
+        color: var(--accent);
+        margin-bottom: 18px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .toc ol {
+        columns: 2;
+        column-gap: 40px;
+        list-style: none;
+        counter-reset: toc-counter;
+      }
+      .toc ol li {
+        counter-increment: toc-counter;
+        margin-bottom: 6px;
+        break-inside: avoid;
+      }
+      .toc ol li::before {
+        content: counter(toc-counter) ".";
+        color: var(--accent);
+        font-weight: 700;
+        margin-right: 8px;
+        font-size: 13px;
+      }
+      .toc ol li a {
+        color: var(--text-secondary);
+        text-decoration: none;
+        font-size: 14px;
+        font-weight: 500;
+        transition: color 0.2s;
+      }
+      .toc ol li a:hover {
+        color: var(--accent);
+      }
+
+      /* Sections */
+      section {
+        margin-bottom: 50px;
+      }
+
+      .section-title {
+        font-size: 28px;
+        font-weight: 800;
+        color: var(--accent);
+        margin-bottom: 6px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .section-title .num {
+        font-size: 16px;
+        color: var(--text-secondary);
+        font-weight: 600;
+      }
+      .section-subtitle {
+        color: var(--text-secondary);
+        font-size: 15px;
+        margin-bottom: 25px;
+        padding-bottom: 20px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      h3 {
+        font-size: 20px;
+        font-weight: 700;
+        margin: 30px 0 14px;
+        color: var(--text);
+      }
+      h3 .badge {
+        display: inline-block;
+        font-size: 11px;
+        font-weight: 700;
+        padding: 2px 10px;
+        border-radius: 10px;
+        margin-left: 10px;
+        vertical-align: middle;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .badge-green {
+        background: rgba(34, 197, 94, 0.15);
+        color: var(--green);
+      }
+      .badge-blue {
+        background: rgba(59, 130, 246, 0.15);
+        color: var(--blue);
+      }
+      .badge-purple {
+        background: rgba(168, 85, 247, 0.15);
+        color: var(--purple);
+      }
+      .badge-cyan {
+        background: rgba(6, 182, 212, 0.15);
+        color: var(--cyan);
+      }
+      .badge-red {
+        background: rgba(239, 68, 68, 0.15);
+        color: var(--red);
+      }
+
+      h4 {
+        font-size: 16px;
+        font-weight: 600;
+        margin: 20px 0 10px;
+        color: var(--text);
+      }
+
+      p {
+        margin-bottom: 14px;
+        color: var(--text-secondary);
+      }
+      p strong {
+        color: var(--text);
+      }
+
+      ul,
+      ol {
+        margin: 10px 0 16px 22px;
+        color: var(--text-secondary);
+      }
+      li {
+        margin-bottom: 6px;
+      }
+      li strong {
+        color: var(--text);
+      }
+
+      /* Cards */
+      .card-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 16px;
+        margin: 20px 0;
+      }
+      .card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 20px;
+        transition: border-color 0.2s;
+      }
+      .card:hover {
+        border-color: var(--accent);
+      }
+      .card .card-title {
+        font-weight: 700;
+        font-size: 14px;
+        color: var(--text);
+        margin-bottom: 6px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .card .card-desc {
+        font-size: 13px;
+        color: var(--text-secondary);
+        line-height: 1.5;
+      }
+
+      /* Tables */
+      .table-wrap {
+        overflow-x: auto;
+        margin: 18px 0;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+      }
+      thead {
+        background: var(--bg-hover);
+      }
+      th {
+        text-align: left;
+        padding: 12px 16px;
+        font-weight: 700;
+        color: var(--text);
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        border-bottom: 1px solid var(--border);
+      }
+      td {
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--border);
+        color: var(--text-secondary);
+      }
+      tr:last-child td {
+        border-bottom: none;
+      }
+      tr:hover td {
+        background: rgba(255, 255, 255, 0.02);
+      }
+
+      /* Code blocks */
+      pre {
+        background: #0d0f15;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 18px 20px;
+        overflow-x: auto;
+        font-family: "Fira Code", "Cascadia Code", monospace;
+        font-size: 13px;
+        line-height: 1.6;
+        margin: 14px 0;
+        color: #c9d1d9;
+      }
+      code {
+        font-family: "Fira Code", monospace;
+        font-size: 13px;
+        background: rgba(255, 255, 255, 0.06);
+        padding: 2px 6px;
+        border-radius: 4px;
+        color: var(--cyan);
+      }
+      pre code {
+        background: none;
+        padding: 0;
+        border-radius: 0;
+        color: inherit;
+      }
+
+      /* Tags */
+      .tag {
+        display: inline-block;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 3px 10px;
+        border-radius: 6px;
+        margin: 2px 3px;
+      }
+      .tag-python {
+        background: rgba(53, 114, 165, 0.2);
+        color: #6ba4d9;
+      }
+      .tag-tkinter {
+        background: rgba(129, 201, 149, 0.2);
+        color: #81c995;
+      }
+      .tag-crypto {
+        background: rgba(255, 107, 107, 0.2);
+        color: #ff6b6b;
+      }
+
+      /* Flow diagram */
+      .flow {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 24px;
+        margin: 18px 0;
+        text-align: center;
+        font-family: "Fira Code", monospace;
+        font-size: 13px;
+        line-height: 2;
+      }
+      .flow .arrow {
+        color: var(--accent);
+        font-weight: 700;
+        margin: 0 6px;
+      }
+      .flow .node {
+        display: inline-block;
+        background: var(--bg-hover);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 6px 16px;
+        margin: 4px;
+        font-weight: 600;
+        color: var(--text);
+      }
+      .flow .node-accent {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      .flow .node-green {
+        border-color: var(--green);
+        color: var(--green);
+      }
+      .flow .node-blue {
+        border-color: var(--blue);
+        color: var(--blue);
+      }
+
+      /* Info box */
+      .info {
+        background: rgba(59, 130, 246, 0.08);
+        border: 1px solid rgba(59, 130, 246, 0.2);
+        border-radius: 10px;
+        padding: 16px 20px;
+        margin: 16px 0;
+        color: var(--blue);
+        font-size: 14px;
+      }
+      .info strong {
+        color: var(--blue);
+      }
+      .warn {
+        background: rgba(255, 153, 15, 0.08);
+        border: 1px solid rgba(255, 153, 15, 0.2);
+        border-radius: 10px;
+        padding: 16px 20px;
+        margin: 16px 0;
+        color: var(--accent);
+        font-size: 14px;
+      }
+
+      /* Files tree */
+      .file-tree {
+        font-family: "Fira Code", monospace;
+        font-size: 13px;
+        line-height: 1.8;
+        background: #0d0f15;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 18px 22px;
+        margin: 14px 0;
+      }
+      .file-tree .folder {
+        color: var(--accent);
+      }
+      .file-tree .file {
+        color: var(--text-secondary);
+      }
+      .file-tree .indent {
+        padding-left: 24px;
+      }
+      .file-tree .indent2 {
+        padding-left: 48px;
+      }
+      .file-tree .indent3 {
+        padding-left: 72px;
+      }
+
+      /* Stats */
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 12px;
+        margin: 20px 0;
+      }
+      .stat-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 18px;
+        text-align: center;
+      }
+      .stat-card .stat-value {
+        font-size: 28px;
+        font-weight: 900;
+        color: var(--accent);
+      }
+      .stat-card .stat-label {
+        font-size: 12px;
+        color: var(--text-secondary);
+        margin-top: 4px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      /* Responsive */
+      @media (max-width: 768px) {
+        .header h1 {
+          font-size: 28px;
+        }
+        .header-meta {
+          gap: 16px;
+          flex-direction: column;
+          align-items: center;
+        }
+        .toc ol {
+          columns: 1;
+        }
+        .container {
+          padding: 20px 16px;
+        }
+        .section-title {
+          font-size: 22px;
+        }
+      }
+
+      /* Print */
+      @media print {
+        body {
+          background: white;
+          color: #1a1a2e;
+        }
+        .header {
+          background: #f5f5f5;
+          border-bottom: 2px solid #ff990f;
+        }
+        .header h1 {
+          -webkit-text-fill-color: #cc7a0c;
+        }
+        .toc,
+        .card,
+        .stat-card {
+          border-color: #ddd;
+          background: #fafafa;
+        }
+        pre {
+          background: #f5f5f5;
+          border-color: #ddd;
+        }
+        .file-tree {
+          background: #f5f5f5;
+        }
+        th {
+          background: #eee;
+        }
+        td {
+          border-color: #ddd;
+        }
+        .flow {
+          border-color: #ddd;
+        }
+        .info,
+        .warn {
+          page-break-inside: avoid;
+        }
+        section {
+          page-break-inside: avoid;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <!-- HEADER -->
+    <header class="header">
+      <div class="header-badge">Documentação Técnica</div>
+      <h1>Smart Backup</h1>
+      <p>
+        Sistema de Backup Inteligente &mdash; Especificação Completa do Sistema
+      </p>
+      <div class="header-meta">
+        <span>📅 <strong>17 de maio de 2026</strong></span>
+        <span>⚡ <strong>Python 3.13+</strong></span>
+        <span>📦 <strong>11 módulos</strong></span>
+        <span>📄 <strong>~6.500+ linhas</strong></span>
+      </div>
+    </header>
+
+    <div class="container">
+      <!-- TOC -->
+      <div class="toc">
+        <h2>📑 Sumário</h2>
+        <ol>
+          <li><a href="#s1">Visão Geral</a></li>
+          <li><a href="#s2">Stack Tecnológica</a></li>
+          <li><a href="#s3">Estrutura do Projeto</a></li>
+          <li><a href="#s4">Arquitetura e Fluxo</a></li>
+          <li><a href="#s5">Funcionalidades</a></li>
+          <li><a href="#s6">Modelo de Dados</a></li>
+          <li><a href="#s7">Instalação e Execução</a></li>
+          <li><a href="#s8">Variáveis de Ambiente</a></li>
+          <li><a href="#s9">Testes</a></li>
+          <li><a href="#s10">Funcionalidades Futuras</a></li>
+          <li><a href="#s11">Padrões e Convenções</a></li>
+          <li><a href="#s12">Resumo dos Módulos</a></li>
+        </ol>
+      </div>
+
+      <!-- S1: VISÃO GERAL -->
+      <section id="s1">
+        <h2 class="section-title"><span class="num">01</span> Visão Geral</h2>
+        <p class="section-subtitle">Propósito, escopo e objetivos do sistema</p>
+
+        <p>
+          O <strong>Smart Backup</strong> é uma aplicação desktop desenvolvida
+          em Python para <strong>monitoramento contínuo</strong> de diretórios,
+          <strong>classificação inteligente</strong> de arquivos e
+          <strong>backup incremental</strong> com deduplicação por hash,
+          snapshots JSON e criptografia em envelope.
+        </p>
+        <p>
+          O sistema combina
+          <strong>monitoramento em tempo real</strong> (watchdog),
+          <strong>análise de metadados</strong> via árvore de decisão local com
+          integração opcional à <strong>Gemini API</strong> (Google), e
+          <strong>armazenamento incremental</strong> com restauração por
+          manifesto. A interface gráfica em Tkinter oferece controle completo
+          sobre backups, agendamento, histórico e restauração.
+        </p>
+
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-value">11</div>
+            <div class="stat-label">Módulos</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value">~6.5K</div>
+            <div class="stat-label">Linhas de código</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value">3</div>
+            <div class="stat-label">Perfis de usuário</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value">AES-256</div>
+            <div class="stat-label">Criptografia</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- S2: STACK TECNOLÓGICA -->
+      <section id="s2">
+        <h2 class="section-title">
+          <span class="num">02</span> Stack Tecnológica
+        </h2>
+        <p class="section-subtitle">
+          Linguagens, frameworks e bibliotecas utilizadas
+        </p>
+
+        <div class="card-grid">
+          <div class="card">
+            <div class="card-title">🐍 Python 3.13+</div>
+            <div class="card-desc">Runtime principal da aplicação</div>
+          </div>
+          <div class="card">
+            <div class="card-title">🖥️ Tkinter</div>
+            <div class="card-desc">Interface desktop nativa do Python</div>
+          </div>
+          <div class="card">
+            <div class="card-title">👁️ watchdog 6.0+</div>
+            <div class="card-desc">Monitoramento de arquivos em tempo real</div>
+          </div>
+          <div class="card">
+            <div class="card-title">📊 pandas 3.0+</div>
+            <div class="card-desc">
+              Manipulação de dados e geração de dataset
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">🔐 cryptography 46+</div>
+            <div class="card-desc">
+              AES-256-GCM, PBKDF2-SHA256, envelope de chaves
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">📎 pystray 0.19+</div>
+            <div class="card-desc">Ícone na bandeja do sistema Windows</div>
+          </div>
+          <div class="card">
+            <div class="card-title">🖼️ pillow 12+</div>
+            <div class="card-desc">Manipulação de imagens e ícones</div>
+          </div>
+          <div class="card">
+            <div class="card-title">🤖 Gemini API</div>
+            <div class="card-desc">
+              Classificação opcional via LLM (metadados apenas)
+            </div>
+          </div>
+        </div>
+
+        <div class="info">
+          <strong>Dependências completas:</strong> customtkinter, cryptography,
+          darkdetect, flake8, numpy, pandas, pillow, pystray, python-dateutil,
+          watchdog
+        </div>
+      </section>
+
+      <!-- S3: ESTRUTURA DO PROJETO -->
+      <section id="s3">
+        <h2 class="section-title">
+          <span class="num">03</span> Estrutura do Projeto
+        </h2>
+        <p class="section-subtitle">Organização de diretórios e arquivos</p>
+
+        <div class="file-tree">
+          <span class="folder">📁 sistema-backup-inteligente/</span><br />
+          <span class="indent"
+            >├── <span class="file">main.py</span>
+            <span style="color: #8b92a5; font-size: 12px"
+              ># Ponto de entrada</span
+            ></span
+          ><br />
+          <span class="indent">├── <span class="file">README.md</span></span
+          ><br />
+          <span class="indent"
+            >├── <span class="file">requirements.txt</span></span
+          ><br />
+          <span class="indent">├── <span class="file">.env.example</span></span
+          ><br />
+          <span class="indent">│</span><br />
+          <span class="indent"
+            >├── <span class="folder">📁 auth/</span>
+            <span style="color: #8b92a5; font-size: 12px"
+              ># Autenticação e permissões</span
+            ></span
+          ><br />
+          <span class="indent2">├── <span class="file">__init__.py</span></span
+          ><br />
+          <span class="indent2"
+            >├── <span class="file">permissions.py</span></span
+          ><br />
+          <span class="indent2">└── <span class="file">users.py</span></span
+          ><br />
+          <span class="indent">│</span><br />
+          <span class="indent"
+            >├── <span class="folder">📁 backup/</span>
+            <span style="color: #8b92a5; font-size: 12px"
+              ># Núcleo do backup incremental</span
+            ></span
+          ><br />
+          <span class="indent2"
+            >└── <span class="file">backup_manager.py</span>
+            <span style="color: #8b92a5; font-size: 12px"
+              ># ~2500 linhas</span
+            ></span
+          ><br />
+          <span class="indent">│</span><br />
+          <span class="indent"
+            >├── <span class="folder">📁 config/</span>
+            <span style="color: #8b92a5; font-size: 12px"
+              ># Configurações e estado</span
+            ></span
+          ><br />
+          <span class="indent2">├── <span class="file">config.json</span></span
+          ><br />
+          <span class="indent2">├── <span class="file">users.json</span></span
+          ><br />
+          <span class="indent2"
+            >├── <span class="file">backup_history.json</span></span
+          ><br />
+          <span class="indent2"
+            >├── <span class="file">backup_schedule.json</span></span
+          ><br />
+          <span class="indent2"
+            >├── <span class="file">file_activity.json</span></span
+          ><br />
+          <span class="indent2"
+            >├── <span class="file">llm_classification_cache.json</span></span
+          ><br />
+          <span class="indent2"
+            >└── <span class="file">priority_backup_state.json</span></span
+          ><br />
+          <span class="indent">│</span><br />
+          <span class="indent"
+            >├── <span class="folder">📁 backups/</span>
+            <span style="color: #8b92a5; font-size: 12px"
+              ># Armazenamento de backups</span
+            ></span
+          ><br />
+          <span class="indent2">├── 📁 admin/</span><br />
+          <span class="indent3">├── <span class="file">index.json</span></span
+          ><br />
+          <span class="indent3">└── 📁 2026-05-12/</span><br />
+          <span class="indent3"> ├── 📁 arquivos_relacionados/</span><br />
+          <span class="indent3"> └── 📁 snapshots/</span><br />
+          <span class="indent2">├── 📁 dudu/</span><br />
+          <span class="indent2">└── 📁 sistema/</span><br />
+          <span class="indent">│</span><br />
+          <span class="indent"
+            >├── <span class="folder">📁 dataset/</span>
+            <span style="color: #8b92a5; font-size: 12px"
+              ># CSV com metadados</span
+            ></span
+          ><br />
+          <span class="indent"
+            >├── <span class="folder">📁 docs/</span>
+            <span style="color: #8b92a5; font-size: 12px"
+              ># Documentação</span
+            ></span
+          ><br />
+          <span class="indent"
+            >├── <span class="folder">📁 interface/</span>
+            <span style="color: #8b92a5; font-size: 12px"
+              ># GUI Tkinter</span
+            ></span
+          ><br />
+          <span class="indent"
+            >├── <span class="folder">📁 ml/</span>
+            <span style="color: #8b92a5; font-size: 12px"
+              ># Classificação inteligente</span
+            ></span
+          ><br />
+          <span class="indent"
+            >├── <span class="folder">📁 monitor/</span>
+            <span style="color: #8b92a5; font-size: 12px"
+              ># Watchdog</span
+            ></span
+          ><br />
+          <span class="indent"
+            >├── <span class="folder">📁 scanner/</span>
+            <span style="color: #8b92a5; font-size: 12px"
+              ># Varredura de diretórios</span
+            ></span
+          ><br />
+          <span class="indent"
+            >├── <span class="folder">📁 scheduler/</span>
+            <span style="color: #8b92a5; font-size: 12px"
+              ># Agendamento</span
+            ></span
+          ><br />
+          <span class="indent"
+            >├── <span class="folder">📁 security/</span>
+            <span style="color: #8b92a5; font-size: 12px"
+              ># Criptografia</span
+            ></span
+          ><br />
+          <span class="indent"
+            >├── <span class="folder">📁 tests/</span>
+            <span style="color: #8b92a5; font-size: 12px"># Testes</span></span
+          ><br />
+          <span class="indent"
+            >├── <span class="folder">📁 tray/</span>
+            <span style="color: #8b92a5; font-size: 12px"
+              ># Bandeja do sistema</span
+            ></span
+          ><br />
+          <span class="indent"
+            >└── <span class="folder">📁 utils/</span>
+            <span style="color: #8b92a5; font-size: 12px"
+              ># Utilitários</span
+            ></span
+          ><br />
+        </div>
+      </section>
+
+      <!-- S4: ARQUITETURA E FLUXO -->
+      <section id="s4">
+        <h2 class="section-title">
+          <span class="num">04</span> Arquitetura e Fluxo
+        </h2>
+        <p class="section-subtitle">
+          Como os componentes se integram e o fluxo de execução
+        </p>
+
+        <h3>4.1 Inicialização</h3>
+        <ol>
+          <li>
+            Garante pastas necessárias (<code>config/</code>,
+            <code>dataset/</code>, <code>ml/</code>)
+          </li>
+          <li>
+            Detecta se é primeira execução (config sem diretórios OU nenhum
+            usuário)
+          </li>
+          <li>
+            Inicia <strong>monitoramento</strong> em thread separada (daemon)
+          </li>
+          <li>Inicia <strong>agendador</strong> em thread separada (daemon)</li>
+          <li>
+            Abre <strong>tela de login/painel</strong> na thread principal do
+            Tkinter
+          </li>
+          <li>
+            Após fechar o painel, inicia o <strong>ícone da bandeja</strong>
+          </li>
+        </ol>
+
+        <h3>4.2 Fluxo Geral</h3>
+        <div class="flow">
+          <span class="node node-accent">Login</span>
+          <span class="arrow">→</span>
+          <span class="node node-accent">Painel Principal</span>
+          <br />
+          <span class="arrow">│</span><br />
+          <span class="arrow">├─</span>
+          <span class="node node-blue">Backup Manual</span>
+          <span class="arrow">→</span>
+          <span class="node">Scanner</span>
+          <span class="arrow">→</span>
+          <span class="node node-green">Backup Incremental</span><br />
+          <span class="arrow">├─</span>
+          <span class="node node-blue">Backup Agendado</span>
+          <span class="arrow">→</span>
+          <span class="node">Scanner</span>
+          <span class="arrow">→</span>
+          <span class="node node-green">Backup Incremental</span><br />
+          <span class="arrow">└─</span>
+          <span class="node node-blue">Monitoramento</span>
+          <span class="arrow">→</span>
+          <span class="node">Dispara Scanner</span>
+          <span class="arrow">→</span>
+          <span class="node node-green">Dataset Atualizado</span>
+        </div>
+
+        <h3>4.3 Fluxo de Backup Incremental</h3>
+        <div class="flow">
+          <span class="node node-accent">Iniciar Backup</span>
+          <span class="arrow">→</span>
+          <span class="node">Scanner</span>
+          <span class="arrow">→</span>
+          <span class="node">Dataset CSV</span>
+          <span class="arrow">→</span>
+          <span class="node node-blue">Classificação</span>
+          <br />
+          <span class="arrow">↓</span><br />
+          <span class="node node-green">Backup Incremental</span>
+          <span class="arrow">→</span>
+          <span class="node">Objetos por hash</span>
+          <span class="arrow">→</span>
+          <span class="node node-accent">Snapshot JSON</span>
+          <span class="arrow">→</span>
+          <span class="node node-accent">Histórico</span>
+          <span class="arrow">→</span>
+          <span class="node node-accent">ZIP criptografado</span>
+        </div>
+      </section>
+
+      <!-- S5: FUNCIONALIDADES -->
+      <section id="s5">
+        <h2 class="section-title">
+          <span class="num">05</span> Funcionalidades Detalhadas
+        </h2>
+        <p class="section-subtitle">
+          Descrição completa de cada funcionalidade implementada
+        </p>
+
+        <!-- 5.1 Autenticação -->
+        <h3>
+          5.1 Autenticação e Controle de Acesso
+          <span class="badge badge-purple">auth/</span>
+        </h3>
+
+        <h4>Sistema de Usuários</h4>
+        <ul>
+          <li>
+            <strong>Armazenamento:</strong> <code>config/users.json</code> com
+            senhas hasheadas via PBKDF2-SHA256 (260.000 iterações)
+          </li>
+          <li>
+            <strong>Campos:</strong> username, name, role, password (hash +
+            salt), company_id, metadados criptográficos
+          </li>
+          <li>
+            <strong>Operações:</strong> criar, autenticar, listar, atualizar,
+            deletar, alterar senha
+          </li>
+          <li>
+            <strong>Recuperação:</strong> chave única formato
+            <code>RECOVERY-XXXX-XXXX-XXXX-XXXX</code>
+          </li>
+          <li>
+            <strong>Autenticação:</strong> PBKDF2 + HMAC compare_digest +
+            descriptografia da chave mestra
+          </li>
+        </ul>
+
+        <h4>Sistema de Permissões (RBAC)</h4>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Permissão</th>
+                <th style="text-align: center">Admin</th>
+                <th style="text-align: center">Operador</th>
+                <th style="text-align: center">Visualizador</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Gerenciar usuários</td>
+                <td style="text-align: center; color: #22c55e">✅</td>
+                <td style="text-align: center; color: #ef4444">❌</td>
+                <td style="text-align: center; color: #ef4444">❌</td>
+              </tr>
+              <tr>
+                <td>Gerenciar diretórios</td>
+                <td style="text-align: center; color: #22c55e">✅</td>
+                <td style="text-align: center; color: #ef4444">❌</td>
+                <td style="text-align: center; color: #ef4444">❌</td>
+              </tr>
+              <tr>
+                <td>Alterar destino backup</td>
+                <td style="text-align: center; color: #22c55e">✅</td>
+                <td style="text-align: center; color: #ef4444">❌</td>
+                <td style="text-align: center; color: #ef4444">❌</td>
+              </tr>
+              <tr>
+                <td>Executar backup</td>
+                <td style="text-align: center; color: #22c55e">✅</td>
+                <td style="text-align: center; color: #22c55e">✅</td>
+                <td style="text-align: center; color: #ef4444">❌</td>
+              </tr>
+              <tr>
+                <td>Agendar backup</td>
+                <td style="text-align: center; color: #22c55e">✅</td>
+                <td style="text-align: center; color: #22c55e">✅</td>
+                <td style="text-align: center; color: #ef4444">❌</td>
+              </tr>
+              <tr>
+                <td>Ver arquivos</td>
+                <td style="text-align: center; color: #22c55e">✅</td>
+                <td style="text-align: center; color: #22c55e">✅</td>
+                <td style="text-align: center; color: #22c55e">✅</td>
+              </tr>
+              <tr>
+                <td>Ver histórico</td>
+                <td style="text-align: center; color: #22c55e">✅</td>
+                <td style="text-align: center; color: #22c55e">✅</td>
+                <td style="text-align: center; color: #22c55e">✅</td>
+              </tr>
+              <tr>
+                <td>Baixar backup</td>
+                <td style="text-align: center; color: #22c55e">✅</td>
+                <td style="text-align: center; color: #22c55e">✅</td>
+                <td style="text-align: center; color: #ef4444">❌</td>
+              </tr>
+              <tr>
+                <td>Restaurar backup</td>
+                <td style="text-align: center; color: #22c55e">✅</td>
+                <td style="text-align: center; color: #22c55e">✅</td>
+                <td style="text-align: center; color: #ef4444">❌</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          <strong>Visibilidade do histórico:</strong> Admin vê todos os backups;
+          Operador vê os próprios + de visualizadores; Visualizador vê apenas os
+          próprios.
+        </p>
+
+        <!-- 5.2 Monitoramento -->
+        <h3>
+          5.2 Monitoramento em Tempo Real
+          <span class="badge badge-cyan">monitor/</span>
+        </h3>
+        <ul>
+          <li>
+            Usa <code>watchdog.Observer</code> para monitorar diretórios
+            configurados
+          </li>
+          <li>
+            Eventos capturados:
+            <strong>criação, modificação, remoção e movimentação</strong> de
+            arquivos
+          </li>
+          <li>
+            <strong>Cooldown:</strong> 2 segundos entre varreduras para evitar
+            disparos excessivos
+          </li>
+          <li>
+            Ignora caminhos internos: <code>config/</code>,
+            <code>dataset/</code>, <code>.git/</code>, <code>__pycache__/</code>
+          </li>
+          <li>
+            Dispara <code>run_scanner()</code> automaticamente ao detectar
+            mudanças
+          </li>
+        </ul>
+
+        <!-- 5.3 Scanner -->
+        <h3>
+          5.3 Scanner e Dataset <span class="badge badge-blue">scanner/</span>
+        </h3>
+        <ul>
+          <li>Varre todos os diretórios configurados recursivamente</li>
+          <li>
+            Para cada arquivo coleta: nome, extensão, tipo, tamanho, datas, hash
+            SHA-256, contadores de atividade, contexto do diretório
+          </li>
+          <li>Anota <strong>arquivos duplicados</strong> por hash</li>
+          <li>Aplica <strong>classificação</strong> (regras + LLM opcional)</li>
+          <li>
+            Gera/atualiza <code>dataset/files_dataset.csv</code> via pandas
+          </li>
+        </ul>
+
+        <!-- 5.4 Classificação -->
+        <h3>
+          5.4 Classificação Inteligente
+          <span class="badge badge-purple">ml/</span>
+        </h3>
+
+        <h4>Árvore de Decisão Local</h4>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Critério</th>
+                <th>Impacto</th>
+                <th>Motivo</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Modificações frequentes (≥2 ou ≤2 dias)</td>
+                <td style="color: #22c55e">+18</td>
+                <td>Arquivo modificado recentemente</td>
+              </tr>
+              <tr>
+                <td>Extensão de alto valor</td>
+                <td style="color: #22c55e">+18</td>
+                <td>Extensão com valor para backup</td>
+              </tr>
+              <tr>
+                <td>Extensão de sistema/programa</td>
+                <td style="color: #22c55e">+20</td>
+                <td>Relevante para sistema</td>
+              </tr>
+              <tr>
+                <td>Acessos frequentes (≥2)</td>
+                <td style="color: #22c55e">+14</td>
+                <td>Arquivo acessado várias vezes</td>
+              </tr>
+              <tr>
+                <td>Nome importante</td>
+                <td style="color: #22c55e">+24</td>
+                <td>Indica documento, projeto, etc.</td>
+              </tr>
+              <tr>
+                <td>Contexto importante</td>
+                <td style="color: #22c55e">+18</td>
+                <td>Diretório indica contexto importante</td>
+              </tr>
+              <tr>
+                <td>Palavra-chave (scanner)</td>
+                <td style="color: #22c55e">+10</td>
+                <td>Keyword detectada</td>
+              </tr>
+              <tr>
+                <td>Conteúdo duplicado</td>
+                <td style="color: #ef4444">-6</td>
+                <td>Hash duplicado encontrado</td>
+              </tr>
+              <tr>
+                <td>Extensão de baixo valor</td>
+                <td style="color: #ef4444">-18</td>
+                <td>Temporário/descartável</td>
+              </tr>
+              <tr>
+                <td>Contexto de baixo valor</td>
+                <td style="color: #ef4444">-35</td>
+                <td>Cache, venv, temp</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          <strong>Limiares:</strong> ≥70 →
+          <strong style="color: #ef4444">alta</strong>, ≥40 →
+          <strong style="color: #a855f7">média</strong>, &lt;40 →
+          <strong style="color: #8b92a5">baixa</strong>
+        </p>
+
+        <h4>Integração Gemini API (opcional)</h4>
+        <ul>
+          <li>
+            Ativada via <code>GEMINI_API_KEY</code> (variável de ambiente ou
+            <code>.env</code>)
+          </li>
+          <li>
+            Envia apenas <strong>metadados</strong> — nunca o conteúdo do
+            arquivo
+          </li>
+          <li>Prompt estruturado pedindo classificação JSON</li>
+          <li>
+            Cache local (até 1000 entradas) para evitar chamadas repetidas
+          </li>
+          <li>Fallback automático para regras locais se API falhar</li>
+          <li>Modelo padrão: <code>gemini-2.5-flash</code></li>
+          <li>
+            Mescla resultado da LLM com regras locais (prioridade mais alta
+            vence)
+          </li>
+        </ul>
+
+        <!-- 5.5 Backup Incremental -->
+        <h3>
+          5.5 Backup Incremental com Deduplicação
+          <span class="badge badge-green">backup/</span>
+        </h3>
+
+        <h4>Estrutura de Armazenamento</h4>
+        <div class="file-tree">
+          <span class="folder">📁 backups/&lt;usuario&gt;/</span><br />
+          <span class="indent">├── <span class="file">index.json</span></span
+          ><br />
+          <span class="indent"
+            >└── <span class="folder">📁 YYYY-MM-DD/</span></span
+          ><br />
+          <span class="indent2"
+            >├── <span class="folder">📁 arquivos_relacionados/</span></span
+          ><br />
+          <span class="indent3"
+            >└── <span class="file">&lt;hash_sha256&gt;</span></span
+          ><br />
+          <span class="indent2"
+            >└── <span class="folder">📁 snapshots/</span></span
+          ><br />
+          <span class="indent3"
+            >└──
+            <span class="file">snapshot_2026-05-12_08-00-00.json</span></span
+          ><br />
+        </div>
+
+        <h4>Mecanismo de Deduplicação</h4>
+        <ul>
+          <li>
+            Cada arquivo é armazenado <strong>uma única vez</strong>,
+            identificado por hash SHA-256
+          </li>
+          <li>
+            Se o hash já existe, apenas uma <strong>referência</strong> é criada
+          </li>
+          <li>
+            O <code>index.json</code> mantém contagem de referências para cada
+            objeto
+          </li>
+        </ul>
+
+        <h4>Status dos Arquivos</h4>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Significado</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>stored_new_object</code></td>
+                <td>Novo objeto armazenado</td>
+              </tr>
+              <tr>
+                <td><code>referenced_existing_object</code></td>
+                <td>Hash já existente, apenas referência</td>
+              </tr>
+              <tr>
+                <td><code>skipped_unchanged</code></td>
+                <td>Arquivo não modificado desde último backup</td>
+              </tr>
+              <tr>
+                <td><code>skipped_not_eligible</code></td>
+                <td>Não elegível pela política de prioridade</td>
+              </tr>
+              <tr>
+                <td><code>error</code></td>
+                <td>Falha ao processar</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h4>Política de Backup por Prioridade</h4>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Prioridade</th>
+                <th>Produção</th>
+                <th>DEV MODE</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong style="color: #8b92a5">baixa</strong></td>
+                <td>A cada 7 dias</td>
+                <td>A cada 30 min</td>
+              </tr>
+              <tr>
+                <td><strong style="color: #a855f7">média</strong></td>
+                <td>A cada 2 dias</td>
+                <td>A cada 15 min</td>
+              </tr>
+              <tr>
+                <td><strong style="color: #ef4444">alta</strong></td>
+                <td>Início do dia + a cada 4h</td>
+                <td>A cada 5 min</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Verificação a cada 10 min (produção) ou 1 min (DEV MODE). Estado
+          persistente em <code>config/priority_backup_state.json</code>.
+        </p>
+
+        <h4>Agendamento</h4>
+        <ul>
+          <li>Thread separada com loop a cada 20s</li>
+          <li>Verifica se há backup agendado pendente via janela de horário</li>
+          <li>Processa backup por prioridade se habilitado</li>
+          <li>Suporta horário de início e fim para agendamento diário</li>
+        </ul>
+
+        <!-- 5.6 Criptografia -->
+        <h3>5.6 Criptografia <span class="badge badge-red">security/</span></h3>
+
+        <h4>Esquema de Criptografia em Envelope</h4>
+        <div class="flow" style="text-align: left; font-size: 12px">
+          <span style="color: #8b92a5">Senha do Usuário</span><br />
+          <span class="arrow">└─▶</span> PBKDF2-SHA256 (390.000 iterações +
+          salt) <span class="arrow">→</span>
+          <strong style="color: #3b82f6">Chave de Senha</strong><br />
+          <span class="arrow">└─▶</span> AES-256-GCM wrap
+          <span class="arrow">→</span>
+          <strong style="color: #a855f7">Chave Mestra</strong> (por usuário)<br />
+          <span class="arrow">└─▶</span> AES-256-GCM wrap
+          <span class="arrow">→</span>
+          <strong style="color: #22c55e">Chave de Backup</strong> (por
+          execução)<br />
+          <span class="arrow">└─▶</span> AES-256-GCM encrypt
+          <span class="arrow">→</span>
+          <strong style="color: #ef4444">Arquivo de Backup</strong> (.zip.enc ou
+          objeto)
+        </div>
+
+        <ul>
+          <li>
+            <strong>Algoritmo:</strong> AES-256-GCM com nonces únicos de 12
+            bytes
+          </li>
+          <li><strong>KDF:</strong> PBKDF2-SHA256 com salt de 16 bytes</li>
+          <li><strong>Tag de autenticação:</strong> embutida no ciphertext</li>
+          <li>
+            <strong>Troca de senha:</strong> apenas a chave mestra é
+            recriptografada; backups intactos
+          </li>
+          <li>
+            <strong>Redefinição sem senha antiga:</strong> gera nova chave
+            mestra → perde acesso a backups antigos
+          </li>
+        </ul>
+
+        <!-- 5.7 Restauração -->
+        <h3>5.7 Restauração <span class="badge badge-green">backup/</span></h3>
+        <ul>
+          <li>Restaura arquivos de snapshots incrementais</li>
+          <li>
+            Suporta estratégias de conflito: <strong>renomear</strong> ou
+            <strong>pular</strong>
+          </li>
+          <li>Preserva datas de modificação originais</li>
+          <li>Exporta snapshot completo para ZIP</li>
+          <li>Busca por nome de arquivo na interface</li>
+        </ul>
+
+        <!-- 5.8 Interface -->
+        <h3>
+          5.8 Interface Gráfica <span class="badge badge-blue">interface/</span>
+        </h3>
+        <ul>
+          <li>
+            <strong>Tema escuro</strong> profissional (paleta #283241, #1F2733,
+            #FF990F)
+          </li>
+          <li><strong>Fontes:</strong> Segoe UI (títulos: Segoe UI Black)</li>
+          <li>Menu central com cards informativos e botões com profundidade</li>
+          <li>Scrollbars estilizados e barra de progresso</li>
+          <li>Cancelamento seguro de backup em segundo plano</li>
+          <li>Rodapé com resumo do último backup</li>
+        </ul>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Tela</th>
+                <th>Funcionalidades</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Login</strong></td>
+                <td>Autenticação ou criação do primeiro administrador</td>
+              </tr>
+              <tr>
+                <td><strong>Painel Principal</strong></td>
+                <td>Menu central, cards de estatísticas, resumo</td>
+              </tr>
+              <tr>
+                <td><strong>Gerenciar Diretórios</strong></td>
+                <td>Adicionar/remover diretórios monitorados</td>
+              </tr>
+              <tr>
+                <td><strong>Executar Backup</strong></td>
+                <td>Nomear, descrever, executar com progresso</td>
+              </tr>
+              <tr>
+                <td><strong>Histórico</strong></td>
+                <td>Filtros por data, usuário, busca com sugestões</td>
+              </tr>
+              <tr>
+                <td><strong>Arquivos Analisados</strong></td>
+                <td>Status de cobertura, filtros por coluna</td>
+              </tr>
+              <tr>
+                <td><strong>Restauração</strong></td>
+                <td>Busca por nome, recuperação de versões</td>
+              </tr>
+              <tr>
+                <td><strong>Configurações</strong></td>
+                <td>Destino, agendamento, política de prioridade</td>
+              </tr>
+              <tr>
+                <td><strong>Gerenciar Usuários</strong></td>
+                <td>CRUD de usuários (admin apenas)</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 5.9 Bandeja -->
+        <h3>
+          5.9 Bandeja do Sistema <span class="badge badge-cyan">tray/</span>
+        </h3>
+        <ul>
+          <li>Ícone na bandeja do Windows via <strong>pystray</strong></li>
+          <li><strong>Clique esquerdo:</strong> abre o painel principal</li>
+          <li>
+            <strong>Clique direito:</strong> menu (Abrir painel, status do
+            último backup, destino, Executar scan, Sair)
+          </li>
+          <li>Tooltip com informações resumidas (limitado a 120 caracteres)</li>
+        </ul>
+      </section>
+
+      <!-- S6: MODELO DE DADOS -->
+      <section id="s6">
+        <h2 class="section-title">
+          <span class="num">06</span> Modelo de Dados
+        </h2>
+        <p class="section-subtitle">
+          Estruturas de dados e formatos de arquivo
+        </p>
+
+        <h3>6.1 Configuração Principal (<code>config/config.json</code>)</h3>
+        <pre><code>{
+  "directories": ["C:/path/to/monitor"],
+  "backup_destination": "C:/path/to/backups",
+  "priority_backup_policy_enabled": true,
+  "llm_classification_enabled": true,
+  "llm_cache_enabled": true,
+  "gemini_model": "gemini-2.5-flash",
+  "deduplicate_backup": true
+}</code></pre>
+
+        <h3>6.2 Dataset (<code>dataset/files_dataset.csv</code>)</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Coluna</th>
+                <th>Descrição</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>name</code></td>
+                <td>Nome do arquivo</td>
+              </tr>
+              <tr>
+                <td><code>extension</code></td>
+                <td>Extensão (sem ponto)</td>
+              </tr>
+              <tr>
+                <td><code>type</code></td>
+                <td>
+                  Tipo (document, code, image, spreadsheet, database, other)
+                </td>
+              </tr>
+              <tr>
+                <td><code>source_path</code></td>
+                <td>Caminho absoluto</td>
+              </tr>
+              <tr>
+                <td><code>archive_name</code></td>
+                <td>Caminho relativo no backup</td>
+              </tr>
+              <tr>
+                <td><code>size_kb</code></td>
+                <td>Tamanho em KB</td>
+              </tr>
+              <tr>
+                <td><code>file_hash</code></td>
+                <td>SHA-256 do conteúdo</td>
+              </tr>
+              <tr>
+                <td><code>priority</code></td>
+                <td>baixa / media / alta</td>
+              </tr>
+              <tr>
+                <td><code>priority_score</code></td>
+                <td>Pontuação 0-100</td>
+              </tr>
+              <tr>
+                <td><code>priority_reason</code></td>
+                <td>Motivos da decisão</td>
+              </tr>
+              <tr>
+                <td><code>classification_source</code></td>
+                <td>rules / rules_fallback / gemini_api / gemini_cache</td>
+              </tr>
+              <tr>
+                <td><code>llm_confidence</code></td>
+                <td>Confiança 0.0-1.0</td>
+              </tr>
+              <tr>
+                <td><code>backup_policy</code></td>
+                <td>Política derivada da prioridade</td>
+              </tr>
+              <tr>
+                <td><code>decision_tree</code></td>
+                <td>JSON das decisões da árvore</td>
+              </tr>
+              <tr>
+                <td><code>is_duplicate</code></td>
+                <td>Flag de arquivo duplicado</td>
+              </tr>
+              <tr>
+                <td><code>important</code></td>
+                <td>1 se prioridade média ou alta</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>6.3 Snapshot Incremental (<code>snapshot_*.json</code>)</h3>
+        <pre><code>{
+  "snapshot_id": "snapshot_2026-05-12_22-26-57",
+  "created_at": "2026-05-12T22:26:57",
+  "trigger": "manual",
+  "total_files": 28,
+  "status_counts": { "stored_new_object": 28 },
+  "files": [
+    {
+      "archive_name": "Pasta/arquivo.pdf",
+      "file_name": "arquivo.pdf",
+      "hash": "abc123...",
+      "object_path": "2026-05-12/arquivos_relacionados/abc123...",
+      "priority": "alta",
+      "score": 85,
+      "size": 6969,
+      "status": "stored_new_object",
+      "encryption": { ... }
+    }
+  ],
+  "encryption": { "enabled": true, ... }
+}</code></pre>
+      </section>
+
+      <!-- S7: INSTALAÇÃO -->
+      <section id="s7">
+        <h2 class="section-title">
+          <span class="num">07</span> Instalação e Execução
+        </h2>
+        <p class="section-subtitle">Pré-requisitos e passos para execução</p>
+
+        <h3>Pré-requisitos</h3>
+        <ul>
+          <li>Python 3.13 ou superior</li>
+          <li>pip</li>
+          <li>Ambiente Windows recomendado</li>
+          <li>
+            Chave <code>GEMINI_API_KEY</code> opcional para classificação com
+            Gemini
+          </li>
+        </ul>
+
+        <h3>Passos</h3>
+        <pre><code># 1. Criar ambiente virtual
+python -m venv venv
+venv\Scripts\activate
+
+# 2. Instalar dependências
+pip install -r requirements.txt
+
+# 3. (Opcional) Configurar chave Gemini
+$env:GEMINI_API_KEY = "sua-chave-aqui"
+
+# 4. Executar
+python main.py</code></pre>
+      </section>
+
+      <!-- S8: VARIÁVEIS DE AMBIENTE -->
+      <section id="s8">
+        <h2 class="section-title">
+          <span class="num">08</span> Variáveis de Ambiente
+        </h2>
+        <p class="section-subtitle">Configuração via environment variables</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Variável</th>
+                <th>Descrição</th>
+                <th>Padrão</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>GEMINI_API_KEY</code></td>
+                <td>Chave da API Gemini</td>
+                <td>—</td>
+              </tr>
+              <tr>
+                <td><code>GOOGLE_API_KEY</code></td>
+                <td>Alternativa para Gemini</td>
+                <td>—</td>
+              </tr>
+              <tr>
+                <td><code>GEMINI_MODEL</code></td>
+                <td>Modelo Gemini</td>
+                <td><code>gemini-2.5-flash</code></td>
+              </tr>
+              <tr>
+                <td><code>SMARTBACKUP_LLM_ENABLED</code></td>
+                <td>Forçar ativação/desativação da LLM</td>
+                <td>—</td>
+              </tr>
+              <tr>
+                <td><code>BACKUP_DEV_MODE</code></td>
+                <td>Modo desenvolvimento (intervalos reduzidos)</td>
+                <td><code>false</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="warn">
+          <strong>⚠️ Importante:</strong> Nunca salve a chave da API dentro do
+          código. Use variáveis de ambiente ou arquivo
+          <code>.env</code> (incluído no <code>.gitignore</code>).
+        </div>
+      </section>
+
+      <!-- S9: TESTES -->
+      <section id="s9">
+        <h2 class="section-title"><span class="num">09</span> Testes</h2>
+        <p class="section-subtitle">Testes automatizados do sistema</p>
+
+        <div class="card-grid">
+          <div class="card">
+            <div class="card-title">🧪 <code>test_encryption.py</code></div>
+            <div class="card-desc">
+              Testes do sistema de criptografia em envelope (AES-256-GCM,
+              PBKDF2)
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">
+              🧪 <code>test_file_backup_status.py</code>
+            </div>
+            <div class="card-desc">
+              Testes de status de cobertura dos arquivos no backup
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">
+              🧪 <code>test_incremental_backup.py</code>
+            </div>
+            <div class="card-desc">
+              Testes do fluxo completo de backup incremental com deduplicação
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- S10: FUTURO -->
+      <section id="s10">
+        <h2 class="section-title">
+          <span class="num">10</span> Funcionalidades Futuras
+        </h2>
+        <p class="section-subtitle">Melhorias planejadas não implementadas</p>
+
+        <div class="card-grid">
+          <div class="card" style="opacity: 0.6">
+            <div class="card-title">📊 Visualização de tamanho</div>
+            <div class="card-desc">
+              Exibir tamanho dos backups e status da última execução no painel
+            </div>
+          </div>
+          <div class="card" style="opacity: 0.6">
+            <div class="card-title">⏰ Agendamento avançado</div>
+            <div class="card-desc">
+              Configuração mais granular de horários e dias do agendamento
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- S11: PADRÕES -->
+      <section id="s11">
+        <h2 class="section-title">
+          <span class="num">11</span> Padrões e Convenções
+        </h2>
+        <p class="section-subtitle">
+          Estilo de código, organização e boas práticas
+        </p>
+
+        <ul>
+          <li><strong>Código:</strong> PEP 8 (verificado com flake8)</li>
+          <li>
+            <strong>Interface:</strong> Tkinter puro com tema escuro
+            personalizado
+          </li>
+          <li>
+            <strong>Nomes:</strong> Português (BR) para variáveis, comentários e
+            interface
+          </li>
+          <li>
+            <strong>Módulos:</strong> Organização por funcionalidade (auth,
+            backup, monitor, scanner, etc.)
+          </li>
+          <li>
+            <strong>Persistência:</strong> JSON para configurações e estado; CSV
+            para dataset
+          </li>
+          <li>
+            <strong>Threads:</strong> Monitoramento e agendador em daemon
+            threads; interface na thread principal
+          </li>
+          <li>
+            <strong>Segurança:</strong> Hash de senha com PBKDF2; criptografia
+            em envelope AES-256-GCM
+          </li>
+        </ul>
+      </section>
+
+      <!-- S12: RESUMO -->
+      <section id="s12">
+        <h2 class="section-title">
+          <span class="num">12</span> Resumo dos Módulos
+        </h2>
+        <p class="section-subtitle">
+          Responsabilidades e tamanho de cada módulo
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Módulo</th>
+                <th>Arquivo(s)</th>
+                <th>Responsabilidade</th>
+                <th style="text-align: right">Linhas</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>main</strong></td>
+                <td><code>main.py</code></td>
+                <td>Ponto de entrada, inicialização</td>
+                <td style="text-align: right">~50</td>
+              </tr>
+              <tr>
+                <td><strong>auth</strong></td>
+                <td><code>users.py</code>, <code>permissions.py</code></td>
+                <td>Autenticação, RBAC, gestão de usuários</td>
+                <td style="text-align: right">~400</td>
+              </tr>
+              <tr>
+                <td><strong>backup</strong></td>
+                <td><code>backup_manager.py</code></td>
+                <td>Backup incremental, dedup, restauração, histórico</td>
+                <td style="text-align: right">~2500</td>
+              </tr>
+              <tr>
+                <td><strong>scanner</strong></td>
+                <td><code>scanner.py</code></td>
+                <td>Varredura, geração de dataset, classificação</td>
+                <td style="text-align: right">~400</td>
+              </tr>
+              <tr>
+                <td><strong>ml</strong></td>
+                <td><code>llm_classifier.py</code></td>
+                <td>Classificação por regras + Gemini API</td>
+                <td style="text-align: right">~850</td>
+              </tr>
+              <tr>
+                <td><strong>monitor</strong></td>
+                <td><code>monitor.py</code></td>
+                <td>Watchdog em tempo real</td>
+                <td style="text-align: right">~100</td>
+              </tr>
+              <tr>
+                <td><strong>scheduler</strong></td>
+                <td><code>scheduler.py</code></td>
+                <td>Agendamento em segundo plano</td>
+                <td style="text-align: right">~70</td>
+              </tr>
+              <tr>
+                <td><strong>interface</strong></td>
+                <td><code>gui.py</code>, <code>login.py</code></td>
+                <td>Interface gráfica Tkinter (~1800+ linhas)</td>
+                <td style="text-align: right">~2000+</td>
+              </tr>
+              <tr>
+                <td><strong>tray</strong></td>
+                <td><code>tray_icon.py</code></td>
+                <td>Ícone de bandeja do Windows</td>
+                <td style="text-align: right">~130</td>
+              </tr>
+              <tr>
+                <td><strong>security</strong></td>
+                <td><code>crypto_service.py</code></td>
+                <td>Criptografia AES-256-GCM + envelope</td>
+                <td style="text-align: right">~250</td>
+              </tr>
+              <tr>
+                <td><strong>utils</strong></td>
+                <td><code>file_hash.py</code></td>
+                <td>Cálculo de hash SHA-256</td>
+                <td style="text-align: right">~15</td>
+              </tr>
+              <tr>
+                <td><strong>tests</strong></td>
+                <td>3 arquivos</td>
+                <td>Testes automatizados</td>
+                <td style="text-align: right">—</td>
+              </tr>
+            </tbody>
+            <tfoot>
+              <tr style="background: var(--bg-hover)">
+                <td
+                  colspan="3"
+                  style="
+                    text-align: right;
+                    font-weight: 700;
+                    color: var(--text);
+                  "
+                >
+                  <strong>Total estimado</strong>
+                </td>
+                <td
+                  style="
+                    text-align: right;
+                    font-weight: 700;
+                    color: var(--accent);
+                  "
+                >
+                  <strong>~6.500+</strong>
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </section>
+
+      <hr style="border-color: var(--border); margin: 60px 0 30px" />
+
+      <footer
+        style="
+          text-align: center;
+          padding: 20px 0 40px;
+          color: var(--text-secondary);
+          font-size: 13px;
+        "
+      >
+        <p style="margin-bottom: 6px">
+          <strong style="color: var(--text)">Smart Backup</strong> — Sistema de
+          Backup Inteligente
+        </p>
+        <p>Documentação gerada em 17 de maio de 2026</p>
+        <p style="margin-top: 10px; font-size: 12px; opacity: 0.6">
+          Python 3.13+ · Tkinter · watchdog · pandas · cryptography · pystray ·
+          Gemini API
+        </p>
+      </footer>
+    </div>
+  </body>
+</html>
