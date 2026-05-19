@@ -30,6 +30,8 @@ from backup.backup_manager import export_snapshot_to_zip
 from backup.backup_manager import restore_recoverable_changes
 from backup.backup_manager import restore_snapshot
 from backup.backup_manager import run_backup_job
+from scanner.scanner import CLASSIFICATION_STATUS
+from scanner.scanner import get_classification_status
 
 CONFIG_PATH = "config/config.json"
 BACKUP_DIR = "backups"
@@ -505,6 +507,15 @@ class FlowFrame(tk.Frame):
 class BackupGUI:
 
     def __init__(self, root, current_user):
+        try:
+            self._init_gui(root, current_user)
+        except Exception as error:
+            import traceback
+            print(f"\nERRO ao inicializar interface: {error}")
+            traceback.print_exc()
+            raise
+
+    def _init_gui(self, root, current_user):
         self.root = root
         self.current_user = current_user
         self.root.title("Sistema de Backup Inteligente")
@@ -957,28 +968,52 @@ class BackupGUI:
         logout_button.pack(fill="x", pady=(6, 0))
         self.apply_button_feedback(logout_button)
 
+        footer_frame = tk.Frame(self.outer_frame, bg=BG_COLOR)
+        footer_frame.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 12))
+        footer_frame.columnconfigure(1, weight=1)
+
         footer = tk.Label(
-            self.outer_frame,
+            footer_frame,
             text=self.build_footer_text(),
             bg=BG_COLOR,
             fg=SUBTLE_TEXT,
             font=("Segoe UI", 9),
-            justify="center",
-            wraplength=720
+            justify="left",
+            anchor="w"
         )
         self.register_responsive_font(footer, ("Segoe UI", 9), min_size=8)
-        footer.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 12))
+        footer.grid(row=0, column=0, sticky="w")
         self.footer_label = footer
 
-        self.outer_frame.bind(
-            "<Configure>",
-            lambda event: self.footer_label.configure(
-                wraplength=max(event.width - 80, 260)
-            )
-            if event.widget == self.outer_frame
-            else None,
-            add="+"
+        # Barra de progresso da classificacao em segundo plano
+        class_prog_frame = tk.Frame(footer_frame, bg=BG_COLOR)
+        class_prog_frame.grid(row=0, column=1, sticky="e", padx=(10, 0))
+        class_prog_frame.columnconfigure(0, weight=0)
+
+        class_prog_status = tk.Label(
+            class_prog_frame,
+            text="",
+            bg=BG_COLOR,
+            fg=TITLE_COLOR,
+            font=("Segoe UI", 8),
+            anchor="e"
         )
+        self.register_responsive_font(class_prog_status, ("Segoe UI", 8), min_size=7)
+        class_prog_status.grid(row=0, column=0, sticky="e", padx=(0, 6))
+        self.class_prog_status = class_prog_status
+
+        class_prog_bar = ttk.Progressbar(
+            class_prog_frame,
+            mode="determinate",
+            style="Horizontal.TProgressbar",
+            length=140
+        )
+        class_prog_bar.grid(row=0, column=1, sticky="e")
+        class_prog_bar.grid_remove()
+        self.class_prog_bar = class_prog_bar
+        self.class_prog_status.grid_remove()
+
+        self.poll_classification_progress()
 
         self.apply_permissions()
         self.show_welcome_panel()
@@ -2138,6 +2173,37 @@ class BackupGUI:
 
         self.schedule_dashboard_event_poll()
 
+    def poll_classification_progress(self):
+        """Polling periodico do status da classificacao em segundo plano."""
+        try:
+            status = get_classification_status()
+            running = status.get("running", False)
+            total = status.get("total", 0)
+            done = status.get("done", 0)
+            status_text = status.get("status", "")
+
+            if running and total > 0:
+                self.class_prog_bar["maximum"] = total
+                self.class_prog_bar["value"] = done
+                self.class_prog_status.config(text=status_text)
+                self.class_prog_bar.grid()
+                self.class_prog_status.grid()
+            elif running:
+                self.class_prog_bar["mode"] = "indeterminate"
+                self.class_prog_bar.start(30)
+                self.class_prog_status.config(text=status_text or "Classificando...")
+                self.class_prog_bar.grid()
+                self.class_prog_status.grid()
+            else:
+                self.class_prog_bar["mode"] = "determinate"
+                self.class_prog_bar.stop()
+                self.class_prog_bar.grid_remove()
+                self.class_prog_status.grid_remove()
+
+            self.root.after(500, self.poll_classification_progress)
+        except tk.TclError:
+            pass
+
     def build_footer_text(self):
         latest_backup = self.get_latest_history_entry()
         backup_destination = self.get_current_user_backup_destination()
@@ -2604,30 +2670,22 @@ class BackupGUI:
                 and os.path.isdir(directory)
             ]
             self.save_directories()
-            messagebox.showinfo(
-                "Sucesso",
-                "Diretorios salvos com sucesso!",
-                parent=self.root
-            )
 
             if new_directories:
-                if self.backup_in_progress:
-                    messagebox.showinfo(
-                        "Backup inicial pendente",
-                        (
-                            "As pastas foram salvas, mas ja existe um backup em "
-                            "execucao. Inicie o backup inicial quando a execucao "
-                            "atual terminar."
-                        ),
-                        parent=self.root
-                    )
-                    return
-
-                self.start_backup_execution(
-                    directories=new_directories,
-                    trigger="initial_folder_backup",
-                    backup_name="backup_inicial",
-                    backup_description="Backup inicial automatico de nova pasta monitorada."
+                messagebox.showinfo(
+                    "Sucesso",
+                    (
+                        f"{len(new_directories)} pasta(s) salva(s) com sucesso!\n\n"
+                        "Use o botao 'Realizar Backup' no menu para iniciar "
+                        "o backup das novas pastas manualmente."
+                    ),
+                    parent=self.root
+                )
+            else:
+                messagebox.showinfo(
+                    "Sucesso",
+                    "Diretorios salvos com sucesso!",
+                    parent=self.root
                 )
 
         self.create_dialog_button(buttons, "Adicionar pasta", add_directory).grid(
@@ -6982,7 +7040,12 @@ def start_gui(current_user=None):
         gui = BackupGUI(root, current_user)
         _background_gui = gui
         gui.show_window()
-        root.mainloop()
+
+        try:
+            root.mainloop()
+        except Exception:
+            import traceback
+            traceback.print_exc()
 
         logout_requested = gui.logout_requested
         gui.is_closing = True

@@ -7,6 +7,7 @@ from backup.backup_manager import get_priority_scheduler_check_interval_seconds
 from backup.backup_manager import mark_schedule_executed
 from backup.backup_manager import run_backup_job
 from backup.backup_manager import run_priority_backup_job
+from scanner.scanner import is_shutdown_requested
 
 
 def start_scheduler():
@@ -19,6 +20,10 @@ def start_scheduler():
     )
 
     while True:
+        if is_shutdown_requested():
+            print("Agendador interrompido (shutdown).")
+            break
+
         now = datetime.now()
         priority_check_interval_seconds = get_priority_scheduler_check_interval_seconds()
 

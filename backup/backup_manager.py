@@ -6,6 +6,7 @@ import re
 import shutil
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import zipfile
 from datetime import datetime
 from datetime import timedelta
@@ -21,7 +22,8 @@ HISTORY_PATH = os.path.join(PROJECT_ROOT, "config", "backup_history.json")
 SCHEDULE_PATH = os.path.join(PROJECT_ROOT, "config", "backup_schedule.json")
 PRIORITY_STATE_PATH = os.path.join(PROJECT_ROOT, "config", "priority_backup_state.json")
 ZIP_COMPRESSION_METHOD = zipfile.ZIP_LZMA
-OBJECT_COMPRESSION_LEVEL = 19
+OBJECT_COMPRESSION_LEVEL = 9
+INCREMENTAL_BACKUP_WORKERS = 4  # threads paralelas no backup incremental
 RECOVERABLE_ACTIONS = {"alterado", "excluido"}
 INCREMENTAL_STORAGE_DIRNAME = "backup_storage"
 OBJECTS_DIRNAME = "arquivos_relacionados"
@@ -50,6 +52,9 @@ INTERNAL_IGNORED_PATHS = [
     os.path.join(PROJECT_ROOT, "dataset"),
     os.path.join(PROJECT_ROOT, ".git"),
     os.path.join(PROJECT_ROOT, "__pycache__"),
+    "C:\\XboxGames",
+    "C:\\Windows",
+    "C:\\ProgramData",
 ]
 
 
@@ -873,8 +878,10 @@ def start_background_classification_scan():
     def worker():
         try:
             from scanner.scanner import run_scanner
+            from scanner.scanner import run_classification_background
 
-            run_scanner()
+            run_scanner(classify_files=False)
+            run_classification_background()
         except Exception as error:
             log_backup_decision(
                 "ERROR",
@@ -1269,10 +1276,33 @@ def _get_zstd_decompressor():
 
 
 def read_and_compress_file(source_path):
-    """Lê o arquivo e retorna os bytes comprimidos com zstandard (zstd) nível 19."""
+    """Lê o arquivo e retorna os bytes comprimidos com zstandard (zstd)."""
     with open(source_path, "rb") as source_file:
         raw_data = source_file.read()
     return _get_zstd_compressor().compress(raw_data)
+
+
+def hash_and_compress_file(source_path):
+    """Lê o arquivo uma unica vez, calcula o SHA-256 e ja comprime com zstd.
+
+    Retorna (file_hash, compressed_data) — evita ler o arquivo duas vezes
+    (uma para o hash, outra para a compressao).
+    """
+    hasher = hashlib.sha256()
+    chunks = []
+
+    with open(source_path, "rb", buffering=0) as source_file:
+        while True:
+            chunk = source_file.read(65536)
+            if not chunk:
+                break
+            hasher.update(chunk)
+            chunks.append(chunk)
+
+    file_hash = hasher.hexdigest()
+    raw_data = b"".join(chunks)
+    compressed_data = _get_zstd_compressor().compress(raw_data)
+    return file_hash, compressed_data
 
 
 def decompress_bytes(data):
@@ -1280,12 +1310,14 @@ def decompress_bytes(data):
     return _get_zstd_decompressor().decompress(data)
 
 
-def store_incremental_object(source_path, object_path, backup_encryption=None):
+def store_incremental_object(source_path, object_path, backup_encryption=None, compressed_data=None):
     temporary_path = f"{object_path}.{os.getpid()}.tmp"
 
     try:
-        # Comprimir o arquivo em memória antes de armazenar
-        compressed_data = read_and_compress_file(source_path)
+        # Se o dado comprimido ja foi fornecido (pelo hash_and_compress_file),
+        # usa direto. Senao, le e comprime agora.
+        if compressed_data is None:
+            compressed_data = read_and_compress_file(source_path)
         encryption_metadata = None
 
         if backup_encryption:
@@ -1392,6 +1424,83 @@ def run_incremental_backup(
     if priority_policy:
         log_dev_mode_intervals()
 
+    # --- Pre-computar hashes em paralelo com skip para arquivos inalterados ---
+    # Se o arquivo tem o mesmo tamanho e mesma data de modificacao que o
+    # ultimo backup, pulamos o SHA-256 (muito caro) e reusamos o hash anterior.
+    # Para arquivos novos/modificados, usamos hash_and_compress_file que faz
+    # hash + compressao em uma unica leitura de disco.
+    hash_lock = threading.Lock()
+
+    def _compute_file_hash_and_stat(source_path):
+        try:
+            stat_result = os.stat(source_path)
+            state_key = normalize_path(source_path)
+            idx_entry = index.get("files", {}).get(state_key, {})
+            prev_size = idx_entry.get("size")
+            prev_mtime = idx_entry.get("last_modified_at", "")
+
+            # Se tamanho e mtime batem com o indice, reusa o hash anterior
+            if prev_size is not None and prev_size == stat_result.st_size and prev_mtime:
+                try:
+                    expected_mtime = format_stat_modified_at(stat_result)
+                    if prev_mtime == expected_mtime:
+                        prev_hash = idx_entry.get("last_hash", "")
+                        if prev_hash:
+                            return source_path, stat_result, prev_hash, None, None
+                except Exception:
+                    pass
+
+            # Arquivo modificado ou novo: calcula hash + compressao em 1 leitura
+            # Arquivos muito grandes (>500MB) fazem apenas hash (sem compressao
+            # em paralelo) para evitar MemoryError com multiplos workers.
+            if stat_result.st_size > 524288000:
+                file_hash = calculate_file_hash(source_path)
+                compressed_data = None
+            else:
+                file_hash, compressed_data = hash_and_compress_file(source_path)
+            return source_path, stat_result, file_hash, None, compressed_data
+        except Exception as error:
+            return source_path, None, None, str(error), None
+
+    precomputed = {}
+    precomputed_compressed = {}  # {source_path: compressed_data}
+
+    if total_entries > 0:
+        if progress_callback:
+            progress_callback(0, total_entries, "Analisando arquivos...")
+
+        hash_workers = min(os.cpu_count() or 4, 4, total_entries)
+        done = 0
+
+        with ThreadPoolExecutor(max_workers=hash_workers) as executor:
+            futures = {
+                executor.submit(_compute_file_hash_and_stat, sp): (sp, an)
+                for sp, an in manifest
+            }
+
+            for future in as_completed(futures):
+                sp, an = futures[future]
+                try:
+                    source_path, stat_result, file_hash, error, compressed_data = future.result()
+                except Exception as exc:
+                    source_path, stat_result, file_hash, error, compressed_data = (
+                        sp, None, None, str(exc), None
+                    )
+
+                with hash_lock:
+                    precomputed[source_path] = (stat_result, file_hash, error)
+                    if compressed_data is not None:
+                        precomputed_compressed[source_path] = compressed_data
+                    done += 1
+
+                if progress_callback and (done == total_entries or done % 100 == 0):
+                    progress_callback(
+                        int(done / max(total_entries, 1) * 40),
+                        total_entries,
+                        f"Verificando arquivos: {done}/{total_entries}"
+                    )
+
+    # --- Loop principal (sequencial) ---
     for item_index, (source_path, archive_name) in enumerate(manifest, start=1):
         ensure_not_cancelled(cancel_callback)
         metadata = find_priority_metadata(source_path, archive_name, priority_index)
@@ -1425,10 +1534,10 @@ def run_incremental_backup(
                 f"Arquivo elegivel em intervalo reduzido: {os.path.basename(source_path)}"
             )
 
-        try:
-            stat_result = os.stat(source_path)
-            file_hash = calculate_file_hash(source_path)
-        except OSError as error:
+        # Usa o hash pre-computado em vez de calcular na hora
+        stat_result, file_hash, hash_error = precomputed.get(source_path, (None, None, "desconhecido"))
+
+        if hash_error or stat_result is None:
             entry = build_incremental_snapshot_entry(
                 source_path=source_path,
                 archive_name=archive_name,
@@ -1439,14 +1548,14 @@ def run_incremental_backup(
                 size=0,
                 modified_at="",
                 status="error",
-                error=str(error)
+                error=str(hash_error or "falha ao acessar arquivo")
             )
             files.append(entry)
-            warnings.append({"path": source_path, "error": str(error)})
+            warnings.append({"path": source_path, "error": str(hash_error)})
             increment_status_count(status_counts, "error")
             log_backup_decision(
                 "ERROR",
-                f"Falha ao calcular hash: {source_path} ({error})"
+                f"Falha ao calcular hash: {source_path} ({hash_error})"
             )
 
             if progress_callback:
@@ -1487,10 +1596,12 @@ def run_incremental_backup(
             )
         else:
             try:
+                compressed_data = precomputed_compressed.get(source_path)
                 encryption_metadata = store_incremental_object(
                     source_path,
                     object_abs_path,
                     backup_encryption=backup_encryption,
+                    compressed_data=compressed_data,
                 )
                 status = "stored_new_object"
                 log_backup_decision("INFO", f"Novo objeto armazenado: {source_path}")
@@ -1801,27 +1912,26 @@ def run_backup_job(
 
     if run_scan_first:
         from scanner.scanner import run_scanner
+        from scanner.scanner import run_classification_background
 
         if progress_callback:
-            if first_incremental_backup:
-                progress_callback(5, "Mapeando arquivos do primeiro backup...")
-            else:
-                progress_callback(5, "Executando scanner...")
+            progress_callback(5, "Escaneando diretorios...")
 
+        # Scanner rapido: apenas mapeia arquivos e hashes, sem classificacao
         run_scanner(
             should_cancel=cancel_callback,
             progress_callback=progress_callback,
-            classify_files=not first_incremental_backup,
+            classify_files=False,
         )
 
+        # Classificacao em segundo plano enquanto o backup ja prossegue
+        run_classification_background(config=config)
+
         if progress_callback:
-            if first_incremental_backup:
-                progress_callback(
-                    35,
-                    "Arquivos mapeados. Classificacao sera feita em segundo plano."
-                )
-            else:
-                progress_callback(35, "Scanner concluido.")
+            progress_callback(
+                35,
+                "Arquivos mapeados. Classificacao em segundo plano."
+            )
 
     ensure_not_cancelled(cancel_callback)
 
@@ -1966,14 +2076,18 @@ def run_priority_backup_job(
 
     if run_scan_first:
         from scanner.scanner import run_scanner
+        from scanner.scanner import run_classification_background
 
         if progress_callback:
-            progress_callback(5, "Atualizando classificacao dos arquivos...")
+            progress_callback(5, "Atualizando lista de arquivos...")
 
         run_scanner(
             should_cancel=cancel_callback,
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            classify_files=False,
         )
+
+        run_classification_background(config=config)
 
     ensure_not_cancelled(cancel_callback)
 

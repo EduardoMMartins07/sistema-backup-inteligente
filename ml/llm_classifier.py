@@ -778,9 +778,17 @@ def finalize_result(result):
 def classify_file_importance(file_data, config=None):
     config = config or {}
     rule_result = classify_with_rules(file_data)
+    rule_score = rule_result.get("priority_score", 0)
 
+    # Se as regras ja classificaram como baixa prioridade com score < 30,
+    # pula a chamada LLM: a chance de upgrade e minima e nao justifica o custo.
     if not is_llm_enabled(config):
         return finalize_result(rule_result)
+
+    if rule_score < 30 and rule_result.get("priority") == PRIORITY_LOW:
+        rules_only = dict(rule_result)
+        rules_only["llm_error"] = ""
+        return finalize_result(rules_only)
 
     model = get_gemini_model(config)
     cache_key = build_cache_key(file_data, model)
