@@ -7,6 +7,8 @@ import shutil
 import tempfile
 import threading
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import as_completed
 from datetime import datetime
 from datetime import timedelta
 import zstandard as zstd
@@ -21,7 +23,7 @@ HISTORY_PATH = os.path.join(PROJECT_ROOT, "config", "backup_history.json")
 SCHEDULE_PATH = os.path.join(PROJECT_ROOT, "config", "backup_schedule.json")
 PRIORITY_STATE_PATH = os.path.join(PROJECT_ROOT, "config", "priority_backup_state.json")
 ZIP_COMPRESSION_METHOD = zipfile.ZIP_LZMA
-OBJECT_COMPRESSION_LEVEL = 19
+OBJECT_COMPRESSION_LEVEL = 9
 RECOVERABLE_ACTIONS = {"alterado", "excluido"}
 INCREMENTAL_STORAGE_DIRNAME = "backup_storage"
 OBJECTS_DIRNAME = "arquivos_relacionados"
@@ -34,6 +36,7 @@ PRIORITY_HIGH = "alta"
 DEFAULT_PRIORITY_BACKUP_POLICY_ENABLED = True
 ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
 _BACKUP_ENV_FILE_LOADED = False
+_ZSTD_THREAD_LOCAL = threading.local()
 PRIORITY_INTERVALS = {
     PRIORITY_LOW: timedelta(days=7),
     PRIORITY_MEDIUM: timedelta(days=2),
@@ -1256,9 +1259,13 @@ def read_storage_object_bytes(object_abs_path, encryption_metadata, user_master_
 
 def _get_zstd_compressor():
     """Retorna (e cacheia) um compressor zstd com o nível configurado."""
-    if not hasattr(_get_zstd_compressor, "_cached"):
-        _get_zstd_compressor._cached = zstd.ZstdCompressor(level=OBJECT_COMPRESSION_LEVEL)
-    return _get_zstd_compressor._cached
+    compressor = getattr(_ZSTD_THREAD_LOCAL, "compressor", None)
+
+    if compressor is None:
+        compressor = zstd.ZstdCompressor(level=OBJECT_COMPRESSION_LEVEL)
+        _ZSTD_THREAD_LOCAL.compressor = compressor
+
+    return compressor
 
 
 def _get_zstd_decompressor():
@@ -1269,7 +1276,7 @@ def _get_zstd_decompressor():
 
 
 def read_and_compress_file(source_path):
-    """Lê o arquivo e retorna os bytes comprimidos com zstandard (zstd) nível 19."""
+    """Lê o arquivo e retorna os bytes comprimidos com zstandard (zstd)."""
     with open(source_path, "rb") as source_file:
         raw_data = source_file.read()
     return _get_zstd_compressor().compress(raw_data)
@@ -1315,6 +1322,14 @@ def store_incremental_object(source_path, object_path, backup_encryption=None):
             except OSError:
                 pass
         raise
+
+
+def get_incremental_object_worker_count(total_objects):
+    if total_objects <= 1:
+        return 1
+
+    available_cpus = os.cpu_count() or 2
+    return min(4, total_objects, max(2, available_cpus))
 
 
 def build_not_eligible_snapshot_entry(
@@ -1392,6 +1407,78 @@ def run_incremental_backup(
     if priority_policy:
         log_dev_mode_intervals()
 
+    result_entries = [None] * total_entries
+    pending_store_items = {}
+    pending_store_jobs = {}
+    completed_entries = 0
+
+    def record_progress(archive_name):
+        nonlocal completed_entries
+        completed_entries += 1
+
+        if progress_callback:
+            progress_callback(completed_entries, total_entries, archive_name)
+
+    def record_entry(item_index, archive_name, entry):
+        result_entries[item_index - 1] = entry
+        increment_status_count(status_counts, entry["status"])
+        record_progress(archive_name)
+
+    def record_success_item(item, encryption_metadata):
+        update_object_index_entry(
+            index,
+            item["file_hash"],
+            item["object_path"],
+            item["source_path"],
+            item["stat_result"].st_size,
+            now,
+            encryption=encryption_metadata,
+        )
+        update_file_index_entry(
+            index,
+            item["source_path"],
+            item["archive_name"],
+            item["file_hash"],
+            item["object_path"],
+            item["priority"],
+            item["stat_result"],
+            now,
+            encryption=encryption_metadata,
+        )
+        entry = build_incremental_snapshot_entry(
+            source_path=item["source_path"],
+            archive_name=item["archive_name"],
+            file_hash=item["file_hash"],
+            object_path=item["object_path"],
+            priority=item["priority"],
+            score=item["score"],
+            size=item["stat_result"].st_size,
+            modified_at=format_stat_modified_at(item["stat_result"]),
+            status=item["status"],
+            encryption=encryption_metadata,
+        )
+        record_entry(item["item_index"], item["archive_name"], entry)
+
+    def record_store_error(item, error):
+        entry = build_incremental_snapshot_entry(
+            source_path=item["source_path"],
+            archive_name=item["archive_name"],
+            file_hash=item["file_hash"],
+            object_path=item["object_path"],
+            priority=item["priority"],
+            score=item["score"],
+            size=item["stat_result"].st_size,
+            modified_at=format_stat_modified_at(item["stat_result"]),
+            status="error",
+            error=str(error)
+        )
+        warnings.append({"path": item["source_path"], "error": str(error)})
+        log_backup_decision(
+            "ERROR",
+            f"Falha ao armazenar objeto: {item['source_path']} ({error})"
+        )
+        record_entry(item["item_index"], item["archive_name"], entry)
+
     for item_index, (source_path, archive_name) in enumerate(manifest, start=1):
         ensure_not_cancelled(cancel_callback)
         metadata = find_priority_metadata(source_path, archive_name, priority_index)
@@ -1407,15 +1494,11 @@ def run_incremental_backup(
                 metadata,
                 index_entry
             )
-            files.append(entry)
-            increment_status_count(status_counts, entry["status"])
             log_backup_decision(
                 "INFO",
                 f"Arquivo ignorado, ainda nao elegivel pela politica: {source_path}"
             )
-
-            if progress_callback:
-                progress_callback(item_index, total_entries, archive_name)
+            record_entry(item_index, archive_name, entry)
 
             continue
 
@@ -1441,16 +1524,12 @@ def run_incremental_backup(
                 status="error",
                 error=str(error)
             )
-            files.append(entry)
             warnings.append({"path": source_path, "error": str(error)})
-            increment_status_count(status_counts, "error")
             log_backup_decision(
                 "ERROR",
                 f"Falha ao calcular hash: {source_path} ({error})"
             )
-
-            if progress_callback:
-                progress_callback(item_index, total_entries, archive_name)
+            record_entry(item_index, archive_name, entry)
 
             continue
 
@@ -1472,6 +1551,20 @@ def run_incremental_backup(
                 "INFO",
                 f"Arquivo sem alteracao, mantendo referencia: {source_path}"
             )
+            record_success_item(
+                {
+                    "item_index": item_index,
+                    "source_path": source_path,
+                    "archive_name": archive_name,
+                    "file_hash": file_hash,
+                    "object_path": object_path,
+                    "priority": priority,
+                    "score": score,
+                    "stat_result": stat_result,
+                    "status": status,
+                },
+                encryption_metadata,
+            )
         elif os.path.exists(object_abs_path):
             status = "referenced_existing_object"
             skipped_duplicates.append(
@@ -1485,78 +1578,95 @@ def run_incremental_backup(
                 "INFO",
                 f"Hash ja existente, criando apenas referencia: {source_path}"
             )
+            record_success_item(
+                {
+                    "item_index": item_index,
+                    "source_path": source_path,
+                    "archive_name": archive_name,
+                    "file_hash": file_hash,
+                    "object_path": object_path,
+                    "priority": priority,
+                    "score": score,
+                    "stat_result": stat_result,
+                    "status": status,
+                },
+                encryption_metadata,
+            )
         else:
-            try:
-                encryption_metadata = store_incremental_object(
-                    source_path,
-                    object_abs_path,
-                    backup_encryption=backup_encryption,
+            status = "stored_new_object"
+
+            if file_hash in pending_store_jobs:
+                status = "referenced_existing_object"
+                skipped_duplicates.append(
+                    {
+                        "path": source_path,
+                        "hash": file_hash,
+                        "reason": "Hash ja existente no armazenamento incremental."
+                    }
                 )
-                status = "stored_new_object"
-                log_backup_decision("INFO", f"Novo objeto armazenado: {source_path}")
-            except OSError as error:
-                entry = build_incremental_snapshot_entry(
-                    source_path=source_path,
-                    archive_name=archive_name,
-                    file_hash=file_hash,
-                    object_path=object_path,
-                    priority=priority,
-                    score=score,
-                    size=stat_result.st_size,
-                    modified_at=format_stat_modified_at(stat_result),
-                    status="error",
-                    error=str(error)
-                )
-                files.append(entry)
-                warnings.append({"path": source_path, "error": str(error)})
-                increment_status_count(status_counts, "error")
                 log_backup_decision(
-                    "ERROR",
-                    f"Falha ao armazenar objeto: {source_path} ({error})"
+                    "INFO",
+                    f"Hash ja pendente, criando apenas referencia: {source_path}"
                 )
+            else:
+                pending_store_jobs[file_hash] = {
+                    "source_path": source_path,
+                    "object_abs_path": object_abs_path,
+                }
 
-                if progress_callback:
-                    progress_callback(item_index, total_entries, archive_name)
+            pending_store_items.setdefault(file_hash, []).append(
+                {
+                    "item_index": item_index,
+                    "source_path": source_path,
+                    "archive_name": archive_name,
+                    "file_hash": file_hash,
+                    "object_path": object_path,
+                    "priority": priority,
+                    "score": score,
+                    "stat_result": stat_result,
+                    "status": status,
+                }
+            )
 
-                continue
+    ensure_not_cancelled(cancel_callback)
 
-        update_object_index_entry(
-            index,
-            file_hash,
-            object_path,
-            source_path,
-            stat_result.st_size,
-            now,
-            encryption=encryption_metadata,
-        )
-        update_file_index_entry(
-            index,
-            source_path,
-            archive_name,
-            file_hash,
-            object_path,
-            priority,
-            stat_result,
-            now,
-            encryption=encryption_metadata,
-        )
-        entry = build_incremental_snapshot_entry(
-            source_path=source_path,
-            archive_name=archive_name,
-            file_hash=file_hash,
-            object_path=object_path,
-            priority=priority,
-            score=score,
-            size=stat_result.st_size,
-            modified_at=format_stat_modified_at(stat_result),
-            status=status,
-            encryption=encryption_metadata,
-        )
-        files.append(entry)
-        increment_status_count(status_counts, status)
+    if pending_store_jobs:
+        worker_count = get_incremental_object_worker_count(len(pending_store_jobs))
 
-        if progress_callback:
-            progress_callback(item_index, total_entries, archive_name)
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_to_hash = {
+                executor.submit(
+                    store_incremental_object,
+                    job["source_path"],
+                    job["object_abs_path"],
+                    backup_encryption=backup_encryption,
+                ): file_hash
+                for file_hash, job in pending_store_jobs.items()
+            }
+
+            for future in as_completed(future_to_hash):
+                ensure_not_cancelled(cancel_callback)
+                file_hash = future_to_hash[future]
+                items = pending_store_items.get(file_hash, [])
+
+                try:
+                    encryption_metadata = future.result()
+                    for item in items:
+                        if item["status"] == "stored_new_object":
+                            log_backup_decision(
+                                "INFO",
+                                f"Novo objeto armazenado: {item['source_path']}"
+                            )
+                        record_success_item(item, encryption_metadata)
+                except OSError as error:
+                    for item in items:
+                        record_store_error(item, error)
+
+    files = [
+        entry
+        for entry in result_entries
+        if entry is not None
+    ]
 
     refresh_object_reference_counts(index)
     snapshot = {
@@ -1811,17 +1921,14 @@ def run_backup_job(
         run_scanner(
             should_cancel=cancel_callback,
             progress_callback=progress_callback,
-            classify_files=not first_incremental_backup,
+            classify_files=False,
         )
 
         if progress_callback:
-            if first_incremental_backup:
-                progress_callback(
-                    35,
-                    "Arquivos mapeados. Classificacao sera feita em segundo plano."
-                )
-            else:
-                progress_callback(35, "Scanner concluido.")
+            progress_callback(
+                35,
+                "Arquivos mapeados. Classificacao sera feita em segundo plano."
+            )
 
     ensure_not_cancelled(cancel_callback)
 
@@ -1917,7 +2024,7 @@ def run_backup_job(
     if progress_callback:
         progress_callback(100, "Backup incremental concluido.")
 
-    if run_scan_first and first_incremental_backup:
+    if run_scan_first:
         start_background_classification_scan()
 
     history_entry["warnings"] = incremental_result["warnings"]

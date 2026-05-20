@@ -2596,39 +2596,10 @@ class BackupGUI:
             refresh_directory_table()
 
         def save_and_close():
-            new_directories = [
-                directory
-                for directory in self.directories
-                if os.path.normcase(os.path.abspath(directory))
-                not in original_directories
-                and os.path.isdir(directory)
-            ]
-            self.save_directories()
-            messagebox.showinfo(
-                "Sucesso",
-                "Diretorios salvos com sucesso!",
+            self.save_directory_manager_changes(
+                original_directories,
                 parent=self.root
             )
-
-            if new_directories:
-                if self.backup_in_progress:
-                    messagebox.showinfo(
-                        "Backup inicial pendente",
-                        (
-                            "As pastas foram salvas, mas ja existe um backup em "
-                            "execucao. Inicie o backup inicial quando a execucao "
-                            "atual terminar."
-                        ),
-                        parent=self.root
-                    )
-                    return
-
-                self.start_backup_execution(
-                    directories=new_directories,
-                    trigger="initial_folder_backup",
-                    backup_name="backup_inicial",
-                    backup_description="Backup inicial automatico de nova pasta monitorada."
-                )
 
         self.create_dialog_button(buttons, "Adicionar pasta", add_directory).grid(
             row=0, column=0, padx=6
@@ -2639,6 +2610,10 @@ class BackupGUI:
         self.create_dialog_button(buttons, "Salvar", save_and_close).grid(
             row=0, column=2, padx=6
         )
+
+    def save_directory_manager_changes(self, original_directories=None, parent=None):
+        self.save_directories()
+        messagebox.showinfo("Salvo", "Salvo", parent=parent or self.root)
 
     def create_dialog_button(self, parent, text, command):
         button = tk.Button(

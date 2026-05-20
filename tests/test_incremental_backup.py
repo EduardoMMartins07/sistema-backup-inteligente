@@ -1,6 +1,7 @@
 import json
 import json
 import os
+import threading
 import tempfile
 import unittest
 import zipfile
@@ -900,10 +901,37 @@ class IncrementalBackupTests(unittest.TestCase):
 
         run_scanner_mock.assert_called_once()
         self.assertIs(
-            True,
+            False,
             run_scanner_mock.call_args.kwargs.get("classify_files")
         )
-        background_scan_mock.assert_not_called()
+        background_scan_mock.assert_called_once()
+
+    def test_incremental_backup_stores_new_objects_in_worker_threads(self):
+        first = self.write_file("A.txt", "a")
+        second = self.write_file("B.txt", "b")
+        manifest = self.manifest_for(first, second)
+        worker_names = []
+        both_workers_started = threading.Event()
+        original_store = backup_manager.store_incremental_object
+
+        def store_with_thread_tracking(*args, **kwargs):
+            worker_names.append(threading.current_thread().name)
+
+            if len(worker_names) >= 2:
+                both_workers_started.set()
+            else:
+                both_workers_started.wait(timeout=0.5)
+
+            return original_store(*args, **kwargs)
+
+        with patch(
+            "backup.backup_manager.store_incremental_object",
+            side_effect=store_with_thread_tracking
+        ):
+            self.run_backup(manifest)
+
+        self.assertGreaterEqual(len(set(worker_names)), 2)
+        self.assertNotIn(threading.current_thread().name, worker_names)
 
     def test_backup_job_separates_snapshots_by_date(self):
         backup_manager.HISTORY_PATH = str(self.root / "config" / "backup_history.json")
