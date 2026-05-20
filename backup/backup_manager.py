@@ -7,8 +7,7 @@ import shutil
 import tempfile
 import threading
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from datetime import timedelta
 import zstandard as zstd
@@ -53,6 +52,9 @@ INTERNAL_IGNORED_PATHS = [
     os.path.join(PROJECT_ROOT, "dataset"),
     os.path.join(PROJECT_ROOT, ".git"),
     os.path.join(PROJECT_ROOT, "__pycache__"),
+    "C:\\XboxGames",
+    "C:\\Windows",
+    "C:\\ProgramData",
 ]
 
 
@@ -876,8 +878,10 @@ def start_background_classification_scan():
     def worker():
         try:
             from scanner.scanner import run_scanner
+            from scanner.scanner import run_classification_background
 
-            run_scanner()
+            run_scanner(classify_files=False)
+            run_classification_background()
         except Exception as error:
             log_backup_decision(
                 "ERROR",
@@ -1282,17 +1286,42 @@ def read_and_compress_file(source_path):
     return _get_zstd_compressor().compress(raw_data)
 
 
+def hash_and_compress_file(source_path):
+    """Lê o arquivo uma unica vez, calcula o SHA-256 e ja comprime com zstd.
+
+    Retorna (file_hash, compressed_data) — evita ler o arquivo duas vezes
+    (uma para o hash, outra para a compressao).
+    """
+    hasher = hashlib.sha256()
+    chunks = []
+
+    with open(source_path, "rb", buffering=0) as source_file:
+        while True:
+            chunk = source_file.read(65536)
+            if not chunk:
+                break
+            hasher.update(chunk)
+            chunks.append(chunk)
+
+    file_hash = hasher.hexdigest()
+    raw_data = b"".join(chunks)
+    compressed_data = _get_zstd_compressor().compress(raw_data)
+    return file_hash, compressed_data
+
+
 def decompress_bytes(data):
     """Descomprime dados que foram comprimidos com zstandard (zstd)."""
     return _get_zstd_decompressor().decompress(data)
 
 
-def store_incremental_object(source_path, object_path, backup_encryption=None):
+def store_incremental_object(source_path, object_path, backup_encryption=None, compressed_data=None):
     temporary_path = f"{object_path}.{os.getpid()}.tmp"
 
     try:
-        # Comprimir o arquivo em memória antes de armazenar
-        compressed_data = read_and_compress_file(source_path)
+        # Se o dado comprimido ja foi fornecido (pelo hash_and_compress_file),
+        # usa direto. Senao, le e comprime agora.
+        if compressed_data is None:
+            compressed_data = read_and_compress_file(source_path)
         encryption_metadata = None
 
         if backup_encryption:
@@ -1913,11 +1942,9 @@ def run_backup_job(
         from scanner.scanner import run_scanner
 
         if progress_callback:
-            if first_incremental_backup:
-                progress_callback(5, "Mapeando arquivos do primeiro backup...")
-            else:
-                progress_callback(5, "Executando scanner...")
+            progress_callback(5, "Escaneando diretorios...")
 
+        # Scanner rapido: apenas mapeia arquivos e hashes, sem classificacao
         run_scanner(
             should_cancel=cancel_callback,
             progress_callback=progress_callback,
@@ -2073,14 +2100,18 @@ def run_priority_backup_job(
 
     if run_scan_first:
         from scanner.scanner import run_scanner
+        from scanner.scanner import run_classification_background
 
         if progress_callback:
-            progress_callback(5, "Atualizando classificacao dos arquivos...")
+            progress_callback(5, "Atualizando lista de arquivos...")
 
         run_scanner(
             should_cancel=cancel_callback,
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            classify_files=False,
         )
+
+        run_classification_background(config=config)
 
     ensure_not_cancelled(cancel_callback)
 

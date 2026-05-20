@@ -1,6 +1,8 @@
 import json
 import os
+import threading
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 from backup.backup_manager import BackupCancelledError
@@ -33,6 +35,44 @@ CLASSIFICATION_FIELDS = [
     "decision_tree",
     "important",
 ]
+
+# Estado compartilhado da classificacao em segundo plano.
+# O scanner atualiza; a GUI le para exibir a barra de progresso.
+CLASSIFICATION_STATUS = {
+    "running": False,
+    "total": 0,
+    "done": 0,
+    "status": "",
+}
+_CLASSIFICATION_STATUS_LOCK = threading.Lock()
+_CLASSIFICATION_RUN_LOCK = threading.Lock()
+
+
+def _update_classification_status(**kwargs):
+    """Atualiza o CLASSIFICATION_STATUS de forma atomica (thread-safe)."""
+    with _CLASSIFICATION_STATUS_LOCK:
+        CLASSIFICATION_STATUS.update(**kwargs)
+
+
+def get_classification_status():
+    """Retorna uma copia do CLASSIFICATION_STATUS (thread-safe)."""
+    with _CLASSIFICATION_STATUS_LOCK:
+        return dict(CLASSIFICATION_STATUS)
+
+# Evento global de shutdown: quando setado, scanners e classificadores
+# em segundo plano devem parar o mais rapido possivel.
+_SHUTDOWN_EVENT = None
+
+
+def set_shutdown_event(event):
+    """Registra o evento de shutdown para ser verificado pelas threads."""
+    global _SHUTDOWN_EVENT
+    _SHUTDOWN_EVENT = event
+
+
+def is_shutdown_requested():
+    """Retorna True se o shutdown foi solicitado."""
+    return _SHUTDOWN_EVENT is not None and _SHUTDOWN_EVENT.is_set()
 
 
 def load_json(path, default):
@@ -117,6 +157,8 @@ def get_file_type(extension):
 
 
 def ensure_not_cancelled(should_cancel=None):
+    if is_shutdown_requested():
+        raise BackupCancelledError("Sistema encerrado pelo usuario.")
     if should_cancel and should_cancel():
         raise BackupCancelledError("Backup cancelado pelo usuario.")
 
@@ -221,26 +263,64 @@ def annotate_duplicates(files):
 
 def apply_classification(files, config=None, should_cancel=None, progress_callback=None):
     total_files = len(files)
+    if total_files == 0:
+        _update_classification_status(running=False, total=0, done=0, status="")
+        return files
 
-    for index, file_data in enumerate(files, start=1):
+    _update_classification_status(
+        running=True, total=total_files, done=0,
+        status=f"Classificando {total_files} arquivo(s)..."
+    )
+
+    # Define o numero de workers: no maximo 8, no minimo 2, mas nunca
+    # maior que a quantidade de arquivos para evitar threads ociosas.
+    max_workers = min(max(2, os.cpu_count() or 4), 8, total_files)
+    classified = 0
+    lock = threading.Lock()
+
+    def _update_status(done, total):
+        _update_classification_status(
+            done=done, total=total,
+            status=f"Classificando {done}/{total} arquivos..."
+        )
+
+    def process_file(file_data):
+        """Classifica um unico arquivo (thread-safe)."""
         ensure_not_cancelled(should_cancel)
         classification = classify_file_importance(file_data, config=config)
 
         for field in CLASSIFICATION_FIELDS:
             value = classification.get(field, "")
-
             if field in {"priority_reason", "llm_error"}:
                 value = str(value)[:500]
-
             file_data[field] = value
 
-        if progress_callback and (index == total_files or index % 10 == 0):
-            percent = 30 + int((index / max(total_files, 1)) * 5)
-            progress_callback(
-                min(percent, 35),
-                f"Classificando arquivos {index}/{total_files}"
-            )
+        return file_data
 
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(process_file, f): f for f in files}
+
+            for future in as_completed(futures):
+                ensure_not_cancelled(should_cancel)
+
+                with lock:
+                    classified += 1
+                    _update_status(classified, total_files)
+
+                if progress_callback and (classified == total_files or classified % 10 == 0):
+                    percent = 30 + int((classified / max(total_files, 1)) * 5)
+                    progress_callback(
+                        min(percent, 35),
+                        f"Classificando arquivos {classified}/{total_files}"
+                    )
+    except (KeyboardInterrupt, SystemExit):
+        pass
+
+    _update_classification_status(
+        running=False, done=total_files, total=total_files,
+        status=f"Classificacao concluida: {total_files} arquivos."
+    )
     return files
 
 
@@ -273,7 +353,11 @@ def scan_directory(
     if is_path_ignored(normalized_directory):
         return results
 
-    for root, dirs, files in os.walk(normalized_directory):
+    def _walk_error(os_error):
+        """Ignora diretorios sem permissao de leitura."""
+        print(f"Aviso: sem acesso a {os_error.filename} - ignorando.")
+
+    for root, dirs, files in os.walk(normalized_directory, onerror=_walk_error):
         ensure_not_cancelled(should_cancel)
 
         dirs[:] = [
@@ -406,6 +490,111 @@ def run_scanner(should_cancel=None, progress_callback=None, classify_files=True)
 
     if progress_callback:
         progress_callback(35, f"Scanner concluiu {len(df)} arquivo(s).")
+
+
+def run_classification_background(config=None):
+    """Re-classifica o dataset atual em segundo plano (thread separada).
+
+    Le o CSV ja salvo pelo scanner. Arquivos que ja possuem classificacao
+    valida (mesmo file_hash) no dataset anterior sao reaproveitados —
+    apenas arquivos novos ou modificados sao classificados.
+
+    Usa um lock para garantir que apenas uma classificacao rode por vez —
+    se outra for solicitada enquanto uma ja estiver em andamento, ela e
+    ignorada silenciosamente.
+    """
+    if not _CLASSIFICATION_RUN_LOCK.acquire(blocking=False):
+        # Ja existe uma classificacao rodando, ignora esta solicitacao
+        return None
+
+    PREVIOUS_DATASET_PATH = DATASET_PATH.replace(".csv", "_previous.csv")
+
+    def _load_previous_index():
+        """Carrega o dataset anterior e indexa por file_hash para reuso."""
+        if not os.path.exists(PREVIOUS_DATASET_PATH):
+            return {}
+        try:
+            prev_df = pd.read_csv(PREVIOUS_DATASET_PATH)
+            index = {}
+            for _, row in prev_df.iterrows():
+                fhash = str(row.get("file_hash", "")).strip()
+                if fhash and str(row.get("priority", "")).strip():
+                    index[fhash] = row.to_dict()
+            return index
+        except Exception:
+            return {}
+
+    def _classify_worker():
+        try:
+            if not os.path.exists(DATASET_PATH):
+                return
+
+            df = pd.read_csv(DATASET_PATH)
+            if df.empty:
+                return
+
+            records = df.to_dict(orient="records")
+            _config = config or load_config()
+
+            # Indexa classificacoes anteriores por hash
+            previous_index = _load_previous_index()
+            pending = []
+            reused = 0
+
+            for rec in records:
+                fhash = str(rec.get("file_hash", "")).strip()
+                prev = previous_index.get(fhash)
+
+                if prev and str(prev.get("priority", "")).strip():
+                    # Reaproveita classificacao anterior
+                    for field in CLASSIFICATION_FIELDS:
+                        rec[field] = prev.get(field, "")
+                    reused += 1
+                else:
+                    # Arquivo novo ou modificado: precisa classificar
+                    pending.append(rec)
+
+            if pending:
+                if is_shutdown_requested():
+                    print("Classificacao em segundo plano cancelada (shutdown).")
+                    return
+
+                print(
+                    f"Classificacao em segundo plano: "
+                    f"{len(pending)} pendente(s), {reused} reaproveitado(s)..."
+                )
+                apply_classification(pending, config=_config)
+            else:
+                print(
+                    f"Classificacao em segundo plano: "
+                    f"todos os {reused} arquivos ja estao classificados."
+                )
+                _update_classification_status(
+                    running=False, total=reused, done=reused,
+                    status=f"Classificacao concluida: {reused} arquivos."
+                )
+
+            # Salva o dataset atualizado
+            pd.DataFrame(records).to_csv(DATASET_PATH, index=False)
+
+            # Salva copia com classificacoes para reuso na proxima execucao
+            try:
+                pd.DataFrame(records).to_csv(PREVIOUS_DATASET_PATH, index=False)
+            except Exception:
+                pass
+
+            if pending:
+                print("Classificacao em segundo plano concluida.")
+        except (KeyboardInterrupt, SystemExit):
+            pass
+        except Exception as error:
+            print(f"Erro na classificacao em segundo plano: {error}")
+        finally:
+            _CLASSIFICATION_RUN_LOCK.release()
+
+    thread = threading.Thread(target=_classify_worker, daemon=True, name="bg-classifier")
+    thread.start()
+    return thread
 
 
 if __name__ == "__main__":
