@@ -99,6 +99,21 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual("dudu", history[0]["user"])
         self.assertIn("disk full", history[0]["backup_description"])
 
+    def test_scheduled_backup_is_skipped_when_manual_backup_is_running(self):
+        self.write_schedule()
+        now = datetime(2026, 5, 20, 8, 30, 0)
+        acquired = backup_manager._BACKUP_EXECUTION_LOCK.acquire(blocking=False)
+        self.addCleanup(
+            lambda: backup_manager._BACKUP_EXECUTION_LOCK.release()
+            if acquired and backup_manager._BACKUP_EXECUTION_LOCK.locked()
+            else None
+        )
+
+        with patch.object(scheduler, "run_backup_job") as run_backup:
+            self.assertIsNone(scheduler.execute_scheduled_backup_once(now))
+
+        run_backup.assert_not_called()
+
     def test_operator_can_see_legacy_system_scheduled_backups(self):
         current_user = {
             "username": "dudu",
@@ -113,6 +128,29 @@ class SchedulerTests(unittest.TestCase):
         }
 
         self.assertTrue(can_view_backup_entry(current_user, entry))
+
+    def test_scheduler_exits_as_soon_as_shutdown_wait_is_triggered(self):
+        with patch.object(scheduler, "is_shutdown_requested", return_value=False):
+            with patch.object(scheduler, "execute_scheduled_backup_once") as execute:
+                with patch.object(
+                    scheduler,
+                    "is_priority_backup_policy_enabled",
+                    return_value=False
+                ):
+                    with patch.object(
+                        scheduler,
+                        "get_priority_scheduler_check_interval_seconds",
+                        return_value=600
+                    ):
+                        with patch.object(
+                            scheduler,
+                            "wait_for_shutdown",
+                            return_value=True
+                        ) as wait_for_shutdown:
+                            scheduler.start_scheduler()
+
+        execute.assert_called_once()
+        wait_for_shutdown.assert_called_once_with(20)
 
 
 if __name__ == "__main__":

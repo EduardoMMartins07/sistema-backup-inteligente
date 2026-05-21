@@ -1,5 +1,6 @@
 import hashlib
 import csv
+import gzip
 import json
 import os
 import re
@@ -36,6 +37,7 @@ DEFAULT_PRIORITY_BACKUP_POLICY_ENABLED = True
 ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
 _BACKUP_ENV_FILE_LOADED = False
 _ZSTD_THREAD_LOCAL = threading.local()
+_BACKUP_EXECUTION_LOCK = threading.Lock()
 PRIORITY_INTERVALS = {
     PRIORITY_LOW: timedelta(days=7),
     PRIORITY_MEDIUM: timedelta(days=2),
@@ -60,6 +62,34 @@ INTERNAL_IGNORED_PATHS = [
 
 class BackupCancelledError(Exception):
     pass
+
+
+def is_backup_job_running():
+    return _BACKUP_EXECUTION_LOCK.locked()
+
+
+def backup_job_guard(skip_when_busy=False):
+    def decorator(function):
+        def wrapper(*args, **kwargs):
+            if not _BACKUP_EXECUTION_LOCK.acquire(blocking=False):
+                message = "Outro backup ja esta em andamento. Aguarde a conclusao antes de iniciar outro."
+
+                if skip_when_busy:
+                    return {
+                        "skipped": True,
+                        "reason": message,
+                    }
+
+                raise ValueError(message)
+
+            try:
+                return function(*args, **kwargs)
+            finally:
+                _BACKUP_EXECUTION_LOCK.release()
+
+        return wrapper
+
+    return decorator
 
 
 def normalize_path(path):
@@ -1192,6 +1222,68 @@ def get_object_encryption_metadata(index, file_hash):
     return metadata if isinstance(metadata, dict) else None
 
 
+def get_snapshot_index_path(storage_root, snapshot):
+    index_path = snapshot.get("index_path", "")
+
+    if index_path:
+        if os.path.isabs(index_path):
+            return normalize_path(index_path)
+
+        return normalize_path(os.path.join(storage_root, index_path))
+
+    return os.path.join(storage_root, INDEX_FILENAME)
+
+
+def load_snapshot_incremental_index(storage_root, snapshot):
+    index_path = get_snapshot_index_path(storage_root, snapshot)
+
+    if not index_path or not os.path.exists(index_path):
+        return build_default_incremental_index()
+
+    return normalize_incremental_index(
+        load_json(index_path, build_default_incremental_index())
+    )
+
+
+def resolve_file_encryption_metadata(file_data, index=None):
+    metadata = file_data.get("encryption")
+
+    if isinstance(metadata, dict):
+        return metadata
+
+    if not isinstance(index, dict):
+        return None
+
+    file_hash = file_data.get("hash") or file_data.get("file_hash", "")
+    metadata = get_object_encryption_metadata(index, file_hash)
+
+    if isinstance(metadata, dict):
+        return metadata
+
+    archive_name = normalize_archive_name(file_data.get("archive_name", ""))
+    source_path = normalize_path(file_data.get("source_path") or file_data.get("original_path", ""))
+
+    for indexed_file in index.get("files", {}).values():
+        if file_hash and indexed_file.get("last_hash") != file_hash:
+            continue
+
+        indexed_archive_name = normalize_archive_name(indexed_file.get("archive_name", ""))
+        indexed_source_path = normalize_path(indexed_file.get("source_path", ""))
+
+        if archive_name and indexed_archive_name and archive_name != indexed_archive_name:
+            continue
+
+        if source_path and indexed_source_path and source_path != indexed_source_path:
+            continue
+
+        metadata = indexed_file.get("encryption")
+
+        if isinstance(metadata, dict):
+            return metadata
+
+    return None
+
+
 def decrypt_storage_object_to_path(object_abs_path, target_path, encryption_metadata, user_master_key):
     if not encryption_metadata:
         with open(object_abs_path, "rb") as source_file:
@@ -1310,7 +1402,10 @@ def hash_and_compress_file(source_path):
 
 
 def decompress_bytes(data):
-    """Descomprime dados que foram comprimidos com zstandard (zstd)."""
+    """Descomprime objetos incrementais novos (zstd) e legados (gzip)."""
+    if data.startswith(b"\x1f\x8b"):
+        return gzip.decompress(data)
+
     return _get_zstd_decompressor().decompress(data)
 
 
@@ -1904,6 +1999,78 @@ def append_history(entry):
     save_json(HISTORY_PATH, history[-50:])
 
 
+def sync_history_entry_to_cloud(history_entry, progress_callback=None):
+    try:
+        from cloud import aws_s3_service
+
+        return aws_s3_service.sync_backup_to_s3(
+            history_entry,
+            progress_callback=progress_callback,
+        )
+    except Exception as error:
+        try:
+            from cloud import aws_s3_service
+
+            return aws_s3_service.build_failure_result(
+                history_entry,
+                aws_s3_service.load_cloud_settings(),
+                error,
+            )
+        except Exception:
+            return {
+                "cloud_provider": "AWS S3",
+                "cloud_bucket": "",
+                "cloud_snapshot_key": "",
+                "cloud_storage_prefix": "",
+                "cloud_sync_status": "falhou",
+                "cloud_synced_at": "",
+                "cloud_error_message": str(error)[:180],
+            }
+
+
+def history_entry_matches_snapshot_path(entry, snapshot_path):
+    if not isinstance(entry, dict) or not snapshot_path:
+        return False
+
+    target_path = normalize_path(snapshot_path)
+
+    for key in ("snapshot_path", "backup_path"):
+        candidate = entry.get(key)
+
+        if candidate and normalize_path(candidate) == target_path:
+            return True
+
+    return False
+
+
+def ensure_cloud_backup_available(snapshot_path):
+    if not snapshot_path:
+        return False
+
+    for entry in reversed(load_history()):
+        if not history_entry_matches_snapshot_path(entry, snapshot_path):
+            continue
+
+        if entry.get("cloud_sync_status") != "sincronizado":
+            return False
+
+        try:
+            from cloud import aws_s3_service
+
+            result = aws_s3_service.download_backup_from_s3(entry)
+        except Exception as error:
+            log_backup_decision(
+                "ERROR",
+                f"Falha ao baixar backup da nuvem: {error}"
+            )
+            return False
+
+        return result.get("cloud_sync_status") == "sincronizado"
+
+    return False
+
+
+@backup_job_guard(skip_when_busy=False)
 def run_backup_job(
     directories=None,
     backup_destination=None,
@@ -1972,12 +2139,12 @@ def run_backup_job(
             return
 
         if total <= 0:
-            progress_callback(95, "Finalizando backup incremental...")
+            progress_callback(88, "Finalizando backup incremental...")
             return
 
-        percent = 40 + int((processed / total) * 55)
+        percent = 40 + int((processed / total) * 48)
         progress_callback(
-            min(percent, 95),
+            min(percent, 88),
             f"Processando objetos: {processed}/{total}"
         )
 
@@ -1998,15 +2165,39 @@ def run_backup_job(
     current_snapshot = incremental_result["file_snapshot"]
     file_changes = build_file_changes(previous_snapshot, current_snapshot)
     completed_at = started_at
-    encrypted_archive = create_encrypted_snapshot_archive(
-        incremental_result["snapshot_path"],
-        backup_destination,
-        user_master_key,
-        now=completed_at,
-        backup_name=backup_name,
-        user_id=effective_username,
-        company_id=effective_company_id,
-    ) if user_master_key else {}
+    encrypted_archive = {}
+
+    if user_master_key:
+        if progress_callback:
+            progress_callback(89, "Gerando pacote criptografado do backup...")
+
+        def on_archive_progress(processed, total, current_entry):
+            if not progress_callback:
+                return
+
+            if total <= 0:
+                progress_callback(94, "Criptografando pacote do backup...")
+                return
+
+            percent = 89 + int((processed / total) * 5)
+            progress_callback(
+                min(percent, 94),
+                f"Gerando pacote criptografado: {processed}/{total}"
+            )
+
+        encrypted_archive = create_encrypted_snapshot_archive(
+            incremental_result["snapshot_path"],
+            backup_destination,
+            user_master_key,
+            now=completed_at,
+            backup_name=backup_name,
+            user_id=effective_username,
+            company_id=effective_company_id,
+            progress_callback=on_archive_progress,
+        )
+
+        if progress_callback:
+            progress_callback(95, "Pacote criptografado gerado.")
 
     history_entry = {
         "timestamp": completed_at.strftime("%d/%m/%Y %H:%M:%S"),
@@ -2046,6 +2237,29 @@ def run_backup_job(
         "warnings_count": len(incremental_result["warnings"]),
         "history_group_type": "full",
     }
+    if progress_callback:
+        progress_callback(96, "Sincronizando backup com AWS S3...")
+
+    def on_cloud_progress(processed, total, message):
+        if not progress_callback:
+            return
+
+        if total <= 0:
+            progress_callback(96, message or "Sincronizando backup com AWS S3...")
+            return
+
+        percent = 96 + int((processed / total) * 3)
+        progress_callback(
+            min(percent, 99),
+            message or f"Enviando para S3: {processed}/{total}"
+        )
+
+    history_entry.update(
+        sync_history_entry_to_cloud(
+            history_entry,
+            progress_callback=on_cloud_progress,
+        )
+    )
     append_history(history_entry)
 
     if progress_callback:
@@ -2060,6 +2274,7 @@ def run_backup_job(
     return history_entry
 
 
+@backup_job_guard(skip_when_busy=True)
 def run_priority_backup_job(
     directories=None,
     backup_destination=None,
@@ -2149,12 +2364,12 @@ def run_priority_backup_job(
             return
 
         if total <= 0:
-            progress_callback(95, "Finalizando snapshot por prioridade...")
+            progress_callback(88, "Finalizando snapshot por prioridade...")
             return
 
-        percent = 40 + int((processed / total) * 55)
+        percent = 40 + int((processed / total) * 48)
         progress_callback(
-            min(percent, 95),
+            min(percent, 88),
             f"Avaliando prioridade: {processed}/{total}"
         )
 
@@ -2187,15 +2402,39 @@ def run_priority_backup_job(
         company_id=effective_company_id
     )
     parent_snapshot_id = parent_entry.get("snapshot_id", "") if parent_entry else ""
-    encrypted_archive = create_encrypted_snapshot_archive(
-        incremental_result["snapshot_path"],
-        backup_destination,
-        user_master_key,
-        now=completed_at,
-        backup_name="prioridade",
-        user_id=effective_username,
-        company_id=effective_company_id,
-    ) if user_master_key else {}
+    encrypted_archive = {}
+
+    if user_master_key:
+        if progress_callback:
+            progress_callback(89, "Gerando pacote criptografado por prioridade...")
+
+        def on_archive_progress(processed, total, current_entry):
+            if not progress_callback:
+                return
+
+            if total <= 0:
+                progress_callback(94, "Criptografando pacote por prioridade...")
+                return
+
+            percent = 89 + int((processed / total) * 5)
+            progress_callback(
+                min(percent, 94),
+                f"Gerando pacote criptografado: {processed}/{total}"
+            )
+
+        encrypted_archive = create_encrypted_snapshot_archive(
+            incremental_result["snapshot_path"],
+            backup_destination,
+            user_master_key,
+            now=completed_at,
+            backup_name="prioridade",
+            user_id=effective_username,
+            company_id=effective_company_id,
+            progress_callback=on_archive_progress,
+        )
+
+        if progress_callback:
+            progress_callback(95, "Pacote criptografado por prioridade gerado.")
 
     history_entry = {
         "timestamp": completed_at.strftime("%d/%m/%Y %H:%M:%S"),
@@ -2240,6 +2479,29 @@ def run_priority_backup_job(
         "parent_snapshot_id": parent_snapshot_id,
         "priority_scope": determine_priority_scope(eligible_manifest, priority_index),
     }
+    if progress_callback:
+        progress_callback(96, "Sincronizando backup por prioridade com AWS S3...")
+
+    def on_cloud_progress(processed, total, message):
+        if not progress_callback:
+            return
+
+        if total <= 0:
+            progress_callback(96, message or "Sincronizando backup com AWS S3...")
+            return
+
+        percent = 96 + int((processed / total) * 3)
+        progress_callback(
+            min(percent, 99),
+            message or f"Enviando para S3: {processed}/{total}"
+        )
+
+    history_entry.update(
+        sync_history_entry_to_cloud(
+            history_entry,
+            progress_callback=on_cloud_progress,
+        )
+    )
     append_history(history_entry)
 
     if progress_callback:
@@ -2528,12 +2790,14 @@ def restore_snapshot(
 ):
     snapshot_path = normalize_path(snapshot_path)
     restore_destination = normalize_path(restore_destination)
+    ensure_cloud_backup_available(snapshot_path)
     snapshot = load_json(snapshot_path, {})
 
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("files"), list):
         raise ValueError("Snapshot incremental invalido.")
 
     storage_root = get_snapshot_storage_root(snapshot_path, snapshot)
+    index = load_snapshot_incremental_index(storage_root, snapshot)
     results = []
 
     for file_data in snapshot.get("files", []):
@@ -2602,7 +2866,7 @@ def restore_snapshot(
             decrypt_storage_object_to_path(
                 object_abs_path,
                 target_path,
-                file_data.get("encryption"),
+                resolve_file_encryption_metadata(file_data, index),
                 user_master_key,
             )
             modified_at = parse_iso_datetime(file_data.get("modified_at", ""))
@@ -2619,7 +2883,7 @@ def restore_snapshot(
                 result["message"] = "Arquivo restaurado."
 
             log_backup_decision("INFO", f"Arquivo restaurado do snapshot: {target_path}")
-        except (OSError, ValueError, crypto_service.CryptoError) as error:
+        except (OSError, ValueError, zstd.ZstdError, crypto_service.CryptoError) as error:
             result["message"] = str(error)
             log_backup_decision(
                 "ERROR",
@@ -2639,12 +2903,14 @@ def export_snapshot_to_zip(
 ):
     snapshot_path = normalize_path(snapshot_path)
     destination_zip_path = normalize_path(destination_zip_path)
+    ensure_cloud_backup_available(snapshot_path)
     snapshot = load_json(snapshot_path, {})
 
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("files"), list):
         raise ValueError("Snapshot incremental invalido.")
 
     storage_root = get_snapshot_storage_root(snapshot_path, snapshot)
+    index = load_snapshot_incremental_index(storage_root, snapshot)
     destination_directory = os.path.dirname(destination_zip_path)
 
     if destination_directory:
@@ -2691,7 +2957,7 @@ def export_snapshot_to_zip(
                 continue
 
             try:
-                encryption_metadata = file_data.get("encryption")
+                encryption_metadata = resolve_file_encryption_metadata(file_data, index)
 
                 # Sempre descomprimir os dados antes de adicionar ao ZIP
                 # (objetos estao armazenados comprimidos com zstd)
@@ -2703,7 +2969,7 @@ def export_snapshot_to_zip(
                 archive.writestr(archive_name, raw_data)
 
                 exported_count += 1
-            except (OSError, ValueError, crypto_service.CryptoError) as error:
+            except (OSError, ValueError, zstd.ZstdError, crypto_service.CryptoError) as error:
                 warnings.append(
                     {
                         "archive_name": archive_name,
@@ -2772,7 +3038,10 @@ def find_incremental_history_object(entry, archive_name):
     object_abs_path = resolve_storage_relative_path(storage_root, object_path)
 
     if not os.path.exists(object_abs_path):
-        return None
+        ensure_cloud_backup_available(snapshot_path)
+
+        if not os.path.exists(object_abs_path):
+            return None
 
     return {
         "storage_mode": "incremental",

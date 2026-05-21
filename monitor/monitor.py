@@ -4,10 +4,12 @@ from watchdog.events import FileSystemEventHandler
 
 from backup.backup_manager import get_backup_destination
 from backup.backup_manager import get_monitored_directories
+from backup.backup_manager import is_backup_job_running
 from backup.backup_manager import is_path_ignored
 from scanner.scanner import run_scanner
 from scanner.scanner import run_classification_background
 from scanner.scanner import is_shutdown_requested
+from scanner.scanner import wait_for_shutdown
 
 
 class BackupMonitor(FileSystemEventHandler):
@@ -34,6 +36,9 @@ class BackupMonitor(FileSystemEventHandler):
     def _trigger_scan(self):
         """Executa o scanner rapido e dispara classificacao em background."""
         if is_shutdown_requested():
+            return
+        if is_backup_job_running():
+            print("Scanner do monitor ignorado: backup em andamento.")
             return
         try:
             run_scanner(classify_files=False)
@@ -89,15 +94,12 @@ def start_monitor():
     observer.start()
 
     try:
-
         while True:
-            if is_shutdown_requested():
+            if is_shutdown_requested() or wait_for_shutdown(5):
                 print("Monitor interrompido (shutdown).")
                 break
-            time.sleep(5)
-
     except KeyboardInterrupt:
-
+        pass
+    finally:
         observer.stop()
-
-    observer.join()
+        observer.join()

@@ -154,6 +154,37 @@ class EncryptionTests(unittest.TestCase):
         with zipfile.ZipFile(exported_zip, "r") as archive:
             self.assertEqual("conteudo secreto", archive.read("source/A.txt").decode("utf-8"))
 
+    def test_export_uses_index_encryption_metadata_when_snapshot_entry_is_legacy(self):
+        create_user("Admin", "senha-segura", "admin", name="Admin")
+        session = authenticate("admin", "senha-segura")
+        source_file = self.write_source("A.txt", "conteudo secreto")
+        destination = self.root / "backups"
+        result = run_incremental_backup(
+            directories=[str(source_file.parent)],
+            backup_destination=str(destination),
+            manifest=self.manifest_for(source_file),
+            encryption_context={
+                "master_key": session["session_master_key"],
+                "user_id": session["username"],
+                "company_id": session["company_id"],
+            },
+        )
+        snapshot_path = Path(result["snapshot_path"])
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        snapshot["files"][0].pop("encryption")
+        snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+        exported_zip = self.root / "exports" / "restaurado_legacy.zip"
+        export_result = export_snapshot_to_zip(
+            result["snapshot_path"],
+            str(exported_zip),
+            user_master_key=session["session_master_key"],
+        )
+
+        self.assertEqual([], export_result["warnings"])
+        with zipfile.ZipFile(exported_zip, "r") as archive:
+            self.assertEqual("conteudo secreto", archive.read("source/A.txt").decode("utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

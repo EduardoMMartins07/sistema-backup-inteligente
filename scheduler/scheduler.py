@@ -1,10 +1,10 @@
-import time
 from datetime import datetime
 
 from backup.backup_manager import is_schedule_due
 from backup.backup_manager import is_priority_backup_policy_enabled
 from backup.backup_manager import get_priority_scheduler_check_interval_seconds
 from backup.backup_manager import get_schedule_run_context
+from backup.backup_manager import is_backup_job_running
 from backup.backup_manager import load_schedule
 from backup.backup_manager import mark_schedule_executed
 from backup.backup_manager import mark_schedule_failed
@@ -12,12 +12,17 @@ from backup.backup_manager import mark_schedule_running
 from backup.backup_manager import run_backup_job
 from backup.backup_manager import run_priority_backup_job
 from scanner.scanner import is_shutdown_requested
+from scanner.scanner import wait_for_shutdown
 
 
 def execute_scheduled_backup_once(now=None):
     now = now or datetime.now()
 
     if not is_schedule_due(now):
+        return None
+
+    if is_backup_job_running():
+        print("Backup agendado ignorado: outro backup esta em andamento.")
         return None
 
     schedule = load_schedule()
@@ -65,7 +70,13 @@ def start_scheduler():
                 or (now - last_priority_check_at).total_seconds() >= priority_check_interval_seconds
             )
 
-            if is_priority_backup_policy_enabled() and should_check_priority:
+            priority_policy_enabled = is_priority_backup_policy_enabled()
+
+            if (
+                priority_policy_enabled
+                and should_check_priority
+                and not is_backup_job_running()
+            ):
                 last_priority_check_at = now
                 result = run_priority_backup_job(
                     trigger="politica_prioridade",
@@ -77,7 +88,11 @@ def start_scheduler():
                     print(f"Backup por prioridade ignorado: {result.get('reason')}")
                 else:
                     print(f"Backup por prioridade criado: {result['backup_path']}")
+            elif priority_policy_enabled and should_check_priority and is_backup_job_running():
+                print("Backup por prioridade ignorado: outro backup esta em andamento.")
         except Exception as error:
             print(f"Erro ao executar backup por prioridade: {error}")
 
-        time.sleep(20)
+        if wait_for_shutdown(20):
+            print("Agendador interrompido (shutdown).")
+            break

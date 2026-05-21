@@ -47,6 +47,15 @@ def shutdown_all():
     SHUTDOWN_EVENT.set()
 
 
+def wait_for_background_threads(threads, join_timeout=2.0):
+    for thread in threads or []:
+        if not thread or thread is threading.current_thread():
+            continue
+
+        if thread.is_alive():
+            thread.join(timeout=join_timeout)
+
+
 def first_run():
 
     if not os.path.exists(CONFIG_FILE):
@@ -161,9 +170,6 @@ if __name__ == "__main__":
     )
     tray_thread.start()
     run_tray_event_loop(tray_events, tray_thread)
+    wait_for_background_threads([monitor_thread, scheduler_thread])
 
-    print("\nSistema encerrado. Pressione Enter para fechar esta janela...")
-    try:
-        input()
-    except (EOFError, KeyboardInterrupt):
-        pass
+    print("\nSistema encerrado.")

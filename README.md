@@ -137,6 +137,41 @@ Na troca de senha com confirmacao da senha antiga, apenas a chave mestra criptog
 
 Na criacao de usuario, quando a dependencia de criptografia esta disponivel, o sistema gera uma chave de recuperacao exibida uma unica vez. Essa chave permite redefinir a senha preservando a chave mestra e o acesso aos backups antigos. Se o usuario perder a senha e tambem perder a chave de recuperacao, backups criptografados antigos nao poderao ser descriptografados.
 
+### Integracao AWS S3
+
+O sistema possui integracao com AWS S3 para armazenamento dos backups em nuvem. Os arquivos sao enviados mantendo a organizacao local, separados por empresa, usuario e data. A configuracao fica na opcao **Conexão com Nuvem**, disponivel apenas para administradores; operadores e visualizadores usam a sincronizacao automaticamente durante backups manuais, agendados e por politica de prioridade.
+
+A configuracao e salva em `config/cloud_settings.json`, com a chave secreta criptografada usando uma chave local em `config/cloud_secret.key`. Esses arquivos sao dados locais e ficam fora do Git. A interface mascara a chave secreta e nao registra credenciais em historico ou logs.
+
+O caminho remoto e montado pelo servico central de S3:
+
+```text
+backups/<company_id>/<user_id>/<YYYY-MM-DD>/snapshots/<snapshot>.json
+backups/<company_id>/<user_id>/<YYYY-MM-DD>/arquivos_relacionados/<hash>
+backups/<company_id>/<user_id>/index.json
+```
+
+Para usar a nuvem, configure na tela administrativa:
+
+- `AWS Access Key ID`
+- `AWS Secret Access Key`
+- regiao AWS
+- nome do bucket
+- prefixo base, por padrao `backups`
+- endpoint customizado, opcional
+- sincronizacao ativa ou inativa
+
+Permissoes IAM minimas recomendadas para o prefixo configurado:
+
+- `s3:ListBucket`
+- `s3:GetObject`
+- `s3:PutObject`
+- `s3:DeleteObject`
+
+Depois de cada backup, o sistema tenta enviar o snapshot incremental, os objetos relacionados e o indice local para o S3. Se a sincronizacao falhar, o backup local continua valido e o historico registra `cloud_sync_status = falhou` com uma mensagem sanitizada. Quando a nuvem esta desativada, o historico registra `desativado` e nenhum upload e tentado.
+
+Na recuperacao ou exportacao, se o snapshot ou os objetos incrementais nao existirem localmente e o historico indicar sincronizacao concluida, o sistema baixa os arquivos do S3 para a estrutura local antes de restaurar/exportar. A versao usada e a versao registrada no historico do proprio sistema; versionamento nativo por `VersionId` do S3 nao faz parte desta entrega inicial.
+
 ### Exemplo de Configuracao
 
 ```json

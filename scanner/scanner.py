@@ -1,6 +1,7 @@
 import json
 import os
 import threading
+import time
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -59,6 +60,30 @@ def get_classification_status():
     with _CLASSIFICATION_STATUS_LOCK:
         return dict(CLASSIFICATION_STATUS)
 
+
+def is_backup_execution_running():
+    try:
+        from backup.backup_manager import is_backup_job_running
+
+        return is_backup_job_running()
+    except Exception:
+        return False
+
+
+def wait_while_backup_execution_running():
+    paused = False
+
+    while is_backup_execution_running() and not is_shutdown_requested():
+        paused = True
+        _update_classification_status(
+            running=True,
+            status="Classificacao pausada: backup em andamento."
+        )
+        time.sleep(0.5)
+
+    return paused
+
+
 # Evento global de shutdown: quando setado, scanners e classificadores
 # em segundo plano devem parar o mais rapido possivel.
 _SHUTDOWN_EVENT = None
@@ -73,6 +98,15 @@ def set_shutdown_event(event):
 def is_shutdown_requested():
     """Retorna True se o shutdown foi solicitado."""
     return _SHUTDOWN_EVENT is not None and _SHUTDOWN_EVENT.is_set()
+
+
+def wait_for_shutdown(timeout):
+    """Aguarda pelo shutdown sem deixar a thread presa em sleep fixo."""
+    if _SHUTDOWN_EVENT is None:
+        time.sleep(timeout)
+        return False
+
+    return _SHUTDOWN_EVENT.wait(timeout)
 
 
 def load_json(path, default):
@@ -286,6 +320,8 @@ def apply_classification(files, config=None, should_cancel=None, progress_callba
 
     def process_file(file_data):
         """Classifica um unico arquivo (thread-safe)."""
+        ensure_not_cancelled(should_cancel)
+        wait_while_backup_execution_running()
         ensure_not_cancelled(should_cancel)
         classification = classify_file_importance(file_data, config=config)
 
@@ -558,6 +594,9 @@ def run_classification_background(config=None):
                 if is_shutdown_requested():
                     print("Classificacao em segundo plano cancelada (shutdown).")
                     return
+
+                if wait_while_backup_execution_running():
+                    print("Classificacao em segundo plano retomada apos backup.")
 
                 print(
                     f"Classificacao em segundo plano: "

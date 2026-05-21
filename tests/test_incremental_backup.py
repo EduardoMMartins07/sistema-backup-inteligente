@@ -1,5 +1,6 @@
 import json
 import json
+import gzip
 import os
 import threading
 import tempfile
@@ -797,6 +798,29 @@ class IncrementalBackupTests(unittest.TestCase):
                 archive.read("source/docs/B.txt").decode("utf-8")
             )
 
+    def test_export_snapshot_to_zip_reads_legacy_gzip_objects(self):
+        source_file = self.write_file("docs/legado.txt", "conteudo legado")
+        result = self.run_backup(self.manifest_for(source_file))
+        snapshot = json.loads(Path(result["snapshot_path"]).read_text(encoding="utf-8"))
+        object_path = (
+            Path(result["backup_storage"])
+            / snapshot["files"][0]["object_path"].replace("/", os.sep)
+        )
+        object_path.write_bytes(gzip.compress("conteudo legado".encode("utf-8")))
+        destination_zip = self.root / "exports" / "backup_legado.zip"
+
+        export_result = export_snapshot_to_zip(
+            result["snapshot_path"],
+            str(destination_zip)
+        )
+
+        self.assertEqual([], export_result["warnings"])
+        with zipfile.ZipFile(destination_zip, "r") as archive:
+            self.assertEqual(
+                "conteudo legado",
+                archive.read("source/docs/legado.txt").decode("utf-8")
+            )
+
     def test_backup_job_separates_storage_by_user(self):
         backup_manager.HISTORY_PATH = str(self.root / "config" / "backup_history.json")
         file_path = self.write_file("A.txt", "a")
@@ -870,6 +894,25 @@ class IncrementalBackupTests(unittest.TestCase):
             ["backup_complete", "background_classification"],
             events
         )
+
+    def test_priority_backup_is_skipped_when_another_backup_is_running(self):
+        acquired = backup_manager._BACKUP_EXECUTION_LOCK.acquire(blocking=False)
+        self.addCleanup(
+            lambda: backup_manager._BACKUP_EXECUTION_LOCK.release()
+            if acquired and backup_manager._BACKUP_EXECUTION_LOCK.locked()
+            else None
+        )
+
+        result = run_priority_backup_job(
+            directories=[str(self.source)],
+            backup_destination=str(self.destination),
+            username="sistema",
+            user_role="system",
+            run_scan_first=False,
+        )
+
+        self.assertTrue(result["skipped"])
+        self.assertIn("Outro backup", result["reason"])
 
     def test_followup_backup_runs_full_scan_before_incremental_snapshot(self):
         backup_manager.HISTORY_PATH = str(self.root / "config" / "backup_history.json")

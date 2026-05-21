@@ -30,6 +30,7 @@ from backup.backup_manager import export_snapshot_to_zip
 from backup.backup_manager import restore_recoverable_changes
 from backup.backup_manager import restore_snapshot
 from backup.backup_manager import run_backup_job
+from cloud import aws_s3_service
 from scanner.scanner import CLASSIFICATION_STATUS
 from scanner.scanner import get_classification_status
 
@@ -545,6 +546,7 @@ class BackupGUI:
         self.restore_button = None
         self.manage_button = None
         self.destination_button = None
+        self.cloud_button = None
         self.users_button = None
         self.sidebar_button_frame = None
         self.sidebar_footer_frame = None
@@ -922,6 +924,29 @@ class BackupGUI:
         self.register_responsive_font(self.destination_button, BUTTON_FONT, min_size=8)
         self.destination_button.pack(fill="x", pady=(0, 8))
         self.apply_button_feedback(self.destination_button)
+
+        if can(self.current_user, "manage_cloud_connection"):
+            self.cloud_button = tk.Button(
+                self.sidebar_footer_frame,
+                text="Conexão com Nuvem",
+                command=self.show_cloud_connection_panel,
+                font=BUTTON_FONT,
+                bg=MUTED_PANEL_COLOR,
+                fg="white",
+                activebackground=MUTED_PANEL_COLOR,
+                activeforeground="white",
+                relief="flat",
+                bd=0,
+                highlightthickness=1,
+                highlightbackground="#101722",
+                highlightcolor="#101722",
+                cursor="hand2",
+                padx=10,
+                pady=6
+            )
+            self.register_responsive_font(self.cloud_button, BUTTON_FONT, min_size=8)
+            self.cloud_button.pack(fill="x", pady=(0, 8))
+            self.apply_button_feedback(self.cloud_button)
 
         if can(self.current_user, "manage_users"):
             self.users_button = tk.Button(
@@ -2098,6 +2123,170 @@ class BackupGUI:
             save_schedule
         ).grid(row=5, column=0, columnspan=2)
 
+    def show_cloud_connection_panel(self):
+        if not self.require_permission("manage_cloud_connection"):
+            return
+
+        _panel, content = self.create_content_shell(
+            "Conexão com Nuvem",
+            subtitle="Configure a sincronizacao AWS S3 dos backups."
+        )
+        settings = aws_s3_service.get_public_cloud_settings()
+        box = tk.Frame(
+            content,
+            bg=PANEL_COLOR,
+            highlightbackground=BORDER_COLOR,
+            highlightthickness=1,
+            padx=28,
+            pady=24
+        )
+        box.place(relx=0.5, rely=0.48, anchor="center")
+
+        form = tk.Frame(box, bg=PANEL_COLOR)
+        form.columnconfigure(1, weight=1)
+        form.pack(fill="both", expand=True)
+
+        enabled_var = tk.BooleanVar(value=bool(settings.get("enabled")))
+        access_key_var = tk.StringVar(value=settings.get("access_key_id", ""))
+        secret_key_var = tk.StringVar(
+            value=settings.get("secret_access_key_masked", "")
+        )
+        region_var = tk.StringVar(value=settings.get("region", ""))
+        bucket_var = tk.StringVar(value=settings.get("bucket_name", ""))
+        prefix_var = tk.StringVar(
+            value=settings.get("base_prefix", aws_s3_service.DEFAULT_BASE_PREFIX)
+        )
+        endpoint_var = tk.StringVar(value=settings.get("endpoint_url", ""))
+        status_var = tk.StringVar(
+            value=settings.get("last_test_message") or "Status: nao testado."
+        )
+
+        def add_field(row, label, variable, show=None):
+            tk.Label(
+                form,
+                text=label,
+                bg=PANEL_COLOR,
+                fg=SUBTLE_TEXT,
+                font=("Arial", 10, "bold")
+            ).grid(row=row, column=0, sticky="w", pady=6, padx=(0, 10))
+            entry = tk.Entry(
+                form,
+                textvariable=variable,
+                show=show,
+                font=("Arial", 10),
+                bg=LIGHT_BUTTON,
+                fg=TEXT_COLOR,
+                relief="flat",
+                width=42
+            )
+            entry.grid(row=row, column=1, sticky="ew", pady=6)
+            return entry
+
+        tk.Checkbutton(
+            form,
+            text="Sincronizacao ativa",
+            variable=enabled_var,
+            bg=PANEL_COLOR,
+            fg=SUBTLE_TEXT,
+            activebackground=PANEL_COLOR,
+            activeforeground=SUBTLE_TEXT,
+            selectcolor=PANEL_COLOR,
+            font=("Arial", 10, "bold")
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        add_field(1, "AWS Access Key ID", access_key_var)
+        add_field(2, "AWS Secret Access Key", secret_key_var, show="*")
+        add_field(3, "Regiao AWS", region_var)
+        add_field(4, "Nome do bucket", bucket_var)
+        add_field(5, "Prefixo base", prefix_var)
+        add_field(6, "Endpoint customizado", endpoint_var)
+
+        tk.Label(
+            form,
+            textvariable=status_var,
+            bg=PANEL_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Arial", 10),
+            wraplength=460,
+            justify="center"
+        ).grid(row=7, column=0, columnspan=2, sticky="ew", pady=(10, 14))
+
+        actions = tk.Frame(form, bg=PANEL_COLOR)
+        actions.grid(row=8, column=0, columnspan=2)
+
+        def build_payload(include_secret=True):
+            secret_value = secret_key_var.get().strip()
+
+            if secret_value == aws_s3_service.SECRET_MASK:
+                secret_value = ""
+
+            return {
+                "enabled": bool(enabled_var.get()),
+                "access_key_id": access_key_var.get().strip(),
+                "secret_access_key": secret_value if include_secret else "",
+                "region": region_var.get().strip(),
+                "bucket_name": bucket_var.get().strip(),
+                "base_prefix": prefix_var.get().strip(),
+                "endpoint_url": endpoint_var.get().strip(),
+            }
+
+        def save_cloud_settings():
+            try:
+                aws_s3_service.save_cloud_settings_for_user(
+                    self.current_user,
+                    build_payload()
+                )
+            except Exception as error:
+                messagebox.showerror(
+                    "Erro ao salvar",
+                    aws_s3_service.sanitize_cloud_error(error),
+                    parent=self.root
+                )
+                return
+
+            status_var.set("Status: configuracao salva.")
+            messagebox.showinfo(
+                "Conexao com Nuvem",
+                "Configuracao AWS S3 salva com sucesso.",
+                parent=self.root
+            )
+
+        def test_cloud_connection():
+            payload = build_payload()
+
+            if not payload["secret_access_key"]:
+                current = aws_s3_service.load_cloud_settings(include_secret=True)
+                payload["secret_access_key"] = current.get("secret_access_key", "")
+
+            result = aws_s3_service.test_s3_connection_for_user(
+                self.current_user,
+                settings=payload
+            )
+            status_var.set(f"Status: {result['message']}")
+
+            if result.get("success"):
+                messagebox.showinfo(
+                    "Teste de conexao",
+                    result["message"],
+                    parent=self.root
+                )
+            else:
+                messagebox.showwarning(
+                    "Teste de conexao",
+                    result["message"],
+                    parent=self.root
+                )
+
+        self.create_dialog_button(
+            actions,
+            "Salvar configuracao",
+            save_cloud_settings
+        ).grid(row=0, column=0, padx=(0, 10))
+        self.create_dialog_button(
+            actions,
+            "Testar conexao",
+            test_cloud_connection
+        ).grid(row=0, column=1)
+
     def apply_button_feedback(self, button):
         default_bg = button.cget("bg")
         default_highlight = button.cget("highlightbackground")
@@ -2141,6 +2330,7 @@ class BackupGUI:
             (self.download_button, "download_backup"),
             (self.manage_button, "manage_directories"),
             (self.destination_button, "change_backup_destination"),
+            (self.cloud_button, "manage_cloud_connection"),
         ]
 
         for button, permission in permission_buttons:
@@ -5716,6 +5906,7 @@ class BackupGUI:
             "user",
             "description",
             "trigger",
+            "cloud",
             "total",
             "changes"
         )
@@ -5734,6 +5925,7 @@ class BackupGUI:
             "user": "Usuario",
             "description": "Descricao",
             "trigger": "Tipo",
+            "cloud": "Nuvem",
             "total": "Arquivos",
             "changes": "Mudancas"
         }
@@ -5751,6 +5943,7 @@ class BackupGUI:
                     "anchor": "w",
                 },
                 "trigger": {"width": 80, "minwidth": 70, "weight": 1},
+                "cloud": {"width": 105, "minwidth": 90, "weight": 1},
                 "total": {"width": 90, "minwidth": 75, "weight": 1},
                 "changes": {"width": 95, "minwidth": 75, "weight": 1},
             }
@@ -5875,7 +6068,7 @@ class BackupGUI:
                 "",
                 tk.END,
                 text="Nenhum backup visivel",
-                values=("-", "-", "-", "-", "-", "-")
+                values=("-", "-", "-", "-", "-", "-", "-")
             )
             return
 
@@ -6080,12 +6273,23 @@ class BackupGUI:
 
             return f"{name}{encrypted_suffix}"
 
+        def get_cloud_status_label(entry):
+            labels = {
+                "sincronizado": "Sincronizado",
+                "falhou": "Falhou",
+                "desativado": "Desativado",
+                "nao_sincronizado": "Nao sincronizado",
+                "sincronizando": "Sincronizando",
+            }
+            return labels.get(entry.get("cloud_sync_status", ""), "-")
+
         def get_history_item_values(entry):
             return (
                 entry.get("timestamp", "-"),
                 entry.get("user", "sistema"),
                 entry.get("backup_description", ""),
                 entry.get("trigger", "-"),
+                get_cloud_status_label(entry),
                 entry.get("total_files", 0),
                 len(entry.get("file_changes", []))
             )

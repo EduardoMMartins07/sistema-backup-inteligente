@@ -3,6 +3,7 @@ ROLES = {
         "manage_users",
         "manage_directories",
         "change_backup_destination",
+        "manage_cloud_connection",
         "run_backup",
         "schedule_backup",
         "view_files",
