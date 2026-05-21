@@ -65,7 +65,16 @@ def can_view_backup_entry(current_user, entry):
         return True
 
     if current_role == "operator":
-        return entry_user == current_username or entry_role == "viewer"
+        is_legacy_system_schedule = (
+            entry_user == "sistema"
+            and entry_role == "system"
+            and entry.get("trigger") in {"agendado", "politica_prioridade"}
+        )
+        return (
+            entry_user == current_username
+            or entry_role == "viewer"
+            or is_legacy_system_schedule
+        )
 
     if current_role == "viewer":
         return entry_user == current_username

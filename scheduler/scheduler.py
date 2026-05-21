@@ -4,10 +4,40 @@ from datetime import datetime
 from backup.backup_manager import is_schedule_due
 from backup.backup_manager import is_priority_backup_policy_enabled
 from backup.backup_manager import get_priority_scheduler_check_interval_seconds
+from backup.backup_manager import get_schedule_run_context
+from backup.backup_manager import load_schedule
 from backup.backup_manager import mark_schedule_executed
+from backup.backup_manager import mark_schedule_failed
+from backup.backup_manager import mark_schedule_running
 from backup.backup_manager import run_backup_job
 from backup.backup_manager import run_priority_backup_job
 from scanner.scanner import is_shutdown_requested
+
+
+def execute_scheduled_backup_once(now=None):
+    now = now or datetime.now()
+
+    if not is_schedule_due(now):
+        return None
+
+    schedule = load_schedule()
+    context = get_schedule_run_context(schedule)
+    mark_schedule_running(now)
+
+    try:
+        result = run_backup_job(
+            trigger="agendado",
+            username=context["username"],
+            user_role=context["user_role"],
+            company_id=context["company_id"]
+        )
+        mark_schedule_executed(now)
+        print(f"Backup agendado criado: {result['backup_path']}")
+        return True
+    except Exception as error:
+        mark_schedule_failed(error, now=now, context=context)
+        print(f"Erro ao executar backup agendado: {error}")
+        return False
 
 
 def start_scheduler():
@@ -27,17 +57,7 @@ def start_scheduler():
         now = datetime.now()
         priority_check_interval_seconds = get_priority_scheduler_check_interval_seconds()
 
-        try:
-            if is_schedule_due(now):
-                result = run_backup_job(
-                    trigger="agendado",
-                    username="sistema",
-                    user_role="system"
-                )
-                mark_schedule_executed(now)
-                print(f"Backup agendado criado: {result['backup_path']}")
-        except Exception as error:
-            print(f"Erro ao executar backup agendado: {error}")
+        execute_scheduled_backup_once(now)
 
         try:
             should_check_priority = (

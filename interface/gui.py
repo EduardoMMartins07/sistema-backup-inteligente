@@ -1965,6 +1965,9 @@ class BackupGUI:
         ).grid(row=0, column=0, sticky="w", pady=6)
 
         schedule_data = self.load_schedule()
+        schedule_status_var = tk.StringVar(
+            value=self.format_schedule_status_text(schedule_data)
+        )
         start_time_var = tk.StringVar(
             value=schedule_data.get("time_start") or schedule_data.get("time", "09:00")
         )
@@ -2030,6 +2033,16 @@ class BackupGUI:
             pady=(0, 14)
         )
 
+        tk.Label(
+            form,
+            textvariable=schedule_status_var,
+            bg=PANEL_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Arial", 10),
+            wraplength=360,
+            justify="center"
+        ).grid(row=4, column=0, columnspan=2, pady=(0, 14))
+
         def save_schedule():
             start_value = start_time_var.get().strip()
             end_value = end_time_var.get().strip()
@@ -2048,7 +2061,16 @@ class BackupGUI:
             payload = {
                 "time_start": start_value,
                 "time_end": end_value,
-                "updated_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                "updated_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                "scheduled_username": self.current_user.get("username", "sistema"),
+                "scheduled_user_role": self.current_user.get("role", "system"),
+                "scheduled_company_id": self.current_user.get(
+                    "company_id",
+                    "default"
+                ),
+                "status": "pending",
+                "status_message": "Backup agendado pendente.",
+                "last_error": ""
             }
 
             os.makedirs("config", exist_ok=True)
@@ -2063,6 +2085,7 @@ class BackupGUI:
             self.save_config(config_payload)
 
             self.refresh_footer()
+            schedule_status_var.set(self.format_schedule_status_text(payload))
             messagebox.showinfo(
                 "Agendamento salvo",
                 "Horario e politica por prioridade salvos com sucesso.",
@@ -2073,7 +2096,7 @@ class BackupGUI:
             form,
             "Salvar agendamento",
             save_schedule
-        ).grid(row=4, column=0, columnspan=2)
+        ).grid(row=5, column=0, columnspan=2)
 
     def apply_button_feedback(self, button):
         default_bg = button.cget("bg")
@@ -3764,6 +3787,19 @@ class BackupGUI:
         )
         info.pack(pady=(12, 14))
 
+        schedule_status_var = tk.StringVar(
+            value=self.format_schedule_status_text(schedule_data)
+        )
+        tk.Label(
+            window,
+            textvariable=schedule_status_var,
+            bg=BG_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Arial", 10),
+            wraplength=340,
+            justify="center"
+        ).pack(pady=(0, 12))
+
         priority_policy_check = tk.Checkbutton(
             window,
             text="Ativar backup automatico por prioridade",
@@ -3795,7 +3831,16 @@ class BackupGUI:
             payload = {
                 "time_start": start_value,
                 "time_end": end_value,
-                "updated_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                "updated_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                "scheduled_username": self.current_user.get("username", "sistema"),
+                "scheduled_user_role": self.current_user.get("role", "system"),
+                "scheduled_company_id": self.current_user.get(
+                    "company_id",
+                    "default"
+                ),
+                "status": "pending",
+                "status_message": "Backup agendado pendente.",
+                "last_error": ""
             }
 
             os.makedirs("config", exist_ok=True)
@@ -3810,6 +3855,7 @@ class BackupGUI:
             self.save_config(config_payload)
 
             self.refresh_footer()
+            schedule_status_var.set(self.format_schedule_status_text(payload))
             messagebox.showinfo(
                 "Agendamento salvo",
                 "Horario e politica por prioridade salvos com sucesso.",
@@ -3818,6 +3864,30 @@ class BackupGUI:
             window.destroy()
 
         self.create_dialog_button(window, "Salvar agendamento", save_schedule).pack()
+
+    def format_schedule_status_text(self, schedule_data):
+        status_labels = {
+            "pending": "Pendente",
+            "running": "Em execucao",
+            "executed": "Executado",
+            "failed": "Falhou",
+        }
+        status = schedule_data.get("status") or "pending"
+        status_text = status_labels.get(status, status)
+
+        if status == "executed" and schedule_data.get("last_success_at"):
+            return f"Status: {status_text} em {schedule_data['last_success_at']}"
+
+        if status == "failed":
+            error = schedule_data.get("last_error") or "erro nao informado"
+            return f"Status: {status_text} - {error}"
+
+        message = schedule_data.get("status_message")
+
+        if message:
+            return f"Status: {status_text} - {message}"
+
+        return f"Status: {status_text}"
 
     def load_schedule(self):
         if not os.path.exists(SCHEDULE_PATH):

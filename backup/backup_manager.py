@@ -2259,6 +2259,28 @@ def save_schedule(schedule):
     save_json(SCHEDULE_PATH, schedule)
 
 
+def get_schedule_run_context(schedule=None):
+    schedule = schedule if isinstance(schedule, dict) else load_schedule()
+
+    return {
+        "username": (
+            schedule.get("scheduled_username")
+            or schedule.get("username")
+            or "sistema"
+        ),
+        "user_role": (
+            schedule.get("scheduled_user_role")
+            or schedule.get("user_role")
+            or "system"
+        ),
+        "company_id": (
+            schedule.get("scheduled_company_id")
+            or schedule.get("company_id")
+            or "default"
+        ),
+    }
+
+
 def parse_schedule_time(value):
     if not value:
         return None
@@ -2316,8 +2338,86 @@ def mark_schedule_executed(now=None):
     if not schedule:
         return
 
-    schedule["last_run_at"] = now.isoformat(timespec="seconds")
+    timestamp = now.isoformat(timespec="seconds")
+    schedule["last_run_at"] = timestamp
+    schedule["last_success_at"] = timestamp
+    schedule["last_error"] = ""
+    schedule["status"] = "executed"
+    schedule["status_message"] = "Backup agendado executado com sucesso."
     save_schedule(schedule)
+
+
+def mark_schedule_running(now=None):
+    now = now or datetime.now()
+    schedule = load_schedule()
+
+    if not schedule:
+        return
+
+    timestamp = now.isoformat(timespec="seconds")
+    schedule["last_run_at"] = timestamp
+    schedule["last_attempt_at"] = timestamp
+    schedule["status"] = "running"
+    schedule["status_message"] = "Backup agendado em execucao."
+    save_schedule(schedule)
+
+
+def append_scheduled_failure_history(error, now=None, context=None):
+    now = now or datetime.now()
+    context = context or get_schedule_run_context()
+    message = str(error) or error.__class__.__name__
+    append_history(
+        {
+            "timestamp": now.strftime("%d/%m/%Y %H:%M:%S"),
+            "backup_file": "",
+            "backup_name": "agendado",
+            "backup_description": f"Falha no backup agendado: {message}",
+            "backup_path": "",
+            "backup_folder": "",
+            "snapshot_id": "",
+            "snapshot_path": "",
+            "storage_mode": "incremental",
+            "total_files": 0,
+            "objects_stored": 0,
+            "objects_referenced": 0,
+            "files_unchanged": 0,
+            "files_not_eligible": 0,
+            "duplicate_files_skipped": 0,
+            "trigger": "agendado",
+            "user": context.get("username") or "sistema",
+            "user_role": context.get("user_role") or "system",
+            "company_id": context.get("company_id") or "default",
+            "encrypted": False,
+            "encryption_algorithm": "",
+            "backup_encryption": {},
+            "compacted_size_bytes": None,
+            "file_changes": [],
+            "file_snapshot": {},
+            "status_counts": {},
+            "warnings_count": 1,
+            "history_group_type": "full",
+            "status": "failed",
+            "error": message,
+        }
+    )
+
+
+def mark_schedule_failed(error, now=None, context=None):
+    now = now or datetime.now()
+    schedule = load_schedule()
+
+    if not schedule:
+        return
+
+    timestamp = now.isoformat(timespec="seconds")
+    message = str(error) or error.__class__.__name__
+    schedule["last_run_at"] = timestamp
+    schedule["last_failed_at"] = timestamp
+    schedule["last_error"] = message
+    schedule["status"] = "failed"
+    schedule["status_message"] = f"Falha no backup agendado: {message}"
+    save_schedule(schedule)
+    append_scheduled_failure_history(error, now=now, context=context)
 
 
 def normalize_archive_name(archive_name):
