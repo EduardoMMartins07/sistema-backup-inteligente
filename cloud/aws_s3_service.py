@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 from security import crypto_service
@@ -478,6 +479,55 @@ def iter_incremental_object_paths(history_entry, snapshot):
                 yield object_path
 
 
+def should_upload_incremental_object(file_data):
+    status = str(file_data.get("status", "")).strip()
+
+    if not status:
+        return True
+
+    return status == "stored_new_object"
+
+
+def iter_incremental_upload_object_paths(history_entry, snapshot):
+    seen = set()
+    files = snapshot.get("files") if isinstance(snapshot, dict) else []
+
+    if isinstance(files, list):
+        for file_data in files:
+            if not should_upload_incremental_object(file_data):
+                continue
+
+            object_path = file_data.get("object_path", "")
+
+            if object_path and object_path not in seen:
+                seen.add(object_path)
+                yield object_path
+
+    if seen:
+        return
+
+    file_snapshot = history_entry.get("file_snapshot", {})
+
+    if isinstance(file_snapshot, dict):
+        for file_data in file_snapshot.values():
+            if not should_upload_incremental_object(file_data):
+                continue
+
+            object_path = file_data.get("object_path", "")
+
+            if object_path and object_path not in seen:
+                seen.add(object_path)
+                yield object_path
+
+
+def get_cloud_upload_worker_count(total_uploads):
+    if total_uploads <= 1:
+        return 1
+
+    available_cpus = os.cpu_count() or 2
+    return min(8, total_uploads, max(2, available_cpus * 2))
+
+
 def upload_file(client, bucket, local_path, key):
     client.upload_file(str(local_path), bucket, key)
 
@@ -570,7 +620,7 @@ def sync_backup_to_s3(history_entry, settings=None, client=None, progress_callba
             )
         )
 
-    for object_path in iter_incremental_object_paths(history_entry, snapshot):
+    for object_path in iter_incremental_upload_object_paths(history_entry, snapshot):
         if not storage_root:
             continue
 
@@ -607,15 +657,26 @@ def sync_backup_to_s3(history_entry, settings=None, client=None, progress_callba
         if progress_callback:
             progress_callback(0, total_uploads, "Preparando envio para AWS S3...")
 
-        for upload_index, (local_path, key) in enumerate(upload_plan, start=1):
-            upload_file(s3_client, bucket, local_path, key)
+        worker_count = get_cloud_upload_worker_count(total_uploads)
 
-            if progress_callback:
-                progress_callback(
-                    upload_index,
-                    total_uploads,
-                    f"Enviando para AWS S3: {upload_index}/{total_uploads}",
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_to_upload = {
+                executor.submit(upload_file, s3_client, bucket, local_path, key): (
+                    local_path,
+                    key,
                 )
+                for local_path, key in upload_plan
+            }
+
+            for upload_index, future in enumerate(as_completed(future_to_upload), start=1):
+                future.result()
+
+                if progress_callback:
+                    progress_callback(
+                        upload_index,
+                        total_uploads,
+                        f"Enviando para AWS S3: {upload_index}/{total_uploads}",
+                    )
     except Exception as error:
         return build_failure_result(history_entry, settings, error)
 

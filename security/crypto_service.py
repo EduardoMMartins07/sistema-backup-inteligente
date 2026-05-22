@@ -36,6 +36,19 @@ def _load_crypto_primitives():
     return AESGCM, InvalidTag, hashes, PBKDF2HMAC
 
 
+def _load_streaming_cipher_primitives():
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher
+        from cryptography.hazmat.primitives.ciphers import algorithms
+        from cryptography.hazmat.primitives.ciphers import modes
+    except ImportError as error:
+        raise CryptoDependencyError(
+            "Instale a dependencia 'cryptography' para usar backups criptografados."
+        ) from error
+
+    return Cipher, algorithms, modes
+
+
 def is_crypto_available():
     try:
         _load_crypto_primitives()
@@ -105,6 +118,47 @@ def encrypt_file(input_path, output_path, key, associated_data=None):
 
     return {
         "file_nonce": b64encode(encrypted["nonce"]),
+        "auth_tag": "included_in_ciphertext",
+    }
+
+
+def encrypt_file_streaming(
+    input_path,
+    output_path,
+    key,
+    associated_data=None,
+    chunk_size=1024 * 1024
+):
+    Cipher, algorithms, modes = _load_streaming_cipher_primitives()
+    nonce = secrets.token_bytes(NONCE_SIZE)
+    encryptor = Cipher(
+        algorithms.AES(key),
+        modes.GCM(nonce),
+    ).encryptor()
+
+    if associated_data:
+        encryptor.authenticate_additional_data(associated_data)
+
+    target_directory = os.path.dirname(output_path)
+
+    if target_directory:
+        os.makedirs(target_directory, exist_ok=True)
+
+    with open(input_path, "rb") as source_file:
+        with open(output_path, "wb") as target_file:
+            while True:
+                chunk = source_file.read(chunk_size)
+
+                if not chunk:
+                    break
+
+                target_file.write(encryptor.update(chunk))
+
+            target_file.write(encryptor.finalize())
+            target_file.write(encryptor.tag)
+
+    return {
+        "file_nonce": b64encode(nonce),
         "auth_tag": "included_in_ciphertext",
     }
 

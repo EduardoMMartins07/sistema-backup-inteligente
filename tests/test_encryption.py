@@ -3,6 +3,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 import auth.users as users
 from auth.users import authenticate
@@ -153,6 +154,80 @@ class EncryptionTests(unittest.TestCase):
 
         with zipfile.ZipFile(exported_zip, "r") as archive:
             self.assertEqual("conteudo secreto", archive.read("source/A.txt").decode("utf-8"))
+
+    def test_encrypted_archive_uses_fast_zip_export_and_streaming_encryption(self):
+        create_user("Admin", "senha-segura", "admin", name="Admin")
+        session = authenticate("admin", "senha-segura")
+        source_file = self.write_source("A.txt", "conteudo secreto")
+        destination = self.root / "backups"
+        result = run_incremental_backup(
+            directories=[str(source_file.parent)],
+            backup_destination=str(destination),
+            manifest=self.manifest_for(source_file),
+            encryption_context={
+                "master_key": session["session_master_key"],
+                "user_id": session["username"],
+                "company_id": session["company_id"],
+            },
+        )
+        observed = {}
+        original_export = create_encrypted_snapshot_archive.__globals__[
+            "export_snapshot_to_zip"
+        ]
+        original_stream = crypto_service.encrypt_file_streaming
+
+        def capture_export(*args, **kwargs):
+            observed["compression_method"] = kwargs.get("compression_method")
+            return original_export(*args, **kwargs)
+
+        def capture_stream(*args, **kwargs):
+            observed["streaming_called"] = True
+            return original_stream(*args, **kwargs)
+
+        with patch(
+            "backup.backup_manager.export_snapshot_to_zip",
+            side_effect=capture_export,
+        ):
+            with patch(
+                "security.crypto_service.encrypt_file_streaming",
+                side_effect=capture_stream,
+            ):
+                encrypted_archive = create_encrypted_snapshot_archive(
+                    result["snapshot_path"],
+                    str(destination),
+                    session["session_master_key"],
+                    backup_name="manual",
+                    user_id=session["username"],
+                    company_id=session["company_id"],
+                )
+
+        self.assertEqual(zipfile.ZIP_STORED, observed["compression_method"])
+        self.assertTrue(observed["streaming_called"])
+        self.assertTrue(Path(encrypted_archive["encrypted_file_path"]).exists())
+
+    def test_streaming_file_encryption_is_compatible_with_file_decryption(self):
+        key = crypto_service.generate_key()
+        source_path = self.root / "plain.bin"
+        encrypted_path = self.root / "plain.bin.enc"
+        restored_path = self.root / "plain.restored.bin"
+        source_path.write_bytes((b"conteudo secreto" * 8192) + b"fim")
+
+        encrypted = crypto_service.encrypt_file_streaming(
+            str(source_path),
+            str(encrypted_path),
+            key,
+            b"encrypted-backup-archive",
+            chunk_size=1024,
+        )
+        crypto_service.decrypt_file(
+            str(encrypted_path),
+            str(restored_path),
+            key,
+            encrypted["file_nonce"],
+            b"encrypted-backup-archive",
+        )
+
+        self.assertEqual(source_path.read_bytes(), restored_path.read_bytes())
 
     def test_export_uses_index_encryption_metadata_when_snapshot_entry_is_legacy(self):
         create_user("Admin", "senha-segura", "admin", name="Admin")

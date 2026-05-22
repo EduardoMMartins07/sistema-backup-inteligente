@@ -46,8 +46,22 @@ class IncrementalBackupTests(unittest.TestCase):
             "HISTORY_PATH": backup_manager.HISTORY_PATH,
             "PRIORITY_STATE_PATH": backup_manager.PRIORITY_STATE_PATH,
         }
+        self.cloud_settings_patcher = patch(
+            "cloud.aws_s3_service.load_cloud_settings",
+            return_value={
+                "enabled": False,
+                "bucket_name": "",
+                "region": "",
+                "base_prefix": "backups",
+                "access_key_id": "",
+                "secret_access_key": "",
+            }
+        )
+        self.cloud_settings_patcher.start()
 
     def tearDown(self):
+        self.cloud_settings_patcher.stop()
+
         if self.original_dev_mode is None:
             os.environ.pop("BACKUP_DEV_MODE", None)
         else:
@@ -640,6 +654,48 @@ class IncrementalBackupTests(unittest.TestCase):
         self.assertEqual(1, len(result["priority_decisions"]))
         self.assertTrue(result["priority_decisions"][0]["included"])
 
+    def test_priority_job_marks_cloud_syncing_and_starts_background_sync(self):
+        os.environ["BACKUP_DEV_MODE"] = "true"
+        file_path = self.write_file("A.txt", "v1")
+        manifest = self.manifest_for(file_path)
+        self.configure_priority_job_environment([file_path], "alta")
+        self.run_user_backup(
+            manifest,
+            now=datetime.now() - timedelta(minutes=6),
+            priority="alta"
+        )
+        file_path.write_text("v2", encoding="utf-8")
+        cloud_settings = {
+            "enabled": True,
+            "bucket_name": "backup-bucket",
+            "region": "us-east-1",
+            "base_prefix": "backups",
+            "access_key_id": "AKIA123456",
+            "secret_access_key": "secret",
+        }
+
+        with patch(
+            "cloud.aws_s3_service.load_cloud_settings",
+            return_value=cloud_settings
+        ):
+            with patch.object(
+                backup_manager,
+                "start_cloud_sync_background",
+                return_value=None
+            ) as start_sync:
+                result = run_priority_backup_job(
+                    run_scan_first=False,
+                    username="sistema",
+                    user_role="system"
+                )
+
+        self.assertEqual("sincronizando", result["cloud_sync_status"])
+        self.assertEqual(
+            "sincronizando",
+            backup_manager.load_history()[-1]["cloud_sync_status"]
+        )
+        start_sync.assert_called_once()
+
     def test_priority_job_skips_after_ttl_when_file_is_unchanged(self):
         os.environ["BACKUP_DEV_MODE"] = "true"
         file_path = self.write_file("A.txt", "v1")
@@ -975,6 +1031,80 @@ class IncrementalBackupTests(unittest.TestCase):
 
         self.assertGreaterEqual(len(set(worker_names)), 2)
         self.assertNotIn(threading.current_thread().name, worker_names)
+
+    def test_incremental_backup_reuses_precompressed_payload_when_storing_objects(self):
+        first = self.write_file("A.txt", "conteudo-a")
+        second = self.write_file("B.txt", "conteudo-b")
+        manifest = self.manifest_for(first, second)
+        compressed_payload_flags = []
+        original_store = backup_manager.store_incremental_object
+
+        def store_with_payload_tracking(*args, **kwargs):
+            compressed_payload_flags.append(kwargs.get("compressed_data") is not None)
+            return original_store(*args, **kwargs)
+
+        with patch(
+            "backup.backup_manager.store_incremental_object",
+            side_effect=store_with_payload_tracking
+        ):
+            self.run_backup(manifest)
+
+        self.assertEqual([True, True], compressed_payload_flags)
+
+    def test_export_snapshot_to_zip_reads_payloads_in_worker_threads(self):
+        first = self.write_file("docs/A.txt", "a")
+        second = self.write_file("docs/B.txt", "b")
+        result = self.run_backup(self.manifest_for(first, second))
+        destination_zip = self.root / "exports" / "threaded_export.zip"
+        worker_names = []
+        both_workers_started = threading.Event()
+        original_read = backup_manager.read_storage_object_bytes
+
+        def read_with_thread_tracking(*args, **kwargs):
+            worker_names.append(threading.current_thread().name)
+
+            if len(worker_names) >= 2:
+                both_workers_started.set()
+            else:
+                both_workers_started.wait(timeout=0.5)
+
+            return original_read(*args, **kwargs)
+
+        with patch(
+            "backup.backup_manager.read_storage_object_bytes",
+            side_effect=read_with_thread_tracking
+        ):
+            export_result = export_snapshot_to_zip(
+                result["snapshot_path"],
+                str(destination_zip)
+            )
+
+        self.assertEqual(2, export_result["files_exported"])
+        self.assertGreaterEqual(len(set(worker_names)), 2)
+        self.assertNotIn(threading.current_thread().name, worker_names)
+
+    def test_zstd_decompressor_is_isolated_per_worker_thread(self):
+        decompressor_ids = []
+        both_workers_started = threading.Event()
+
+        def collect_decompressor_id():
+            decompressor_ids.append(id(backup_manager._get_zstd_decompressor()))
+
+            if len(decompressor_ids) >= 2:
+                both_workers_started.set()
+            else:
+                both_workers_started.wait(timeout=0.5)
+
+        with backup_manager.ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(collect_decompressor_id)
+                for _ in range(2)
+            ]
+
+            for future in futures:
+                future.result()
+
+        self.assertEqual(2, len(set(decompressor_ids)))
 
     def test_backup_job_separates_snapshots_by_date(self):
         backup_manager.HISTORY_PATH = str(self.root / "config" / "backup_history.json")

@@ -1,4 +1,5 @@
 import json
+import threading
 import tempfile
 import unittest
 from datetime import datetime
@@ -235,6 +236,108 @@ class CloudStorageTests(unittest.TestCase):
         self.assertEqual(3, progress_events[-1][0])
         self.assertEqual(3, progress_events[-1][1])
         self.assertIn("AWS S3", progress_events[-1][2])
+
+    def test_sync_backup_uploads_only_new_incremental_objects(self):
+        history_entry = self.write_backup_fixture()
+        storage_root = Path(history_entry["backup_storage"])
+        reused_object = storage_root / "2026-05-20" / "arquivos_relacionados" / "old456"
+        reused_object.write_bytes(b"old-data")
+        snapshot_path = Path(history_entry["snapshot_path"])
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        snapshot["files"].append(
+            {
+                "archive_name": "source/B.txt",
+                "hash": "old456",
+                "object_path": "2026-05-20/arquivos_relacionados/old456",
+                "status": "skipped_unchanged",
+            }
+        )
+        snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+        history_entry["file_snapshot"]["source/B.txt"] = {
+            "object_path": "2026-05-20/arquivos_relacionados/old456",
+            "file_hash": "old456",
+            "status": "skipped_unchanged",
+        }
+        client = FakeS3Client()
+        client.objects[
+            (
+                "backup-bucket",
+                "backups/default/dudu/2026-05-20/arquivos_relacionados/old456",
+            )
+        ] = b"old-data"
+
+        cloud_service.sync_backup_to_s3(
+            history_entry,
+            settings=self.enabled_settings(),
+            client=client,
+        )
+
+        uploaded_keys = [key for _, key, _ in client.uploads]
+        self.assertIn(
+            "backups/default/dudu/2026-05-20/arquivos_relacionados/abc123",
+            uploaded_keys,
+        )
+        self.assertNotIn(
+            "backups/default/dudu/2026-05-20/arquivos_relacionados/old456",
+            uploaded_keys,
+        )
+
+    def test_sync_backup_uploads_objects_in_worker_threads(self):
+        history_entry = self.write_backup_fixture()
+        storage_root = Path(history_entry["backup_storage"])
+        second_object = storage_root / "2026-05-20" / "arquivos_relacionados" / "def456"
+        second_object.write_bytes(b"second-object-data")
+        snapshot_path = Path(history_entry["snapshot_path"])
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        snapshot["files"].append(
+            {
+                "archive_name": "source/B.txt",
+                "hash": "def456",
+                "object_path": "2026-05-20/arquivos_relacionados/def456",
+                "status": "stored_new_object",
+            }
+        )
+        snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+        client = FakeS3Client()
+        worker_names = []
+        both_workers_started = threading.Event()
+        original_upload_file = cloud_service.upload_file
+
+        def upload_with_thread_tracking(*args, **kwargs):
+            worker_names.append(threading.current_thread().name)
+
+            if len(worker_names) >= 2:
+                both_workers_started.set()
+            else:
+                both_workers_started.wait(timeout=0.5)
+
+            return original_upload_file(*args, **kwargs)
+
+        original_worker_count = cloud_service.get_cloud_upload_worker_count
+        cloud_service.get_cloud_upload_worker_count = lambda total_uploads: 2
+        self.addCleanup(
+            lambda: setattr(
+                cloud_service,
+                "get_cloud_upload_worker_count",
+                original_worker_count,
+            )
+        )
+
+        try:
+            cloud_service.upload_file = upload_with_thread_tracking
+            self.addCleanup(
+                lambda: setattr(cloud_service, "upload_file", original_upload_file)
+            )
+            cloud_service.sync_backup_to_s3(
+                history_entry,
+                settings=self.enabled_settings(),
+                client=client,
+            )
+        finally:
+            cloud_service.upload_file = original_upload_file
+
+        self.assertGreaterEqual(len(set(worker_names)), 2)
+        self.assertNotIn(threading.current_thread().name, worker_names)
 
     def test_download_backup_restores_missing_snapshot_and_objects(self):
         history_entry = self.write_backup_fixture()

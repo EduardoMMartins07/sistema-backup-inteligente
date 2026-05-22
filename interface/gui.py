@@ -29,6 +29,8 @@ from backup.backup_manager import is_path_ignored
 from backup.backup_manager import export_snapshot_to_zip
 from backup.backup_manager import restore_recoverable_changes
 from backup.backup_manager import restore_snapshot
+from backup.backup_manager import get_cloud_sync_progress
+from backup.backup_manager import resume_pending_cloud_syncs
 from backup.backup_manager import run_backup_job
 from cloud import aws_s3_service
 from scanner.scanner import CLASSIFICATION_STATUS
@@ -78,6 +80,7 @@ BACKUP_STATUS_OPTIONS = (
 
 _background_root = None
 _background_gui = None
+_cloud_sync_resume_started = False
 
 
 def normalize_file_source_key(path):
@@ -534,6 +537,11 @@ class BackupGUI:
         self.progress_label = None
         self.progress_bar = None
         self.cancel_button = None
+        self.backup_progress_frame = None
+        self.backup_progress_status = None
+        self.backup_progress_bar = None
+        self.backup_progress_user_label = None
+        self.backup_progress_cancel_button = None
         self.download_queue = queue.Queue()
         self.download_window = None
         self.download_label = None
@@ -563,6 +571,9 @@ class BackupGUI:
         self.pending_backup_description = ""
         self.pending_backup_directories = None
         self.pending_backup_trigger = "manual"
+        self.current_backup_started_at = None
+        self.active_cloud_sync_snapshot_path = None
+        self.cloud_sync_footer_poll_scheduled = False
         self.cancel_backup_requested = threading.Event()
         self.responsive_font_widgets = []
         self.current_font_scale = None
@@ -1037,6 +1048,94 @@ class BackupGUI:
         class_prog_bar.grid_remove()
         self.class_prog_bar = class_prog_bar
         self.class_prog_status.grid_remove()
+
+        backup_progress_frame = tk.Frame(footer_frame, bg=BG_COLOR)
+        backup_progress_frame.grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(7, 0)
+        )
+        backup_progress_frame.columnconfigure(0, weight=1)
+        backup_progress_frame.columnconfigure(1, weight=0)
+        backup_progress_frame.columnconfigure(2, weight=0)
+        backup_progress_frame.columnconfigure(3, weight=0)
+
+        backup_progress_status = tk.Label(
+            backup_progress_frame,
+            text="",
+            bg=BG_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Segoe UI", 9),
+            anchor="w",
+            justify="left"
+        )
+        self.register_responsive_font(
+            backup_progress_status,
+            ("Segoe UI", 9),
+            min_size=8
+        )
+        backup_progress_status.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+
+        backup_progress_bar = ttk.Progressbar(
+            backup_progress_frame,
+            orient="horizontal",
+            mode="determinate",
+            maximum=100,
+            style="Horizontal.TProgressbar",
+            length=220
+        )
+        backup_progress_bar.grid(row=0, column=1, sticky="e", padx=(0, 10))
+        backup_progress_bar["value"] = 0
+
+        backup_progress_user_label = tk.Label(
+            backup_progress_frame,
+            text=f"Usuario: {self.current_user.get('username', 'sistema')}",
+            bg=BG_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Segoe UI", 8),
+            anchor="e"
+        )
+        self.register_responsive_font(
+            backup_progress_user_label,
+            ("Segoe UI", 8),
+            min_size=7
+        )
+        backup_progress_user_label.grid(row=0, column=2, sticky="e", padx=(0, 10))
+
+        backup_progress_cancel_button = tk.Button(
+            backup_progress_frame,
+            text="Cancelar",
+            command=self.request_backup_cancel,
+            font=("Segoe UI", 8, "bold"),
+            bg=LIGHT_BUTTON,
+            fg=TEXT_COLOR,
+            activebackground=LIGHT_BUTTON,
+            activeforeground=TEXT_COLOR,
+            relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground="#101722",
+            highlightcolor="#101722",
+            cursor="hand2",
+            padx=10,
+            pady=3
+        )
+        backup_progress_cancel_button.grid(row=0, column=3, sticky="e")
+        self.register_responsive_font(
+            backup_progress_cancel_button,
+            ("Segoe UI", 8, "bold"),
+            min_size=7
+        )
+        self.apply_button_feedback(backup_progress_cancel_button)
+
+        self.backup_progress_frame = backup_progress_frame
+        self.backup_progress_status = backup_progress_status
+        self.backup_progress_bar = backup_progress_bar
+        self.backup_progress_user_label = backup_progress_user_label
+        self.backup_progress_cancel_button = backup_progress_cancel_button
+        self.backup_progress_frame.grid_remove()
 
         self.poll_classification_progress()
 
@@ -3378,6 +3477,7 @@ class BackupGUI:
         backup_description=None
     ):
         self.backup_in_progress = True
+        self.current_backup_started_at = datetime.now()
         self.pending_backup_directories = list(directories)
         self.pending_backup_trigger = trigger
 
@@ -3561,86 +3661,144 @@ class BackupGUI:
             self.root.after(120, self.process_backup_events)
 
     def open_progress_window(self):
-        self.progress_window = tk.Toplevel(self.root)
-        self.progress_window.title("Executando backup")
-        self.progress_window.geometry("420x170")
-        self.progress_window.minsize(380, 170)
-        self.progress_window.configure(bg=BG_COLOR)
-        self.progress_window.transient(self.root)
-        self.prepare_window(self.progress_window)
-        self.progress_window.grab_set()
-        self.progress_window.protocol("WM_DELETE_WINDOW", lambda: None)
-        self.center_window(self.progress_window)
+        self.progress_window = None
+        self.progress_label = self.backup_progress_status
+        self.progress_bar = self.backup_progress_bar
+        self.cancel_button = self.backup_progress_cancel_button
 
-        tk.Label(
-            self.progress_window,
-            text="Realizando backup",
-            bg=BG_COLOR,
-            fg=TITLE_COLOR,
-            font=TITLE_FONT
-        ).pack(pady=(22, 14))
+        if self.backup_progress_frame is not None:
+            self.backup_progress_frame.grid()
 
-        self.progress_label = tk.Label(
-            self.progress_window,
-            text="Preparando...",
-            bg=BG_COLOR,
-            fg=SUBTLE_TEXT,
-            font=BODY_FONT,
-            wraplength=360,
-            justify="center"
-        )
-        self.progress_label.pack(fill="x", padx=24, pady=(0, 12))
+        if self.progress_bar is not None:
+            self.progress_bar["value"] = 0
 
-        self.progress_bar = ttk.Progressbar(
-            self.progress_window,
-            orient="horizontal",
-            mode="determinate",
-            maximum=100
-        )
-        self.progress_bar.pack(fill="x", padx=40, pady=(0, 10))
-        self.progress_bar["value"] = 0
+        if self.progress_label is not None:
+            self.progress_label.config(text="Preparando backup...")
 
-        self.cancel_button = tk.Button(
-            self.progress_window,
-            text="Cancelar",
-            command=self.request_backup_cancel,
-            font=BUTTON_FONT,
-            bg=LIGHT_BUTTON,
-            fg=TEXT_COLOR,
-            activebackground=LIGHT_BUTTON,
-            activeforeground=TEXT_COLOR,
-            relief="flat",
-            bd=0,
-            highlightthickness=1,
-            highlightbackground="#101722",
-            highlightcolor="#101722",
-            cursor="hand2",
-            padx=14,
-            pady=5
-        )
-        self.cancel_button.pack(pady=(4, 0))
-        self.apply_button_feedback(self.cancel_button)
+        user_label = getattr(self, "backup_progress_user_label", None)
+        if user_label is not None:
+            user_label.config(
+                text=f"Usuario: {self.current_user.get('username', 'sistema')}"
+            )
+
+        if self.cancel_button is not None:
+            self.cancel_button.config(state=tk.NORMAL, text="Cancelar")
 
     def update_progress_window(self, percent, message):
-        if self.progress_window is None or not self.progress_window.winfo_exists():
+        if self.progress_bar is None or self.progress_label is None:
             return
 
         self.progress_bar["value"] = max(0, min(percent, 100))
         self.progress_label.config(text=message)
-        self.progress_window.update_idletasks()
+
+        try:
+            if self.progress_window is not None and self.progress_window.winfo_exists():
+                self.progress_window.update_idletasks()
+            elif self.root is not None:
+                self.root.update_idletasks()
+        except tk.TclError:
+            pass
 
     def close_progress_window(self):
-        if self.progress_window is None:
-            return
-
-        if self.progress_window.winfo_exists():
+        if self.progress_window is not None and self.progress_window.winfo_exists():
             self.progress_window.grab_release()
             self.progress_window.destroy()
+
+        if self.backup_progress_frame is not None:
+            self.backup_progress_frame.grid_remove()
 
         self.progress_window = None
         self.progress_label = None
         self.progress_bar = None
         self.cancel_button = None
+
+    def complete_progress_footer(self, message, percent=100, button_text="Concluido"):
+        if self.backup_progress_frame is not None:
+            self.backup_progress_frame.grid()
+
+        self.progress_window = None
+        self.progress_label = self.backup_progress_status
+        self.progress_bar = self.backup_progress_bar
+        self.cancel_button = self.backup_progress_cancel_button
+
+        self.update_progress_window(percent, message)
+
+        if self.cancel_button is not None:
+            self.cancel_button.config(state=tk.DISABLED, text=button_text)
+
+    def start_cloud_sync_footer_monitor(self, snapshot_path=None):
+        self.active_cloud_sync_snapshot_path = snapshot_path
+        self.cloud_sync_footer_poll_scheduled = False
+
+        if self.backup_progress_frame is not None:
+            self.backup_progress_frame.grid()
+
+        self.progress_window = None
+        self.progress_label = self.backup_progress_status
+        self.progress_bar = self.backup_progress_bar
+        self.cancel_button = self.backup_progress_cancel_button
+
+        if self.cancel_button is not None:
+            self.cancel_button.config(state=tk.DISABLED, text="AWS")
+
+        self.update_progress_window(0, "Preparando envio para AWS S3...")
+        self.poll_cloud_sync_footer()
+
+    def schedule_cloud_sync_footer_poll(self):
+        if getattr(self, "cloud_sync_footer_poll_scheduled", False):
+            return
+
+        if getattr(self, "is_closing", False):
+            return
+
+        self.cloud_sync_footer_poll_scheduled = True
+        self.root.after(1000, self.poll_cloud_sync_footer)
+
+    def poll_cloud_sync_footer(self):
+        self.cloud_sync_footer_poll_scheduled = False
+
+        if getattr(self, "backup_in_progress", False):
+            self.schedule_cloud_sync_footer_poll()
+            return
+
+        progress = get_cloud_sync_progress(
+            getattr(self, "active_cloud_sync_snapshot_path", None)
+        )
+
+        if not progress:
+            if getattr(self, "active_cloud_sync_snapshot_path", None):
+                self.schedule_cloud_sync_footer_poll()
+            return
+
+        if not getattr(self, "active_cloud_sync_snapshot_path", None):
+            self.active_cloud_sync_snapshot_path = progress.get("snapshot_path")
+
+        status = progress.get("status", "")
+        processed = progress.get("processed", 0)
+        total = progress.get("total", 0)
+        percent = progress.get("percent", 0)
+        message = progress.get("message") or "Enviando para AWS S3..."
+
+        if total:
+            percent = int((processed / total) * 100)
+
+        self.update_progress_window(max(0, min(percent, 100)), message)
+
+        if self.cancel_button is not None:
+            self.cancel_button.config(state=tk.DISABLED, text="AWS")
+
+        if status in ("sincronizando", "nao_sincronizado"):
+            self.schedule_cloud_sync_footer_poll()
+            return
+
+        self.active_cloud_sync_snapshot_path = None
+
+        if status == "sincronizado":
+            self.complete_progress_footer(message, percent=100)
+        elif status == "falhou":
+            self.complete_progress_footer(message, percent=percent, button_text="Falhou")
+        elif status == "desativado":
+            self.complete_progress_footer(message, percent=0, button_text="AWS off")
 
     def open_download_progress_window(self):
         self.download_window = tk.Toplevel(self.root)
@@ -3797,65 +3955,123 @@ class BackupGUI:
     def finish_backup_success(self, result):
         self.backup_in_progress = False
         self.cancel_backup_requested.clear()
+        self.current_backup_started_at = None
         self.pending_backup_directories = None
         self.pending_backup_trigger = "manual"
         self.set_backup_button_state(tk.NORMAL)
-        self.close_progress_window()
         self.refresh_footer()
         self.refresh_dashboard_if_home()
 
         warning_count = len(result.get("warnings", []))
-        warning_text = ""
-
-        if warning_count:
-            warning_text = (
-                f"\n\nArquivos ignorados por erro durante a copia: {warning_count}"
-            )
 
         if result.get("storage_mode") == "incremental":
-            messagebox.showinfo(
-                "Backup concluido",
-                (
-                    "Backup incremental realizado com sucesso.\n\n"
-                    f"Snapshot salvo em:\n{result.get('snapshot_path') or result.get('backup_path')}\n\n"
-                    f"Armazenamento:\n{result.get('backup_storage', '')}\n\n"
-                    f"Arquivos processados: {result.get('total_files', 0)}\n"
-                    f"Novos objetos: {result.get('objects_stored', 0)}\n"
-                    f"Referencias existentes: {result.get('objects_referenced', 0)}\n"
-                    f"Sem alteracao: {result.get('files_unchanged', 0)}"
-                    f"{warning_text}"
-                )
+            message = (
+                "Backup incremental concluido. "
+                f"{result.get('total_files', 0)} arquivos processados; "
+                f"{result.get('objects_stored', 0)} novos objetos; "
+                f"{result.get('files_unchanged', 0)} sem alteracao."
             )
-            return
+        else:
+            message = (
+                "Backup concluido. "
+                f"{result.get('total_files', 0)} arquivos compactados."
+            )
 
-        messagebox.showinfo(
-            "Backup concluido",
-            (
-                "Backup realizado com sucesso.\n\n"
-                f"Arquivo salvo em:\n{result['backup_path']}\n\n"
-                f"Pasta do dia:\n{result['backup_folder']}\n\n"
-                f"Arquivos compactados: {result['total_files']}"
-                f"{warning_text}"
+        if result.get("cloud_sync_status") == "sincronizando":
+            message += " Envio para AWS continua em segundo plano."
+        elif result.get("cloud_sync_status") == "desativado":
+            message += " AWS desativada."
+
+        if warning_count:
+            message += f" Arquivos ignorados por erro: {warning_count}."
+
+        if result.get("cloud_sync_status") == "sincronizando":
+            self.complete_progress_footer(message, percent=100, button_text="AWS")
+            self.start_cloud_sync_footer_monitor(
+                result.get("snapshot_path") or result.get("backup_path")
             )
-        )
+        else:
+            self.complete_progress_footer(message, percent=100)
 
     def finish_backup_error(self, error_message):
         self.backup_in_progress = False
         self.cancel_backup_requested.clear()
+        self.record_incomplete_backup_history("failed", error_message)
+        self.current_backup_started_at = None
         self.pending_backup_directories = None
         self.pending_backup_trigger = "manual"
         self.set_backup_button_state(tk.NORMAL)
-        self.close_progress_window()
-        messagebox.showerror("Erro", error_message)
+        self.refresh_footer()
+        self.refresh_dashboard_if_home()
+        self.complete_progress_footer(
+            f"Backup falhou: {error_message}",
+            percent=0,
+            button_text="Falhou"
+        )
 
     def finish_backup_cancelled(self, message):
         self.backup_in_progress = False
         self.cancel_backup_requested.clear()
+        self.record_incomplete_backup_history("cancelled", message)
+        self.current_backup_started_at = None
         self.pending_backup_directories = None
         self.pending_backup_trigger = "manual"
         self.set_backup_button_state(tk.NORMAL)
-        self.close_progress_window()
-        messagebox.showinfo("Backup cancelado", message)
+        self.refresh_footer()
+        self.refresh_dashboard_if_home()
+        self.complete_progress_footer(
+            f"Backup cancelado: {message}",
+            percent=0,
+            button_text="Cancelado"
+        )
+
+    def record_incomplete_backup_history(self, status, message):
+        current_user = getattr(self, "current_user", {}) or {}
+        status_label = "cancelado" if status == "cancelled" else "falhou"
+        backup_name = getattr(self, "pending_backup_name", "") or status_label
+        trigger = getattr(self, "pending_backup_trigger", "manual") or "manual"
+        started_at = getattr(self, "current_backup_started_at", None) or datetime.now()
+        finished_at = datetime.now()
+
+        try:
+            self.append_history(
+                {
+                    "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                    "started_at": started_at.isoformat(timespec="seconds"),
+                    "finished_at": finished_at.isoformat(timespec="seconds"),
+                    "backup_file": "",
+                    "backup_name": backup_name,
+                    "backup_description": f"Backup {status_label}: {message}",
+                    "backup_path": "",
+                    "backup_folder": "",
+                    "snapshot_id": "",
+                    "snapshot_path": "",
+                    "storage_mode": "incremental",
+                    "total_files": 0,
+                    "objects_stored": 0,
+                    "objects_referenced": 0,
+                    "files_unchanged": 0,
+                    "files_not_eligible": 0,
+                    "duplicate_files_skipped": 0,
+                    "trigger": trigger,
+                    "user": current_user.get("username") or "sistema",
+                    "user_role": current_user.get("role") or "system",
+                    "company_id": current_user.get("company_id") or "default",
+                    "encrypted": False,
+                    "encryption_algorithm": "",
+                    "backup_encryption": {},
+                    "compacted_size_bytes": None,
+                    "file_changes": [],
+                    "file_snapshot": {},
+                    "status_counts": {},
+                    "warnings_count": 1,
+                    "history_group_type": "full",
+                    "status": status,
+                    "error": str(message),
+                }
+            )
+        except Exception as error:
+            print(f"Falha ao registrar historico do backup {status_label}: {error}")
 
     def append_history(self, entry):
         history = self.load_history()
@@ -7261,6 +7477,7 @@ def start_gui(current_user=None):
 
     global _background_root
     global _background_gui
+    global _cloud_sync_resume_started
 
     if (
         current_user is None
@@ -7297,6 +7514,17 @@ def start_gui(current_user=None):
         gui = BackupGUI(root, current_user)
         _background_gui = gui
         gui.show_window()
+
+        if not _cloud_sync_resume_started:
+            try:
+                resumed_cloud_syncs = resume_pending_cloud_syncs()
+            except Exception:
+                resumed_cloud_syncs = []
+
+            if any(resumed_cloud_syncs):
+                gui.start_cloud_sync_footer_monitor()
+
+            _cloud_sync_resume_started = True
 
         try:
             root.mainloop()

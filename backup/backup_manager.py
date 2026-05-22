@@ -38,6 +38,12 @@ ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
 _BACKUP_ENV_FILE_LOADED = False
 _ZSTD_THREAD_LOCAL = threading.local()
 _BACKUP_EXECUTION_LOCK = threading.Lock()
+_HISTORY_LOCK = threading.RLock()
+_CLOUD_SYNC_LOCK = threading.Lock()
+_CLOUD_SYNC_IN_PROGRESS = set()
+_CLOUD_SYNC_PROGRESS = {}
+_CLOUD_SYNC_LATEST_IDENTITY = None
+CLOUD_SYNC_PENDING_STATUSES = {"sincronizando", "nao_sincronizado"}
 PRIORITY_INTERVALS = {
     PRIORITY_LOW: timedelta(days=7),
     PRIORITY_MEDIUM: timedelta(days=2),
@@ -1366,9 +1372,13 @@ def _get_zstd_compressor():
 
 def _get_zstd_decompressor():
     """Retorna (e cacheia) um decompressor zstd."""
-    if not hasattr(_get_zstd_decompressor, "_cached"):
-        _get_zstd_decompressor._cached = zstd.ZstdDecompressor()
-    return _get_zstd_decompressor._cached
+    decompressor = getattr(_ZSTD_THREAD_LOCAL, "decompressor", None)
+
+    if decompressor is None:
+        decompressor = zstd.ZstdDecompressor()
+        _ZSTD_THREAD_LOCAL.decompressor = decompressor
+
+    return decompressor
 
 
 def read_and_compress_file(source_path):
@@ -1456,6 +1466,78 @@ def get_incremental_object_worker_count(total_objects):
     return min(4, total_objects, max(2, available_cpus))
 
 
+def get_incremental_analysis_worker_count(total_files):
+    if total_files <= 1:
+        return 1
+
+    available_cpus = os.cpu_count() or 2
+    return min(8, total_files, max(2, available_cpus))
+
+
+def get_export_worker_count(total_files):
+    if total_files <= 1:
+        return 1
+
+    available_cpus = os.cpu_count() or 2
+    return min(6, total_files, max(2, available_cpus))
+
+
+def analyze_incremental_backup_item(
+    item_index,
+    source_path,
+    archive_name,
+    priority,
+    score,
+):
+    stat_result = os.stat(source_path)
+    file_hash, compressed_data = hash_and_compress_file(source_path)
+    return {
+        "item_index": item_index,
+        "source_path": source_path,
+        "archive_name": archive_name,
+        "priority": priority,
+        "score": score,
+        "stat_result": stat_result,
+        "file_hash": file_hash,
+        "compressed_data": compressed_data,
+    }
+
+
+def load_export_file_payload(
+    item_index,
+    file_data,
+    storage_root,
+    index,
+    user_master_key,
+):
+    archive_name = normalize_archive_name(file_data.get("archive_name", ""))
+    object_path = file_data.get("object_path", "")
+    object_abs_path = resolve_storage_relative_path(storage_root, object_path)
+
+    if not os.path.exists(object_abs_path):
+        return {
+            "item_index": item_index,
+            "archive_name": archive_name,
+            "raw_data": None,
+            "error": "Objeto nao encontrado no armazenamento incremental.",
+            "object_abs_path": object_abs_path,
+        }
+
+    encryption_metadata = resolve_file_encryption_metadata(file_data, index)
+    raw_data = read_storage_object_bytes(
+        object_abs_path,
+        encryption_metadata,
+        user_master_key,
+    )
+    return {
+        "item_index": item_index,
+        "archive_name": archive_name,
+        "raw_data": raw_data,
+        "error": "",
+        "object_abs_path": object_abs_path,
+    }
+
+
 def build_not_eligible_snapshot_entry(
     source_path,
     archive_name,
@@ -1534,6 +1616,7 @@ def run_incremental_backup(
     result_entries = [None] * total_entries
     pending_store_items = {}
     pending_store_jobs = {}
+    analysis_jobs = []
     completed_entries = 0
 
     def record_progress(archive_name):
@@ -1632,125 +1715,163 @@ def run_incremental_backup(
                 f"Arquivo elegivel em intervalo reduzido: {os.path.basename(source_path)}"
             )
 
-        try:
-            stat_result = os.stat(source_path)
-            file_hash = calculate_file_hash(source_path)
-        except OSError as error:
-            entry = build_incremental_snapshot_entry(
-                source_path=source_path,
-                archive_name=archive_name,
-                file_hash="",
-                object_path="",
-                priority=priority,
-                score=score,
-                size=0,
-                modified_at="",
-                status="error",
-                error=str(error)
-            )
-            warnings.append({"path": source_path, "error": str(error)})
-            log_backup_decision(
-                "ERROR",
-                f"Falha ao calcular hash: {source_path} ({error})"
-            )
-            record_entry(item_index, archive_name, entry)
-
-            continue
-
-        existing_object = index.get("objects", {}).get(file_hash, {})
-        object_path = existing_object.get("object_path") or build_object_relative_path(
-            file_hash,
-            now=now
+        analysis_jobs.append(
+            {
+                "item_index": item_index,
+                "source_path": source_path,
+                "archive_name": archive_name,
+                "priority": priority,
+                "score": score,
+                "index_entry": index_entry,
+            }
         )
-        object_abs_path = resolve_storage_relative_path(
-            storage_paths["root"],
-            object_path
-        )
-        previous_hash = index_entry.get("last_hash")
-        encryption_metadata = get_object_encryption_metadata(index, file_hash)
 
-        if previous_hash == file_hash and os.path.exists(object_abs_path):
-            status = "skipped_unchanged"
-            log_backup_decision(
-                "INFO",
-                f"Arquivo sem alteracao, mantendo referencia: {source_path}"
-            )
-            record_success_item(
-                {
-                    "item_index": item_index,
-                    "source_path": source_path,
-                    "archive_name": archive_name,
-                    "file_hash": file_hash,
-                    "object_path": object_path,
-                    "priority": priority,
-                    "score": score,
-                    "stat_result": stat_result,
-                    "status": status,
-                },
-                encryption_metadata,
-            )
-        elif os.path.exists(object_abs_path):
-            status = "referenced_existing_object"
-            skipped_duplicates.append(
-                {
-                    "path": source_path,
-                    "hash": file_hash,
-                    "reason": "Hash ja existente no armazenamento incremental."
-                }
-            )
-            log_backup_decision(
-                "INFO",
-                f"Hash ja existente, criando apenas referencia: {source_path}"
-            )
-            record_success_item(
-                {
-                    "item_index": item_index,
-                    "source_path": source_path,
-                    "archive_name": archive_name,
-                    "file_hash": file_hash,
-                    "object_path": object_path,
-                    "priority": priority,
-                    "score": score,
-                    "stat_result": stat_result,
-                    "status": status,
-                },
-                encryption_metadata,
-            )
-        else:
-            status = "stored_new_object"
+    if analysis_jobs:
+        worker_count = get_incremental_analysis_worker_count(len(analysis_jobs))
 
-            if file_hash in pending_store_jobs:
-                status = "referenced_existing_object"
-                skipped_duplicates.append(
-                    {
-                        "path": source_path,
-                        "hash": file_hash,
-                        "reason": "Hash ja existente no armazenamento incremental."
-                    }
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_to_job = {
+                executor.submit(
+                    analyze_incremental_backup_item,
+                    job["item_index"],
+                    job["source_path"],
+                    job["archive_name"],
+                    job["priority"],
+                    job["score"],
+                ): job
+                for job in analysis_jobs
+            }
+
+            for future in as_completed(future_to_job):
+                ensure_not_cancelled(cancel_callback)
+                job = future_to_job[future]
+                source_path = job["source_path"]
+                archive_name = job["archive_name"]
+                priority = job["priority"]
+                score = job["score"]
+                index_entry = job["index_entry"]
+
+                try:
+                    analyzed_item = future.result()
+                except OSError as error:
+                    entry = build_incremental_snapshot_entry(
+                        source_path=source_path,
+                        archive_name=archive_name,
+                        file_hash="",
+                        object_path="",
+                        priority=priority,
+                        score=score,
+                        size=0,
+                        modified_at="",
+                        status="error",
+                        error=str(error)
+                    )
+                    warnings.append({"path": source_path, "error": str(error)})
+                    log_backup_decision(
+                        "ERROR",
+                        f"Falha ao calcular hash: {source_path} ({error})"
+                    )
+                    record_entry(job["item_index"], archive_name, entry)
+                    continue
+
+                stat_result = analyzed_item["stat_result"]
+                file_hash = analyzed_item["file_hash"]
+                compressed_data = analyzed_item["compressed_data"]
+                existing_object = index.get("objects", {}).get(file_hash, {})
+                object_path = existing_object.get("object_path") or build_object_relative_path(
+                    file_hash,
+                    now=now
                 )
-                log_backup_decision(
-                    "INFO",
-                    f"Hash ja pendente, criando apenas referencia: {source_path}"
+                object_abs_path = resolve_storage_relative_path(
+                    storage_paths["root"],
+                    object_path
                 )
-            else:
-                pending_store_jobs[file_hash] = {
-                    "source_path": source_path,
-                    "object_abs_path": object_abs_path,
-                }
+                previous_hash = index_entry.get("last_hash")
+                encryption_metadata = get_object_encryption_metadata(index, file_hash)
 
-            pending_store_items.setdefault(file_hash, []).append(
-                {
-                    "item_index": item_index,
-                    "source_path": source_path,
-                    "archive_name": archive_name,
-                    "file_hash": file_hash,
-                    "object_path": object_path,
-                    "priority": priority,
-                    "score": score,
-                    "stat_result": stat_result,
-                    "status": status,
-                }
-            )
+                if previous_hash == file_hash and os.path.exists(object_abs_path):
+                    status = "skipped_unchanged"
+                    log_backup_decision(
+                        "INFO",
+                        f"Arquivo sem alteracao, mantendo referencia: {source_path}"
+                    )
+                    record_success_item(
+                        {
+                            "item_index": job["item_index"],
+                            "source_path": source_path,
+                            "archive_name": archive_name,
+                            "file_hash": file_hash,
+                            "object_path": object_path,
+                            "priority": priority,
+                            "score": score,
+                            "stat_result": stat_result,
+                            "status": status,
+                        },
+                        encryption_metadata,
+                    )
+                elif os.path.exists(object_abs_path):
+                    status = "referenced_existing_object"
+                    skipped_duplicates.append(
+                        {
+                            "path": source_path,
+                            "hash": file_hash,
+                            "reason": "Hash ja existente no armazenamento incremental."
+                        }
+                    )
+                    log_backup_decision(
+                        "INFO",
+                        f"Hash ja existente, criando apenas referencia: {source_path}"
+                    )
+                    record_success_item(
+                        {
+                            "item_index": job["item_index"],
+                            "source_path": source_path,
+                            "archive_name": archive_name,
+                            "file_hash": file_hash,
+                            "object_path": object_path,
+                            "priority": priority,
+                            "score": score,
+                            "stat_result": stat_result,
+                            "status": status,
+                        },
+                        encryption_metadata,
+                    )
+                else:
+                    status = "stored_new_object"
+
+                    if file_hash in pending_store_jobs:
+                        status = "referenced_existing_object"
+                        skipped_duplicates.append(
+                            {
+                                "path": source_path,
+                                "hash": file_hash,
+                                "reason": "Hash ja existente no armazenamento incremental."
+                            }
+                        )
+                        log_backup_decision(
+                            "INFO",
+                            f"Hash ja pendente, criando apenas referencia: {source_path}"
+                        )
+                    else:
+                        pending_store_jobs[file_hash] = {
+                            "source_path": source_path,
+                            "object_abs_path": object_abs_path,
+                            "compressed_data": compressed_data,
+                        }
+
+                    pending_store_items.setdefault(file_hash, []).append(
+                        {
+                            "item_index": job["item_index"],
+                            "source_path": source_path,
+                            "archive_name": archive_name,
+                            "file_hash": file_hash,
+                            "object_path": object_path,
+                            "priority": priority,
+                            "score": score,
+                            "stat_result": stat_result,
+                            "status": status,
+                        }
+                    )
 
     ensure_not_cancelled(cancel_callback)
 
@@ -1764,6 +1885,7 @@ def run_incremental_backup(
                     job["source_path"],
                     job["object_abs_path"],
                     backup_encryption=backup_encryption,
+                    compressed_data=job.get("compressed_data"),
                 ): file_hash
                 for file_hash, job in pending_store_jobs.items()
             }
@@ -1955,9 +2077,10 @@ def create_encrypted_snapshot_archive(
             temporary_zip_path,
             progress_callback=progress_callback,
             user_master_key=crypto_service.b64encode(master_key),
+            compression_method=zipfile.ZIP_STORED,
         )
         backup_key = crypto_service.generate_key()
-        encrypted_file = crypto_service.encrypt_file(
+        encrypted_file = crypto_service.encrypt_file_streaming(
             temporary_zip_path,
             encrypted_path,
             backup_key,
@@ -1994,9 +2117,10 @@ def load_history():
 
 
 def append_history(entry):
-    history = load_history()
-    history.append(entry)
-    save_json(HISTORY_PATH, history[-50:])
+    with _HISTORY_LOCK:
+        history = load_history()
+        history.append(entry)
+        save_json(HISTORY_PATH, history[-50:])
 
 
 def sync_history_entry_to_cloud(history_entry, progress_callback=None):
@@ -2028,6 +2152,63 @@ def sync_history_entry_to_cloud(history_entry, progress_callback=None):
             }
 
 
+def build_initial_cloud_sync_result(history_entry):
+    try:
+        from cloud import aws_s3_service
+
+        settings = aws_s3_service.load_cloud_settings()
+
+        if not settings.get("enabled"):
+            return aws_s3_service.get_disabled_cloud_result(), False
+
+        return (
+            {
+                "cloud_provider": aws_s3_service.AWS_PROVIDER,
+                "cloud_bucket": settings.get("bucket_name", ""),
+                "cloud_snapshot_key": "",
+                "cloud_storage_prefix": aws_s3_service.build_cloud_storage_prefix(
+                    history_entry,
+                    settings,
+                ),
+                "cloud_sync_status": aws_s3_service.STATUS_SYNCING,
+                "cloud_synced_at": "",
+                "cloud_error_message": "",
+            },
+            True,
+        )
+    except Exception as error:
+        try:
+            from cloud import aws_s3_service
+
+            return (
+                aws_s3_service.build_failure_result(
+                    history_entry,
+                    aws_s3_service.load_cloud_settings(),
+                    error,
+                ),
+                False,
+            )
+        except Exception:
+            return (
+                {
+                    "cloud_provider": "AWS S3",
+                    "cloud_bucket": "",
+                    "cloud_snapshot_key": "",
+                    "cloud_storage_prefix": "",
+                    "cloud_sync_status": "falhou",
+                    "cloud_synced_at": "",
+                    "cloud_error_message": str(error)[:180],
+                },
+                False,
+            )
+
+
+def apply_initial_cloud_sync_status(history_entry):
+    cloud_result, should_start_sync = build_initial_cloud_sync_result(history_entry)
+    history_entry.update(cloud_result)
+    return should_start_sync
+
+
 def history_entry_matches_snapshot_path(entry, snapshot_path):
     if not isinstance(entry, dict) or not snapshot_path:
         return False
@@ -2041,6 +2222,202 @@ def history_entry_matches_snapshot_path(entry, snapshot_path):
             return True
 
     return False
+
+
+def update_history_entry_cloud_result(snapshot_path, result):
+    cloud_fields = {
+        "cloud_provider",
+        "cloud_bucket",
+        "cloud_snapshot_key",
+        "cloud_storage_prefix",
+        "cloud_sync_status",
+        "cloud_synced_at",
+        "cloud_error_message",
+    }
+
+    with _HISTORY_LOCK:
+        history = load_history()
+        updated = False
+
+        for entry in reversed(history):
+            if not history_entry_matches_snapshot_path(entry, snapshot_path):
+                continue
+
+            for field in cloud_fields:
+                if field in result:
+                    entry[field] = result[field]
+
+            updated = True
+            break
+
+        if updated:
+            save_json(HISTORY_PATH, history[-50:])
+
+        return updated
+
+
+def get_cloud_sync_identity(history_entry):
+    snapshot_path = history_entry.get("snapshot_path") or history_entry.get("backup_path")
+
+    if not snapshot_path:
+        return ""
+
+    return normalize_path(snapshot_path)
+
+
+def publish_cloud_sync_progress(
+    snapshot_path,
+    processed=0,
+    total=0,
+    message="",
+    status="sincronizando"
+):
+    global _CLOUD_SYNC_LATEST_IDENTITY
+
+    if not snapshot_path:
+        return None
+
+    identity = normalize_path(snapshot_path)
+
+    try:
+        processed = int(processed or 0)
+    except (TypeError, ValueError):
+        processed = 0
+
+    try:
+        total = int(total or 0)
+    except (TypeError, ValueError):
+        total = 0
+
+    processed = max(0, processed)
+    total = max(0, total)
+    percent = int((processed / total) * 100) if total else 0
+    percent = max(0, min(percent, 100))
+
+    progress = {
+        "identity": identity,
+        "snapshot_path": snapshot_path,
+        "processed": processed,
+        "total": total,
+        "percent": percent,
+        "message": message or "",
+        "status": status or "sincronizando",
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+    with _CLOUD_SYNC_LOCK:
+        _CLOUD_SYNC_PROGRESS[identity] = progress
+        _CLOUD_SYNC_LATEST_IDENTITY = identity
+
+    return dict(progress)
+
+
+def get_cloud_sync_progress(snapshot_path=None):
+    with _CLOUD_SYNC_LOCK:
+        if snapshot_path:
+            progress = _CLOUD_SYNC_PROGRESS.get(normalize_path(snapshot_path))
+            return dict(progress) if progress else None
+
+        if _CLOUD_SYNC_LATEST_IDENTITY:
+            progress = _CLOUD_SYNC_PROGRESS.get(_CLOUD_SYNC_LATEST_IDENTITY)
+            if progress and progress.get("status") in CLOUD_SYNC_PENDING_STATUSES:
+                return dict(progress)
+
+        for progress in _CLOUD_SYNC_PROGRESS.values():
+            if progress.get("status") in CLOUD_SYNC_PENDING_STATUSES:
+                return dict(progress)
+
+    return None
+
+
+def start_cloud_sync_background(history_entry):
+    sync_identity = get_cloud_sync_identity(history_entry)
+
+    if not sync_identity:
+        return None
+
+    with _CLOUD_SYNC_LOCK:
+        if sync_identity in _CLOUD_SYNC_IN_PROGRESS:
+            return None
+
+        _CLOUD_SYNC_IN_PROGRESS.add(sync_identity)
+
+    snapshot_path = history_entry.get("snapshot_path") or history_entry.get("backup_path")
+    sync_entry = dict(history_entry)
+    publish_cloud_sync_progress(
+        snapshot_path,
+        0,
+        0,
+        "Preparando envio para AWS S3...",
+        "sincronizando",
+    )
+
+    def worker():
+        try:
+            def on_cloud_progress(processed, total, message):
+                publish_cloud_sync_progress(
+                    snapshot_path,
+                    processed,
+                    total,
+                    message,
+                    "sincronizando",
+                )
+
+            result = sync_history_entry_to_cloud(
+                sync_entry,
+                progress_callback=on_cloud_progress,
+            )
+            update_history_entry_cloud_result(snapshot_path, result)
+
+            current_progress = get_cloud_sync_progress(snapshot_path) or {}
+            total = current_progress.get("total") or current_progress.get("processed") or 0
+            processed = current_progress.get("processed") or total
+            status = result.get("cloud_sync_status", "sincronizando")
+
+            if status == "sincronizado":
+                message = "Envio para AWS S3 concluido."
+                processed = total or 1
+                total = total or processed
+            elif status == "falhou":
+                message = (
+                    "Falha no envio para AWS S3: "
+                    f"{result.get('cloud_error_message', 'erro nao informado')}"
+                )
+            elif status == "desativado":
+                message = "Sincronizacao com AWS S3 desativada."
+            else:
+                message = current_progress.get("message", "")
+
+            publish_cloud_sync_progress(
+                snapshot_path,
+                processed,
+                total,
+                message,
+                status,
+            )
+        finally:
+            with _CLOUD_SYNC_LOCK:
+                _CLOUD_SYNC_IN_PROGRESS.discard(sync_identity)
+
+    thread = threading.Thread(
+        target=worker,
+        daemon=True,
+        name=f"cloud-sync-{os.path.basename(sync_identity)}",
+    )
+    thread.start()
+    return thread
+
+
+def resume_pending_cloud_syncs():
+    resumed = []
+
+    for entry in load_history():
+        if entry.get("cloud_sync_status") not in CLOUD_SYNC_PENDING_STATUSES:
+            continue
+
+        resumed.append(start_cloud_sync_background(entry))
+
+    return resumed
 
 
 def ensure_cloud_backup_available(snapshot_path):
@@ -2201,6 +2578,8 @@ def run_backup_job(
 
     history_entry = {
         "timestamp": completed_at.strftime("%d/%m/%Y %H:%M:%S"),
+        "started_at": started_at.isoformat(timespec="seconds"),
+        "finished_at": completed_at.isoformat(timespec="seconds"),
         "backup_file": os.path.basename(incremental_result["snapshot_path"]),
         "backup_name": backup_name or "",
         "backup_description": backup_description or "",
@@ -2236,34 +2615,22 @@ def run_backup_job(
         "status_counts": incremental_result["status_counts"],
         "warnings_count": len(incremental_result["warnings"]),
         "history_group_type": "full",
+        "status": "completed",
     }
-    if progress_callback:
-        progress_callback(96, "Sincronizando backup com AWS S3...")
-
-    def on_cloud_progress(processed, total, message):
-        if not progress_callback:
-            return
-
-        if total <= 0:
-            progress_callback(96, message or "Sincronizando backup com AWS S3...")
-            return
-
-        percent = 96 + int((processed / total) * 3)
-        progress_callback(
-            min(percent, 99),
-            message or f"Enviando para S3: {processed}/{total}"
-        )
-
-    history_entry.update(
-        sync_history_entry_to_cloud(
-            history_entry,
-            progress_callback=on_cloud_progress,
-        )
-    )
+    should_start_cloud_sync = apply_initial_cloud_sync_status(history_entry)
     append_history(history_entry)
 
     if progress_callback:
-        progress_callback(100, "Backup incremental concluido.")
+        if should_start_cloud_sync:
+            progress_callback(
+                100,
+                "Backup local concluido. Envio para AWS continuara em segundo plano."
+            )
+        else:
+            progress_callback(100, "Backup incremental concluido.")
+
+    if should_start_cloud_sync:
+        start_cloud_sync_background(history_entry)
 
     if run_scan_first:
         start_background_classification_scan()
@@ -2438,6 +2805,8 @@ def run_priority_backup_job(
 
     history_entry = {
         "timestamp": completed_at.strftime("%d/%m/%Y %H:%M:%S"),
+        "started_at": started_at.isoformat(timespec="seconds"),
+        "finished_at": completed_at.isoformat(timespec="seconds"),
         "backup_file": os.path.basename(incremental_result["snapshot_path"]),
         "backup_name": "prioridade",
         "backup_description": "Backup automatico pela politica de prioridade.",
@@ -2478,34 +2847,22 @@ def run_priority_backup_job(
         "history_group_type": "priority_snapshot",
         "parent_snapshot_id": parent_snapshot_id,
         "priority_scope": determine_priority_scope(eligible_manifest, priority_index),
+        "status": "completed",
     }
-    if progress_callback:
-        progress_callback(96, "Sincronizando backup por prioridade com AWS S3...")
-
-    def on_cloud_progress(processed, total, message):
-        if not progress_callback:
-            return
-
-        if total <= 0:
-            progress_callback(96, message or "Sincronizando backup com AWS S3...")
-            return
-
-        percent = 96 + int((processed / total) * 3)
-        progress_callback(
-            min(percent, 99),
-            message or f"Enviando para S3: {processed}/{total}"
-        )
-
-    history_entry.update(
-        sync_history_entry_to_cloud(
-            history_entry,
-            progress_callback=on_cloud_progress,
-        )
-    )
+    should_start_cloud_sync = apply_initial_cloud_sync_status(history_entry)
     append_history(history_entry)
 
     if progress_callback:
-        progress_callback(100, "Backup incremental por prioridade concluido.")
+        if should_start_cloud_sync:
+            progress_callback(
+                100,
+                "Backup local por prioridade concluido. Envio para AWS continuara em segundo plano."
+            )
+        else:
+            progress_callback(100, "Backup incremental por prioridade concluido.")
+
+    if should_start_cloud_sync:
+        start_cloud_sync_background(history_entry)
 
     history_entry["warnings"] = incremental_result["warnings"]
     history_entry["skipped_duplicates"] = incremental_result["skipped_duplicates"]
@@ -2631,6 +2988,8 @@ def append_scheduled_failure_history(error, now=None, context=None):
     append_history(
         {
             "timestamp": now.strftime("%d/%m/%Y %H:%M:%S"),
+            "started_at": now.isoformat(timespec="seconds"),
+            "finished_at": now.isoformat(timespec="seconds"),
             "backup_file": "",
             "backup_name": "agendado",
             "backup_description": f"Falha no backup agendado: {message}",
@@ -2899,7 +3258,8 @@ def export_snapshot_to_zip(
     snapshot_path,
     destination_zip_path,
     progress_callback=None,
-    user_master_key=None
+    user_master_key=None,
+    compression_method=None
 ):
     snapshot_path = normalize_path(snapshot_path)
     destination_zip_path = normalize_path(destination_zip_path)
@@ -2933,56 +3293,77 @@ def export_snapshot_to_zip(
     if progress_callback:
         progress_callback(0, total_files, "Preparando exportacao do backup...")
 
-    with zipfile.ZipFile(destination_zip_path, "w", compression=ZIP_COMPRESSION_METHOD) as archive:
-        for item_index, file_data in enumerate(exportable_files, start=1):
-            archive_name = normalize_archive_name(file_data.get("archive_name", ""))
-            object_path = file_data.get("object_path", "")
-            file_hash = file_data.get("hash") or file_data.get("file_hash", "")
+    zip_compression_method = (
+        ZIP_COMPRESSION_METHOD
+        if compression_method is None
+        else compression_method
+    )
 
-            object_abs_path = resolve_storage_relative_path(storage_root, object_path)
+    with zipfile.ZipFile(destination_zip_path, "w", compression=zip_compression_method) as archive:
+        worker_count = get_export_worker_count(total_files)
+        max_pending = max(worker_count * 2, 1)
+        entry_iterator = iter(enumerate(exportable_files, start=1))
 
-            if not os.path.exists(object_abs_path):
-                warnings.append(
-                    {
-                        "archive_name": archive_name,
-                        "error": "Objeto nao encontrado no armazenamento incremental."
-                    }
-                )
-                log_backup_decision(
-                    "ERROR",
-                    f"Objeto ausente durante exportacao do ZIP: {object_abs_path}"
-                )
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_to_item = {}
+
+            def submit_next_batch():
+                while len(future_to_item) < max_pending:
+                    try:
+                        next_index, next_file_data = next(entry_iterator)
+                    except StopIteration:
+                        break
+
+                    future = executor.submit(
+                        load_export_file_payload,
+                        next_index,
+                        next_file_data,
+                        storage_root,
+                        index,
+                        user_master_key,
+                    )
+                    future_to_item[future] = (next_index, next_file_data)
+
+            submit_next_batch()
+
+            while future_to_item:
+                future = next(as_completed(future_to_item))
+                item_index, file_data = future_to_item.pop(future)
+                archive_name = normalize_archive_name(file_data.get("archive_name", ""))
+
+                try:
+                    payload = future.result()
+
+                    if payload["error"]:
+                        warnings.append(
+                            {
+                                "archive_name": archive_name,
+                                "error": payload["error"]
+                            }
+                        )
+                        log_backup_decision(
+                            "ERROR",
+                            f"Objeto ausente durante exportacao do ZIP: {payload['object_abs_path']}"
+                        )
+                    else:
+                        archive.writestr(archive_name, payload["raw_data"])
+                        exported_count += 1
+                except (OSError, ValueError, zstd.ZstdError, crypto_service.CryptoError) as error:
+                    warnings.append(
+                        {
+                            "archive_name": archive_name,
+                            "error": str(error)
+                        }
+                    )
+                    log_backup_decision(
+                        "ERROR",
+                        f"Falha ao adicionar arquivo ao ZIP exportado: {archive_name} ({error})"
+                    )
+
                 if progress_callback:
                     progress_callback(item_index, total_files, archive_name)
-                continue
 
-            try:
-                encryption_metadata = resolve_file_encryption_metadata(file_data, index)
-
-                # Sempre descomprimir os dados antes de adicionar ao ZIP
-                # (objetos estao armazenados comprimidos com zstd)
-                raw_data = read_storage_object_bytes(
-                    object_abs_path,
-                    encryption_metadata,
-                    user_master_key,
-                )
-                archive.writestr(archive_name, raw_data)
-
-                exported_count += 1
-            except (OSError, ValueError, zstd.ZstdError, crypto_service.CryptoError) as error:
-                warnings.append(
-                    {
-                        "archive_name": archive_name,
-                        "error": str(error)
-                    }
-                )
-                log_backup_decision(
-                    "ERROR",
-                    f"Falha ao adicionar arquivo ao ZIP exportado: {archive_name} ({error})"
-                )
-
-            if progress_callback:
-                progress_callback(item_index, total_files, archive_name)
+                submit_next_batch()
 
     return {
         "zip_path": destination_zip_path,
