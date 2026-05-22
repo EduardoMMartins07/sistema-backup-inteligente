@@ -19,6 +19,14 @@ STATUS_SYNCING = "sincronizando"
 STATUS_SYNCED = "sincronizado"
 STATUS_FAILED = "falhou"
 STATUS_NOT_SYNCED = "nao_sincronizado"
+DEFAULT_CLOUD_UPLOAD_WORKERS = 16
+DEFAULT_CLOUD_MAX_POOL_CONNECTIONS = 32
+DEFAULT_MULTIPART_THRESHOLD_MB = 8
+DEFAULT_MULTIPART_CHUNKSIZE_MB = 8
+MIN_CLOUD_UPLOAD_WORKERS = 1
+MAX_CLOUD_UPLOAD_WORKERS = 64
+MIN_MULTIPART_SIZE_MB = 5
+MAX_MULTIPART_SIZE_MB = 512
 
 
 class CloudStorageError(RuntimeError):
@@ -139,7 +147,20 @@ def get_default_cloud_settings():
         "last_test_status": "",
         "last_test_at": "",
         "last_test_message": "",
+        "cloud_upload_workers": DEFAULT_CLOUD_UPLOAD_WORKERS,
+        "cloud_max_pool_connections": DEFAULT_CLOUD_MAX_POOL_CONNECTIONS,
+        "multipart_threshold_mb": DEFAULT_MULTIPART_THRESHOLD_MB,
+        "multipart_chunksize_mb": DEFAULT_MULTIPART_CHUNKSIZE_MB,
     }
+
+
+def normalize_int_setting(value, default, minimum, maximum):
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        normalized = default
+
+    return max(minimum, min(normalized, maximum))
 
 
 def normalize_cloud_settings(settings):
@@ -164,6 +185,33 @@ def normalize_cloud_settings(settings):
     normalized["base_prefix"] = normalize_s3_prefix(normalized.get("base_prefix"))
     normalized["endpoint_url"] = str(normalized.get("endpoint_url", "")).strip()
     normalized["access_key_id"] = str(normalized.get("access_key_id", "")).strip()
+    normalized["cloud_upload_workers"] = normalize_int_setting(
+        normalized.get("cloud_upload_workers"),
+        DEFAULT_CLOUD_UPLOAD_WORKERS,
+        MIN_CLOUD_UPLOAD_WORKERS,
+        MAX_CLOUD_UPLOAD_WORKERS,
+    )
+    normalized["cloud_max_pool_connections"] = normalize_int_setting(
+        normalized.get("cloud_max_pool_connections"),
+        max(
+            DEFAULT_CLOUD_MAX_POOL_CONNECTIONS,
+            normalized["cloud_upload_workers"],
+        ),
+        normalized["cloud_upload_workers"],
+        MAX_CLOUD_UPLOAD_WORKERS * 2,
+    )
+    normalized["multipart_threshold_mb"] = normalize_int_setting(
+        normalized.get("multipart_threshold_mb"),
+        DEFAULT_MULTIPART_THRESHOLD_MB,
+        MIN_MULTIPART_SIZE_MB,
+        MAX_MULTIPART_SIZE_MB,
+    )
+    normalized["multipart_chunksize_mb"] = normalize_int_setting(
+        normalized.get("multipart_chunksize_mb"),
+        DEFAULT_MULTIPART_CHUNKSIZE_MB,
+        MIN_MULTIPART_SIZE_MB,
+        MAX_MULTIPART_SIZE_MB,
+    )
     return normalized
 
 
@@ -284,7 +332,7 @@ def get_public_cloud_settings():
 
 
 def create_s3_client(settings=None):
-    settings = settings or load_cloud_settings(include_secret=True)
+    settings = normalize_cloud_settings(settings or load_cloud_settings(include_secret=True))
 
     try:
         import boto3
@@ -303,11 +351,58 @@ def create_s3_client(settings=None):
     if settings.get("endpoint_url"):
         kwargs["endpoint_url"] = settings["endpoint_url"]
 
+    client_config = build_s3_client_config(settings)
+
+    if client_config is not None:
+        kwargs["config"] = client_config
+
     return boto3.client(**kwargs)
 
 
 def get_s3_client(settings=None, client=None):
     return client or create_s3_client(settings)
+
+
+def build_s3_client_config(settings):
+    try:
+        from botocore.config import Config
+    except ImportError:
+        return None
+
+    return Config(
+        max_pool_connections=settings.get(
+            "cloud_max_pool_connections",
+            DEFAULT_CLOUD_MAX_POOL_CONNECTIONS,
+        ),
+        retries={"max_attempts": 5, "mode": "standard"},
+    )
+
+
+def build_s3_transfer_config(settings):
+    try:
+        from boto3.s3.transfer import TransferConfig
+    except ImportError:
+        return None
+
+    multipart_threshold = settings.get(
+        "multipart_threshold_mb",
+        DEFAULT_MULTIPART_THRESHOLD_MB,
+    ) * 1024 * 1024
+    multipart_chunksize = settings.get(
+        "multipart_chunksize_mb",
+        DEFAULT_MULTIPART_CHUNKSIZE_MB,
+    ) * 1024 * 1024
+    max_concurrency = settings.get(
+        "cloud_upload_workers",
+        DEFAULT_CLOUD_UPLOAD_WORKERS,
+    )
+
+    return TransferConfig(
+        multipart_threshold=multipart_threshold,
+        multipart_chunksize=multipart_chunksize,
+        max_concurrency=max_concurrency,
+        use_threads=True,
+    )
 
 
 def sanitize_cloud_error(error):
@@ -520,16 +615,30 @@ def iter_incremental_upload_object_paths(history_entry, snapshot):
                 yield object_path
 
 
-def get_cloud_upload_worker_count(total_uploads):
+def get_cloud_upload_worker_count(total_uploads, settings=None):
     if total_uploads <= 1:
         return 1
 
-    available_cpus = os.cpu_count() or 2
-    return min(8, total_uploads, max(2, available_cpus * 2))
+    settings = settings or {}
+    configured_workers = settings.get(
+        "cloud_upload_workers",
+        DEFAULT_CLOUD_UPLOAD_WORKERS,
+    )
+    configured_workers = normalize_int_setting(
+        configured_workers,
+        DEFAULT_CLOUD_UPLOAD_WORKERS,
+        MIN_CLOUD_UPLOAD_WORKERS,
+        MAX_CLOUD_UPLOAD_WORKERS,
+    )
+    return min(total_uploads, configured_workers)
 
 
-def upload_file(client, bucket, local_path, key):
-    client.upload_file(str(local_path), bucket, key)
+def upload_file(client, bucket, local_path, key, transfer_config=None):
+    if transfer_config is None:
+        client.upload_file(str(local_path), bucket, key)
+        return
+
+    client.upload_file(str(local_path), bucket, key, Config=transfer_config)
 
 
 def download_file(client, bucket, key, local_path):
@@ -657,11 +766,23 @@ def sync_backup_to_s3(history_entry, settings=None, client=None, progress_callba
         if progress_callback:
             progress_callback(0, total_uploads, "Preparando envio para AWS S3...")
 
-        worker_count = get_cloud_upload_worker_count(total_uploads)
+        transfer_config = build_s3_transfer_config(settings)
+
+        try:
+            worker_count = get_cloud_upload_worker_count(total_uploads, settings)
+        except TypeError:
+            worker_count = get_cloud_upload_worker_count(total_uploads)
 
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             future_to_upload = {
-                executor.submit(upload_file, s3_client, bucket, local_path, key): (
+                executor.submit(
+                    upload_file,
+                    s3_client,
+                    bucket,
+                    local_path,
+                    key,
+                    transfer_config,
+                ): (
                     local_path,
                     key,
                 )

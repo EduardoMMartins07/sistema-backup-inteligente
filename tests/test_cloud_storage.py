@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import cloud.aws_s3_service as cloud_service
 from security import crypto_service
@@ -14,6 +15,7 @@ class FakeS3Client:
     def __init__(self, fail_upload=False):
         self.fail_upload = fail_upload
         self.uploads = []
+        self.upload_configs = []
         self.downloads = []
         self.deleted = []
         self.objects = {}
@@ -31,11 +33,12 @@ class FakeS3Client:
     def delete_object(self, Bucket, Key):
         self.deleted.append((Bucket, Key))
 
-    def upload_file(self, Filename, Bucket, Key):
+    def upload_file(self, Filename, Bucket, Key, Config=None):
         if self.fail_upload:
             raise RuntimeError("AccessDenied: secret-token")
         data = Path(Filename).read_bytes()
         self.uploads.append((Bucket, Key, Filename))
+        self.upload_configs.append(Config)
         self.objects[(Bucket, Key)] = data
 
     def download_file(self, Bucket, Key, Filename):
@@ -338,6 +341,58 @@ class CloudStorageTests(unittest.TestCase):
 
         self.assertGreaterEqual(len(set(worker_names)), 2)
         self.assertNotIn(threading.current_thread().name, worker_names)
+
+    def test_cloud_performance_settings_are_normalized(self):
+        settings = cloud_service.normalize_cloud_settings(
+            {
+                **self.enabled_settings(),
+                "cloud_upload_workers": "32",
+                "cloud_max_pool_connections": "40",
+                "multipart_threshold_mb": "12",
+                "multipart_chunksize_mb": "16",
+            }
+        )
+
+        self.assertEqual(32, settings["cloud_upload_workers"])
+        self.assertEqual(40, settings["cloud_max_pool_connections"])
+        self.assertEqual(12, settings["multipart_threshold_mb"])
+        self.assertEqual(16, settings["multipart_chunksize_mb"])
+
+    def test_sync_backup_uses_configurable_workers_and_transfer_config(self):
+        history_entry = self.write_backup_fixture()
+        client = FakeS3Client()
+        settings = {
+            **self.enabled_settings(),
+            "cloud_upload_workers": 12,
+            "multipart_threshold_mb": 5,
+            "multipart_chunksize_mb": 7,
+        }
+        observed = {}
+
+        def fake_worker_count(total_uploads, worker_settings=None):
+            observed["worker_settings"] = worker_settings
+            return 1
+
+        transfer_config = object()
+
+        with patch(
+            "cloud.aws_s3_service.get_cloud_upload_worker_count",
+            side_effect=fake_worker_count,
+        ):
+            with patch(
+                "cloud.aws_s3_service.build_s3_transfer_config",
+                return_value=transfer_config,
+            ) as build_transfer:
+                cloud_service.sync_backup_to_s3(
+                    history_entry,
+                    settings=settings,
+                    client=client,
+                )
+
+        self.assertEqual(12, observed["worker_settings"]["cloud_upload_workers"])
+        build_transfer.assert_called_once()
+        self.assertTrue(client.uploads)
+        self.assertTrue(all(config is transfer_config for config in client.upload_configs))
 
     def test_download_backup_restores_missing_snapshot_and_objects(self):
         history_entry = self.write_backup_fixture()
