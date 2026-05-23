@@ -1,0 +1,38 @@
+services:
+  - type: web
+    name: smart-backup-api
+    runtime: docker
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: SMARTBACKUP_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: API_BASE_URL
+        sync: false
+      - key: API_URL
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_REGION
+        value: auto
+      - key: AWS_S3_BUCKET
+        sync: false
+      - key: AWS_ENDPOINT_URL
+        sync: false
+      - key: SMARTBACKUP_API_BASE_S3_PREFIX
+        value: backups
+      - key: PRESIGNED_URL_EXPIRES_SECONDS
+        value: 900
+      - key: CORS_ORIGIN
+        sync: false
+      - key: MAX_UPLOAD_SIZE_MB
+        value: 500

@@ -8,6 +8,7 @@ from fastapi import HTTPException, status
 from api.config import get_settings
 from api.database import row_to_dict, rows_to_dicts, utc_now
 from api.security import create_password_hash, new_id, normalize_role, verify_password
+from api.storage import enforce_upload_size
 
 
 BACKUP_TYPES = {"FULL", "INCREMENTAL", "SNAPSHOT"}
@@ -541,6 +542,7 @@ def get_backup_detail(db, current_user, backup_id):
 def save_backup_upload(db, current_user, backup_id, upload_file):
     backup = get_backup_for_user_action(db, current_user, backup_id, mutate=True)
     storage_root = Path(get_settings().storage_root)
+    max_bytes = enforce_upload_size(backup.get("size_bytes") or 0)
     filename = Path(upload_file.filename or "backup.zip").name or "backup.zip"
     target_path = (
         storage_root
@@ -550,9 +552,26 @@ def save_backup_upload(db, current_user, backup_id, upload_file):
         / filename
     )
     target_path.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
 
     with target_path.open("wb") as destination:
-        shutil.copyfileobj(upload_file.file, destination)
+        while True:
+            chunk = upload_file.file.read(1024 * 1024)
+
+            if not chunk:
+                break
+
+            written += len(chunk)
+
+            if written > max_bytes:
+                destination.close()
+                target_path.unlink(missing_ok=True)
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Arquivo excede o limite de {get_settings().max_upload_size_mb} MB.",
+                )
+
+            destination.write(chunk)
 
     size_bytes = target_path.stat().st_size
     db.execute(

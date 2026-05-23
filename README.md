@@ -24,6 +24,7 @@ Toda alteracao relevante no projeto deve ser refletida neste `README.md`, manten
 - **LLM externa opcional:** Gemini API via REST, usando apenas metadados dos arquivos
 - **API central:** FastAPI com SQLite, JWT e templates Jinja2
 - **Painel web:** HTML/CSS/JS servido pela propria API
+- **Deploy:** Docker, PostgreSQL via `DATABASE_URL`, CORS por ambiente e S3 por variaveis AWS
 
 ## Requisitos
 
@@ -89,6 +90,7 @@ Toda alteracao relevante no projeto deve ser refletida neste `README.md`, manten
 - [x] Controle de usuarios por perfil: administrador, operador e visualizador
 - [x] API central multiempresa com empresas, usuarios, dispositivos, pastas, backups, snapshots e auditoria em SQLite
 - [x] Painel web administrativo para `ADMIN_EMPRESA` com dashboard, usuarios, dispositivos, backups, snapshots e logs
+- [x] Preparacao de deploy com `/health`, `/ready`, Dockerfile, Docker Compose, PostgreSQL, CORS, S3 e URL pre-assinada
 - [x] Permissoes aplicadas na interface para backup, agendamento, historico, arquivos, configuracoes e usuarios
 - [x] Registro do usuario responsavel em cada backup manual
 - [x] Logout com retorno para a tela de login
@@ -445,6 +447,9 @@ Se o backup local tiver sido sincronizado com a AWS S3 (`cloud_sync_status = sin
 Endpoints principais:
 
 ```text
+GET /health
+GET /ready
+GET /version
 POST /setup/first-admin
 POST /auth/login
 POST /auth/logout
@@ -452,6 +457,7 @@ GET  /auth/me
 POST /devices/register
 POST /monitored-folders
 POST /backups
+POST /backups/presigned-url
 POST /backups/{backupId}/upload
 PATCH /backups/{backupId}/finish
 GET  /backups
@@ -511,6 +517,23 @@ Exemplo de criacao de backup pelo agente:
 
 A API nunca confia em `companyId` vindo do cliente. Empresa, usuario e papel sao definidos pelo token JWT. Todas as consultas sensiveis filtram por `company_id`, e operadores so manipulam backups dos proprios dispositivos.
 
+Para deploy e operacao online, consulte:
+
+- `README_ENV.md`: variaveis de ambiente.
+- `README_API.md`: endpoints e exemplos.
+- `README_DEPLOY_ZERO_COST.md`: caminho recomendado com Render + Neon + R2.
+- `README_DEPLOY_RENDER.md`: deploy no Render.
+- `README_DEPLOY_RAILWAY.md`: deploy no Railway.
+- `README_DEPLOY_DOCKER.md`: Docker/VPS com PostgreSQL.
+
+Comandos uteis da API:
+
+```bash
+python -m api.manage migrate
+python -m api.manage check-env
+python -m api.manage seed
+```
+
 ### Fluxo Atual da Aplicacao
 
 1. O usuario seleciona os diretorios na interface.
@@ -561,7 +584,10 @@ A API nunca confia em `companyId` vindo do cliente. Empresa, usuario e papel sao
 
 - `python main.py`: inicia a aplicacao.
 - `python -m api`: inicia a API central e o painel web em `http://127.0.0.1:8000`.
-- `python -m py_compile main.py auth/users.py auth/permissions.py monitor/monitor.py interface/login.py interface/gui.py backup/backup_manager.py scheduler/scheduler.py scanner/scanner.py utils/file_hash.py ml/llm_classifier.py api/app.py api/config.py api/database.py api/dependencies.py api/schemas.py api/security.py api/services.py`: valida a sintaxe dos modulos principais.
+- `python -m api.manage migrate`: aplica a migration versionada da API.
+- `render.yaml`: Blueprint do Render para subir a API com variaveis prontas para preencher.
+- `docker compose up -d --build`: sobe PostgreSQL e API para desenvolvimento com Docker.
+- `python -m py_compile main.py auth/users.py auth/permissions.py monitor/monitor.py interface/login.py interface/gui.py backup/backup_manager.py scheduler/scheduler.py scanner/scanner.py utils/file_hash.py ml/llm_classifier.py api/app.py api/config.py api/database.py api/dependencies.py api/schemas.py api/security.py api/services.py api/storage.py api/manage.py api/logging_config.py api/local_history_sync.py`: valida a sintaxe dos modulos principais.
 - `python -m unittest discover -s tests`: executa os testes automatizados do backup incremental.
 - `python scanner/scanner.py`: executa o scanner manualmente.
 - `pip install -r requirements.txt`: instala as dependencias do projeto.

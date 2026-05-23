@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 try:
     from fastapi.testclient import TestClient
@@ -19,13 +20,29 @@ class ApiMultiempresaWebTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.original_env = {
+            "DATABASE_URL": os.environ.get("DATABASE_URL"),
             "SMARTBACKUP_API_DB_PATH": os.environ.get("SMARTBACKUP_API_DB_PATH"),
             "SMARTBACKUP_API_STORAGE_ROOT": os.environ.get("SMARTBACKUP_API_STORAGE_ROOT"),
             "SMARTBACKUP_JWT_SECRET": os.environ.get("SMARTBACKUP_JWT_SECRET"),
+            "JWT_SECRET": os.environ.get("JWT_SECRET"),
+            "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID"),
+            "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY"),
+            "AWS_REGION": os.environ.get("AWS_REGION"),
+            "AWS_S3_BUCKET": os.environ.get("AWS_S3_BUCKET"),
+            "CORS_ORIGIN": os.environ.get("CORS_ORIGIN"),
+            "PORT": os.environ.get("PORT"),
         }
         os.environ["SMARTBACKUP_API_DB_PATH"] = str(self.root / "api.sqlite3")
+        os.environ["DATABASE_URL"] = f"sqlite:///{self.root / 'api.sqlite3'}"
         os.environ["SMARTBACKUP_API_STORAGE_ROOT"] = str(self.root / "api_storage")
         os.environ["SMARTBACKUP_JWT_SECRET"] = "test-secret"
+        os.environ["JWT_SECRET"] = "test-secret"
+        os.environ["AWS_ACCESS_KEY_ID"] = "test"
+        os.environ["AWS_SECRET_ACCESS_KEY"] = "test"
+        os.environ["AWS_REGION"] = "sa-east-1"
+        os.environ["AWS_S3_BUCKET"] = "bucket-test"
+        os.environ["CORS_ORIGIN"] = "http://frontend.test"
+        os.environ["PORT"] = "8000"
         init_db(os.environ["SMARTBACKUP_API_DB_PATH"])
         self.client = TestClient(create_app())
 
@@ -39,6 +56,32 @@ class ApiMultiempresaWebTests(unittest.TestCase):
                 os.environ[key] = value
 
         self.temp.cleanup()
+
+    def test_health_ready_version_and_cors_headers(self):
+        health = self.client.get("/health")
+        self.assertEqual(200, health.status_code, health.text)
+        self.assertEqual("ok", health.json()["status"])
+
+        version = self.client.get("/version")
+        self.assertEqual(200, version.status_code, version.text)
+        self.assertEqual("backup-api", version.json()["name"])
+
+        ready = self.client.get("/ready")
+        self.assertEqual(200, ready.status_code, ready.text)
+        self.assertEqual("ready", ready.json()["status"])
+
+        cors = self.client.options(
+            "/auth/login",
+            headers={
+                "Origin": "http://frontend.test",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+        self.assertEqual(200, cors.status_code, cors.text)
+        self.assertEqual(
+            "http://frontend.test",
+            cors.headers.get("access-control-allow-origin"),
+        )
 
     def setup_first_admin(self):
         response = self.client.post(
@@ -179,6 +222,37 @@ class ApiMultiempresaWebTests(unittest.TestCase):
         events = {item["event"] for item in audit.json()["auditLogs"]}
         self.assertIn("BACKUP_FINISHED", events)
         self.assertIn("SNAPSHOT_CREATED", events)
+
+    def test_presigned_url_endpoint_validates_backup_and_returns_s3_data(self):
+        _, admin_headers = self.setup_first_admin()
+        operator_headers, _, _, backup = self.create_operator_with_backup(admin_headers)
+
+        class FakeStorage:
+            def create_presigned_upload_url(self, key, content_type="application/zip"):
+                return {
+                    "url": "https://s3.example/upload",
+                    "method": "PUT",
+                    "bucket": "bucket-test",
+                    "key": key,
+                    "expiresIn": 900,
+                    "headers": {"Content-Type": content_type},
+                }
+
+        with patch("api.app.S3StorageService", return_value=FakeStorage()):
+            response = self.client.post(
+                "/backups/presigned-url",
+                headers=operator_headers,
+                json={
+                    "backupId": backup["id"],
+                    "fileName": "backup.zip",
+                    "contentType": "application/zip",
+                    "sizeBytes": 3,
+                },
+            )
+
+        self.assertEqual(200, response.status_code, response.text)
+        self.assertEqual(backup["id"], response.json()["backupId"])
+        self.assertEqual("https://s3.example/upload", response.json()["upload"]["url"])
 
     def test_multi_company_isolation_and_operator_scope(self):
         _, alpha_admin_headers = self.setup_first_admin()
@@ -331,4 +405,3 @@ class ApiMultiempresaWebTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

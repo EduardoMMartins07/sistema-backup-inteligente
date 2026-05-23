@@ -1,0 +1,40 @@
+services:
+  database:
+    image: postgres:16
+    container_name: backup_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: backup_user
+      POSTGRES_PASSWORD: backup_password
+      POSTGRES_DB: backup_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - backup_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U backup_user -d backup_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    container_name: backup_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      PORT: 8000
+      DATABASE_URL: postgresql://backup_user:backup_password@database:5432/backup_db
+    depends_on:
+      database:
+        condition: service_healthy
+    command: >
+      sh -c "python -m api.manage migrate &&
+             python -m uvicorn api.app:app --host 0.0.0.0 --port 8000"
+
+volumes:
+  backup_postgres_data:
+

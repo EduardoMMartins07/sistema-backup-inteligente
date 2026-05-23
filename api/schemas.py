@@ -61,6 +61,13 @@ class BackupFinishPayload(BaseModel):
     errorMessage: str | None = None
 
 
+class PresignedUrlPayload(BaseModel):
+    backupId: str
+    fileName: str = "backup.zip"
+    contentType: str = "application/zip"
+    sizeBytes: int = 0
+
+
 class SnapshotPayload(BaseModel):
     backupId: str
     name: str
@@ -68,4 +75,3 @@ class SnapshotPayload(BaseModel):
     sizeBytes: int = 0
     fileCount: int = 0
     checksum: str | None = ""
-

@@ -15,15 +15,22 @@ class DesktopLoginApiUsersTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.original_users_path = desktop_users.USERS_PATH
+        self.original_database_url = os.environ.get("DATABASE_URL")
         self.original_db_path = os.environ.get("SMARTBACKUP_API_DB_PATH")
         self.original_jwt_secret = os.environ.get("SMARTBACKUP_JWT_SECRET")
         desktop_users.USERS_PATH = str(self.root / "users.json")
         os.environ["SMARTBACKUP_API_DB_PATH"] = str(self.root / "api.sqlite3")
+        os.environ["DATABASE_URL"] = f"sqlite:///{self.root / 'api.sqlite3'}"
         os.environ["SMARTBACKUP_JWT_SECRET"] = "test-secret"
         init_db(os.environ["SMARTBACKUP_API_DB_PATH"])
 
     def tearDown(self):
         desktop_users.USERS_PATH = self.original_users_path
+
+        if self.original_database_url is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = self.original_database_url
 
         if self.original_db_path is None:
             os.environ.pop("SMARTBACKUP_API_DB_PATH", None)

@@ -1,14 +1,19 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
+from sqlite3 import Connection
+from time import time
 
 from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlite3 import Connection
+from starlette.middleware.cors import CORSMiddleware
+from starlette import status
 
-from api.database import get_db, init_db
+from api.config import get_settings, s3_configured, validate_environment
+from api.database import connect, get_db, init_db, utc_now
 from api.dependencies import current_user_from_token, get_current_user, require_roles
+from api.logging_config import configure_logging, get_logger
 from api.schemas import (
     BackupCreatePayload,
     BackupFinishPayload,
@@ -16,6 +21,7 @@ from api.schemas import (
     FirstAdminPayload,
     LoginPayload,
     MonitoredFolderPayload,
+    PresignedUrlPayload,
     SnapshotPayload,
     UserCreatePayload,
     UserUpdatePayload,
@@ -31,6 +37,7 @@ from api.services import (
     create_user,
     disable_company_user,
     finish_backup,
+    get_backup_for_user_action,
     get_backup_detail,
     get_company_by_id,
     get_user_by_id,
@@ -49,12 +56,19 @@ from api.services import (
     update_company_user,
     users_count,
 )
+from api.storage import S3StorageService, StorageConfigurationError, enforce_upload_size
 
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
 COOKIE_NAME = "smartbackup_token"
+SERVICE_NAME = "backup-api"
+SERVICE_VERSION = "1.0.0"
+logger = get_logger(__name__)
+LOGIN_ATTEMPTS = {}
+LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 8
+LOGIN_RATE_LIMIT_WINDOW_SECONDS = 15 * 60
 
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -150,6 +164,32 @@ def build_auth_response(user):
     }
 
 
+def login_rate_limit_key(request, email):
+    client_host = request.client.host if request.client else "unknown"
+    return f"{client_host}:{str(email or '').strip().lower()}"
+
+
+def is_login_rate_limited(request, email):
+    key = login_rate_limit_key(request, email)
+    now = time()
+    attempts = [
+        timestamp
+        for timestamp in LOGIN_ATTEMPTS.get(key, [])
+        if now - timestamp < LOGIN_RATE_LIMIT_WINDOW_SECONDS
+    ]
+    LOGIN_ATTEMPTS[key] = attempts
+    return len(attempts) >= LOGIN_RATE_LIMIT_MAX_ATTEMPTS
+
+
+def record_failed_login(request, email):
+    key = login_rate_limit_key(request, email)
+    LOGIN_ATTEMPTS.setdefault(key, []).append(time())
+
+
+def clear_login_attempts(request, email):
+    LOGIN_ATTEMPTS.pop(login_rate_limit_key(request, email), None)
+
+
 def filters_from_query(
     userId=None,
     deviceId=None,
@@ -215,20 +255,93 @@ def require_web_admin(request: Request, db: Connection):
 def create_app():
     @asynccontextmanager
     async def lifespan(_app):
+        settings = get_settings()
+        configure_logging(settings.environment)
+        validate_environment(settings=settings)
+        logger.info(
+            "Starting %s %s in %s",
+            SERVICE_NAME,
+            SERVICE_VERSION,
+            settings.environment,
+        )
         init_db()
         yield
 
+    settings = get_settings()
     app = FastAPI(
         title="Smart Backup API",
         description="API central multiempresa para o Sistema Inteligente de Backup.",
-        version="1.0.0",
+        version=SERVICE_VERSION,
         lifespan=lifespan,
     )
+    if settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(settings.cors_origins),
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+            allow_headers=["Authorization", "Content-Type"],
+        )
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.get("/")
     def root():
         return RedirectResponse("/web/dashboard", status_code=303)
+
+    @app.get("/health")
+    def health():
+        current_settings = get_settings()
+        return {
+            "status": "ok",
+            "service": SERVICE_NAME,
+            "version": SERVICE_VERSION,
+            "environment": current_settings.environment,
+            "timestamp": utc_now(),
+        }
+
+    @app.get("/version")
+    def version():
+        current_settings = get_settings()
+        return {
+            "name": SERVICE_NAME,
+            "version": SERVICE_VERSION,
+            "commit": "",
+            "environment": current_settings.environment,
+        }
+
+    @app.get("/ready")
+    def ready():
+        current_settings = get_settings()
+        missing = validate_environment(strict=False, settings=current_settings)
+        database_status = "connected"
+
+        try:
+            db = connect()
+            try:
+                db.execute("SELECT 1")
+            finally:
+                db.close()
+        except Exception as error:
+            logger.error("Database readiness check failed: %s", error)
+            database_status = "disconnected"
+
+        s3_status = "configured" if s3_configured(current_settings) else "not_configured"
+        is_ready = (
+            database_status == "connected"
+            and s3_status == "configured"
+            and not missing
+        )
+        payload = {
+            "status": "ready" if is_ready else "not_ready",
+            "database": database_status,
+            "s3": s3_status,
+            "missingEnv": missing,
+            "timestamp": utc_now(),
+        }
+        return JSONResponse(
+            payload,
+            status_code=status.HTTP_200_OK if is_ready else status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
 
     @app.post("/setup/first-admin")
     def setup_first_admin(payload: FirstAdminPayload, db: Connection = Depends(get_db)):
@@ -239,21 +352,36 @@ def create_app():
             payload.email,
             payload.password,
         )
+        logger.info("Initial admin created for company=%s", company["id"])
         response = build_auth_response(user)
         response["company"] = public_company(company)
         return response
 
     @app.post("/auth/login")
-    def auth_login(payload: LoginPayload, db: Connection = Depends(get_db)):
+    def auth_login(
+        payload: LoginPayload,
+        request: Request,
+        db: Connection = Depends(get_db),
+    ):
+        if is_login_rate_limited(request, payload.email):
+            return JSONResponse(
+                {"detail": "Muitas tentativas de login. Tente novamente em alguns minutos."},
+                status_code=429,
+            )
+
         user = authenticate_user(db, payload.email, payload.password)
 
         if not user:
+            logger.warning("Login failed for email=%s", payload.email)
+            record_failed_login(request, payload.email)
             return JSONResponse(
                 {"detail": "Email ou senha invalidos."},
                 status_code=401,
             )
 
         db.commit()
+        clear_login_attempts(request, payload.email)
+        logger.info("Login success user=%s company=%s", user["id"], user["company_id"])
         return build_auth_response(user)
 
     @app.post("/auth/logout")
@@ -426,6 +554,12 @@ def create_app():
         db: Connection = Depends(get_db),
     ):
         backup = create_backup(db, current_user, payload)
+        logger.info(
+            "Backup created backup=%s user=%s company=%s",
+            backup["id"],
+            current_user["id"],
+            current_user["company_id"],
+        )
         return {"backup": api_backup(backup)}
 
     @app.get("/backups")
@@ -445,6 +579,33 @@ def create_app():
         backups = list_backups(db, current_user, filters=filters)
         return {"backups": [api_backup(backup) for backup in backups]}
 
+    @app.post("/backups/presigned-url")
+    def create_presigned_upload_url_api(
+        payload: PresignedUrlPayload,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA", "OPERADOR"])),
+        db: Connection = Depends(get_db),
+    ):
+        backup = get_backup_for_user_action(db, current_user, payload.backupId, mutate=True)
+        enforce_upload_size(payload.sizeBytes or backup.get("size_bytes") or 0)
+        content_type = payload.contentType or "application/zip"
+
+        try:
+            presigned = S3StorageService().create_presigned_upload_url(
+                backup["s3_key"],
+                content_type=content_type,
+            )
+        except StorageConfigurationError as error:
+            return JSONResponse(
+                {"detail": str(error)},
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        return {
+            "backupId": backup["id"],
+            "s3Key": backup["s3_key"],
+            "upload": presigned,
+        }
+
     @app.post("/backups/{backup_id}/upload")
     def upload_backup_api(
         backup_id: str,
@@ -453,6 +614,7 @@ def create_app():
         db: Connection = Depends(get_db),
     ):
         backup = save_backup_upload(db, current_user, backup_id, file)
+        logger.info("Backup upload completed backup=%s", backup["id"])
         return {
             "backupId": backup["id"],
             "s3Key": backup["s3_key"],
@@ -468,6 +630,7 @@ def create_app():
         db: Connection = Depends(get_db),
     ):
         backup = finish_backup(db, current_user, backup_id, payload)
+        logger.info("Backup finished backup=%s status=%s", backup["id"], backup["status"])
         return {"backup": api_backup(backup)}
 
     @app.get("/backups/{backup_id}/snapshots")
@@ -547,15 +710,22 @@ def create_app():
                     password,
                 )
             else:
+                if is_login_rate_limited(request, email):
+                    raise ValueError(
+                        "Muitas tentativas de login. Tente novamente em alguns minutos."
+                    )
+
                 user = authenticate_user(db, email, password)
 
                 if not user:
+                    record_failed_login(request, email)
                     raise ValueError("Email ou senha invalidos.")
 
                 if user["role"] != "ADMIN_EMPRESA":
                     raise ValueError("Apenas ADMIN_EMPRESA acessa o painel web.")
 
                 db.commit()
+                clear_login_attempts(request, email)
         except Exception as error:
             return templates.TemplateResponse(
                 request,

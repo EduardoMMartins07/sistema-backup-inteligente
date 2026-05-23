@@ -71,7 +71,7 @@ def _ensure_local_device(db, user):
     }
     db.execute(
         """
-        INSERT OR IGNORE INTO devices (
+        INSERT INTO devices (
             id, company_id, user_id, name, hostname, identifier,
             created_at, updated_at, last_seen_at
         )
@@ -79,6 +79,7 @@ def _ensure_local_device(db, user):
             :id, :company_id, :user_id, :name, :hostname, :identifier,
             :created_at, :updated_at, :last_seen_at
         )
+        ON CONFLICT(id) DO NOTHING
         """,
         device,
     )
@@ -123,13 +124,14 @@ def _ensure_local_folder(db, user, device, entry):
     }
     db.execute(
         """
-        INSERT OR IGNORE INTO monitored_folders (
+        INSERT INTO monitored_folders (
             id, company_id, user_id, device_id, path, alias, active, created_at, updated_at
         )
         VALUES (
             :id, :company_id, :user_id, :device_id, :path, :alias, :active,
             :created_at, :updated_at
         )
+        ON CONFLICT(id) DO NOTHING
         """,
         folder,
     )
