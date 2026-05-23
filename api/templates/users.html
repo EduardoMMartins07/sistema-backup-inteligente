@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <div class="section-title">
+    <h2>Novo usuario</h2>
+  </div>
+  <form class="inline-form" method="post" action="/web/users">
+    <input name="name" placeholder="Nome" required>
+    <input name="email" type="email" placeholder="Email" required>
+    <input name="password" type="password" placeholder="Senha" required>
+    <select name="role" required>
+      <option value="OPERADOR">OPERADOR</option>
+      <option value="VIEWER">VIEWER</option>
+      <option value="ADMIN_EMPRESA">ADMIN_EMPRESA</option>
+    </select>
+    <button class="button primary" type="submit">Criar</button>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="section-title">
+    <h2>Usuarios da empresa</h2>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Nome</th>
+          <th>Email</th>
+          <th>Perfil</th>
+          <th>Status</th>
+          <th>Atualizado</th>
+          <th>Acoes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for user in users %}
+          <tr>
+            <td colspan="6">
+              <form class="row-form" method="post" action="/web/users/{{ user.id }}/update">
+                <input name="name" value="{{ user.name }}" required>
+                <span>{{ user.email }}</span>
+                <select name="role">
+                  {% for role in ["ADMIN_EMPRESA", "OPERADOR", "VIEWER"] %}
+                    <option value="{{ role }}" {{ "selected" if user.role == role else "" }}>{{ role }}</option>
+                  {% endfor %}
+                </select>
+                <select name="status">
+                  <option value="ACTIVE" {{ "selected" if user.status == "ACTIVE" else "" }}>ACTIVE</option>
+                  <option value="DISABLED" {{ "selected" if user.status == "DISABLED" else "" }}>DISABLED</option>
+                </select>
+                <span>{{ user.updated_at }}</span>
+                <span class="actions">
+                  <button class="button small" type="submit">Salvar</button>
+                </span>
+              </form>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6" class="empty">Nenhum usuario cadastrado.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+

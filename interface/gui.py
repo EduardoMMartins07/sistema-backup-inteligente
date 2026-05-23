@@ -2483,6 +2483,24 @@ class BackupGUI:
         except tk.TclError:
             return
 
+        if getattr(self, "pending_backup_refresh", False):
+            self.pending_backup_refresh = False
+            self.refresh_footer()
+            self.refresh_dashboard_if_home()
+
+        notification = getattr(self, "pending_backup_notification", None)
+
+        if notification:
+            self.pending_backup_notification = None
+            kind, title, message = notification
+
+            if kind == "error":
+                messagebox.showerror(title, message, parent=self.root)
+            elif kind == "warning":
+                messagebox.showwarning(title, message, parent=self.root)
+            else:
+                messagebox.showinfo(title, message, parent=self.root)
+
         self.schedule_dashboard_event_poll()
 
     def poll_classification_progress(self):
@@ -3491,7 +3509,8 @@ class BackupGUI:
         self.open_progress_window()
         self.set_backup_button_state(tk.DISABLED)
 
-        worker = threading.Thread(target=self.run_backup_in_background, daemon=True)
+        worker = threading.Thread(target=self.run_backup_in_background, daemon=False)
+        self.backup_thread = worker
         worker.start()
         self.root.after(120, self.process_backup_events)
 
@@ -3626,11 +3645,17 @@ class BackupGUI:
     def is_backup_cancel_requested(self):
         return self.cancel_backup_requested.is_set()
 
-    def process_backup_events(self):
-        if self.is_closing:
+    def process_backup_events(
+        self,
+        allow_when_closing=False,
+        show_notifications=True,
+        schedule_next=True
+    ):
+        if self.is_closing and not allow_when_closing:
             return
 
         should_continue = True
+        hidden_mode = self.is_closing and allow_when_closing
 
         while True:
             try:
@@ -3642,22 +3667,61 @@ class BackupGUI:
 
             if event_type == "progress":
                 _, percent, message = event
-                self.update_progress_window(percent, message)
+                if not hidden_mode:
+                    self.update_progress_window(percent, message)
                 continue
 
             should_continue = False
 
             if event_type == "success":
                 _, result = event
-                self.finish_backup_success(result)
+                if hidden_mode:
+                    self.backup_in_progress = False
+                    self.cancel_backup_requested.clear()
+                    self.current_backup_started_at = None
+                    self.pending_backup_directories = None
+                    self.pending_backup_trigger = "manual"
+                    self.pending_backup_refresh = True
+                    self.pending_backup_notification = (
+                        "info",
+                        "Backup concluido",
+                        "Backup concluido em segundo plano."
+                    )
+                else:
+                    self.finish_backup_success(result)
             elif event_type == "cancelled":
                 _, message = event
-                self.finish_backup_cancelled(message)
+                if hidden_mode:
+                    self.backup_in_progress = False
+                    self.cancel_backup_requested.clear()
+                    self.pending_backup_refresh = True
+                    self.pending_backup_notification = (
+                        "warning",
+                        "Backup cancelado",
+                        message
+                    )
+                else:
+                    self.finish_backup_cancelled(message)
             elif event_type == "error":
                 _, error_message = event
-                self.finish_backup_error(error_message)
+                if hidden_mode:
+                    self.backup_in_progress = False
+                    self.cancel_backup_requested.clear()
+                    self.pending_backup_refresh = True
+                    self.pending_backup_notification = (
+                        "error",
+                        "Erro",
+                        error_message
+                    )
+                else:
+                    self.finish_backup_error(error_message)
 
-        if should_continue and self.backup_in_progress and not self.is_closing:
+        if (
+            schedule_next
+            and should_continue
+            and self.backup_in_progress
+            and not self.is_closing
+        ):
             self.root.after(120, self.process_backup_events)
 
     def open_progress_window(self):
@@ -6918,11 +6982,20 @@ class BackupGUI:
 
     def export_history_entry(self, entry, title_suffix="do backup selecionado"):
         backup_path = entry.get("backup_path") or entry.get("snapshot_path", "")
+        is_cloud_available = entry.get("cloud_sync_status") == "sincronizado"
 
-        if not backup_path or not os.path.exists(backup_path):
+        if not backup_path:
             messagebox.showwarning(
                 "Backup indisponivel",
-                "O arquivo deste backup nao foi encontrado no disco.",
+                "Este backup nao possui caminho de arquivo registrado.",
+                parent=self.root
+            )
+            return False
+
+        if not os.path.exists(backup_path) and not is_cloud_available:
+            messagebox.showwarning(
+                "Backup indisponivel",
+                "O arquivo deste backup nao foi encontrado no disco e nao consta como sincronizado na nuvem.",
                 parent=self.root
             )
             return False
@@ -7470,6 +7543,18 @@ def clear_root_widgets(root):
             widget.destroy()
         except tk.TclError:
             pass
+
+
+def process_hidden_gui_events():
+    if _background_gui is None or not root_exists(_background_root):
+        return False
+
+    _background_gui.process_backup_events(
+        allow_when_closing=True,
+        show_notifications=False,
+        schedule_next=False
+    )
+    return True
 
 
 def start_gui(current_user=None):

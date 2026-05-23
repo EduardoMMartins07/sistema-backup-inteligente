@@ -1,0 +1,797 @@
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from sqlite3 import Connection
+
+from api.database import get_db, init_db
+from api.dependencies import current_user_from_token, get_current_user, require_roles
+from api.schemas import (
+    BackupCreatePayload,
+    BackupFinishPayload,
+    DeviceRegisterPayload,
+    FirstAdminPayload,
+    LoginPayload,
+    MonitoredFolderPayload,
+    SnapshotPayload,
+    UserCreatePayload,
+    UserUpdatePayload,
+)
+from api.security import create_access_token
+from api.services import (
+    admin_dashboard,
+    authenticate_user,
+    create_backup,
+    create_first_admin,
+    create_monitored_folder,
+    create_snapshot,
+    create_user,
+    disable_company_user,
+    finish_backup,
+    get_backup_detail,
+    get_company_by_id,
+    get_user_by_id,
+    list_audit_logs,
+    list_backups,
+    list_company_folders,
+    list_company_users,
+    list_device_backups,
+    list_devices,
+    list_snapshots,
+    list_user_backups,
+    public_company,
+    public_user,
+    register_device,
+    save_backup_upload,
+    update_company_user,
+    users_count,
+)
+
+
+BASE_DIR = Path(__file__).resolve().parent
+TEMPLATES_DIR = BASE_DIR / "templates"
+STATIC_DIR = BASE_DIR / "static"
+COOKIE_NAME = "smartbackup_token"
+
+
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+
+def format_bytes(value):
+    try:
+        size = float(value or 0)
+    except (TypeError, ValueError):
+        size = 0
+
+    units = ["B", "KB", "MB", "GB", "TB"]
+
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(size)} {unit}"
+            return f"{size:.1f} {unit}"
+        size /= 1024
+
+
+templates.env.filters["bytes"] = format_bytes
+
+
+def api_backup(backup):
+    return {
+        "id": backup.get("id"),
+        "name": backup.get("name"),
+        "type": backup.get("type"),
+        "status": backup.get("status"),
+        "priority": backup.get("priority"),
+        "sizeBytes": backup.get("size_bytes", 0),
+        "fileCount": backup.get("file_count", 0),
+        "s3Key": backup.get("s3_key"),
+        "checksum": backup.get("checksum"),
+        "errorMessage": backup.get("error_message", ""),
+        "companyId": backup.get("company_id"),
+        "userId": backup.get("user_id"),
+        "deviceId": backup.get("device_id"),
+        "folderId": backup.get("folder_id"),
+        "startedAt": backup.get("started_at"),
+        "finishedAt": backup.get("finished_at"),
+        "createdAt": backup.get("created_at"),
+        "updatedAt": backup.get("updated_at"),
+        "localPath": backup.get("local_path", ""),
+        "metadata": backup.get("metadata", {}),
+        "userName": backup.get("user_name"),
+        "deviceName": backup.get("device_name"),
+        "folderPath": backup.get("folder_path"),
+    }
+
+
+def api_snapshot(snapshot):
+    return {
+        "id": snapshot.get("id"),
+        "name": snapshot.get("name"),
+        "backupId": snapshot.get("backup_id"),
+        "companyId": snapshot.get("company_id"),
+        "userId": snapshot.get("user_id"),
+        "deviceId": snapshot.get("device_id"),
+        "folderId": snapshot.get("folder_id"),
+        "s3Key": snapshot.get("s3_key"),
+        "sizeBytes": snapshot.get("size_bytes", 0),
+        "fileCount": snapshot.get("file_count", 0),
+        "checksum": snapshot.get("checksum", ""),
+        "createdAt": snapshot.get("created_at"),
+        "backupName": snapshot.get("backup_name"),
+        "userName": snapshot.get("user_name"),
+        "deviceName": snapshot.get("device_name"),
+    }
+
+
+def api_device(device):
+    return {
+        "id": device.get("id"),
+        "name": device.get("name"),
+        "hostname": device.get("hostname"),
+        "identifier": device.get("identifier"),
+        "userId": device.get("user_id"),
+        "companyId": device.get("company_id"),
+        "createdAt": device.get("created_at"),
+        "updatedAt": device.get("updated_at"),
+        "lastSeenAt": device.get("last_seen_at"),
+        "userName": device.get("user_name"),
+        "userEmail": device.get("user_email"),
+    }
+
+
+def build_auth_response(user):
+    return {
+        "token": create_access_token(user),
+        "user": public_user(user),
+    }
+
+
+def filters_from_query(
+    userId=None,
+    deviceId=None,
+    folderId=None,
+    status=None,
+    type=None,
+    priority=None,
+    startDate=None,
+    endDate=None,
+):
+    return {
+        "userId": userId,
+        "deviceId": deviceId,
+        "folderId": folderId,
+        "status": status,
+        "type": type,
+        "priority": priority,
+        "startDate": startDate,
+        "endDate": endDate,
+    }
+
+
+def web_user(request: Request, db: Connection):
+    token = request.cookies.get(COOKIE_NAME)
+
+    if not token:
+        return None
+
+    try:
+        return current_user_from_token(db, token)
+    except Exception:
+        return None
+
+
+def web_redirect_to_login(request: Request):
+    return RedirectResponse(f"/web/login?next={request.url.path}", status_code=303)
+
+
+def web_forbidden(request: Request, current_user):
+    return templates.TemplateResponse(
+        request,
+        "forbidden.html",
+        {
+            "current_user": current_user,
+            "title": "Acesso negado",
+        },
+        status_code=403,
+    )
+
+
+def require_web_admin(request: Request, db: Connection):
+    current_user = web_user(request, db)
+
+    if not current_user:
+        return None, web_redirect_to_login(request)
+
+    if current_user["role"] != "ADMIN_EMPRESA":
+        return current_user, web_forbidden(request, current_user)
+
+    return current_user, None
+
+
+def create_app():
+    @asynccontextmanager
+    async def lifespan(_app):
+        init_db()
+        yield
+
+    app = FastAPI(
+        title="Smart Backup API",
+        description="API central multiempresa para o Sistema Inteligente de Backup.",
+        version="1.0.0",
+        lifespan=lifespan,
+    )
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    @app.get("/")
+    def root():
+        return RedirectResponse("/web/dashboard", status_code=303)
+
+    @app.post("/setup/first-admin")
+    def setup_first_admin(payload: FirstAdminPayload, db: Connection = Depends(get_db)):
+        company, user = create_first_admin(
+            db,
+            payload.companyName,
+            payload.name,
+            payload.email,
+            payload.password,
+        )
+        response = build_auth_response(user)
+        response["company"] = public_company(company)
+        return response
+
+    @app.post("/auth/login")
+    def auth_login(payload: LoginPayload, db: Connection = Depends(get_db)):
+        user = authenticate_user(db, payload.email, payload.password)
+
+        if not user:
+            return JSONResponse(
+                {"detail": "Email ou senha invalidos."},
+                status_code=401,
+            )
+
+        db.commit()
+        return build_auth_response(user)
+
+    @app.post("/auth/logout")
+    def auth_logout():
+        return {"status": "logged_out"}
+
+    @app.get("/auth/me")
+    def auth_me(current_user=Depends(get_current_user), db: Connection = Depends(get_db)):
+        company = get_company_by_id(db, current_user["company_id"])
+        return {
+            "user": public_user(current_user),
+            "company": public_company(company),
+        }
+
+    @app.get("/admin/dashboard")
+    def admin_dashboard_api(
+        current_user=Depends(require_roles(["ADMIN_EMPRESA"])),
+        db: Connection = Depends(get_db),
+    ):
+        return admin_dashboard(db, current_user)
+
+    @app.get("/admin/users")
+    def admin_users_api(
+        current_user=Depends(require_roles(["ADMIN_EMPRESA"])),
+        db: Connection = Depends(get_db),
+    ):
+        return {"users": [public_user(user) for user in list_company_users(db, current_user["company_id"])]}
+
+    @app.post("/admin/users")
+    def admin_create_user_api(
+        payload: UserCreatePayload,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA"])),
+        db: Connection = Depends(get_db),
+    ):
+        user = create_user(
+            db,
+            current_user["company_id"],
+            payload.name,
+            payload.email,
+            payload.password,
+            payload.role,
+        )
+        db.commit()
+        return {"user": public_user(user)}
+
+    @app.patch("/admin/users/{user_id}")
+    def admin_update_user_api(
+        user_id: str,
+        payload: UserUpdatePayload,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA"])),
+        db: Connection = Depends(get_db),
+    ):
+        user = update_company_user(
+            db,
+            current_user["company_id"],
+            user_id,
+            name=payload.name,
+            role=payload.role,
+            status_value=payload.status,
+        )
+        return {"user": public_user(user)}
+
+    @app.delete("/admin/users/{user_id}")
+    def admin_disable_user_api(
+        user_id: str,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA"])),
+        db: Connection = Depends(get_db),
+    ):
+        user = disable_company_user(db, current_user["company_id"], user_id)
+        return {"user": public_user(user)}
+
+    @app.get("/admin/users/{user_id}/backups")
+    def admin_user_backups_api(
+        user_id: str,
+        userId: str | None = None,
+        deviceId: str | None = None,
+        folderId: str | None = None,
+        status: str | None = None,
+        type: str | None = None,
+        priority: str | None = None,
+        startDate: str | None = None,
+        endDate: str | None = None,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA"])),
+        db: Connection = Depends(get_db),
+    ):
+        filters = filters_from_query(userId, deviceId, folderId, status, type, priority, startDate, endDate)
+        backups = list_user_backups(db, current_user, user_id, filters=filters)
+        return {"backups": [api_backup(backup) for backup in backups]}
+
+    @app.get("/admin/devices/{device_id}/backups")
+    def admin_device_backups_api(
+        device_id: str,
+        userId: str | None = None,
+        deviceId: str | None = None,
+        folderId: str | None = None,
+        status: str | None = None,
+        type: str | None = None,
+        priority: str | None = None,
+        startDate: str | None = None,
+        endDate: str | None = None,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA"])),
+        db: Connection = Depends(get_db),
+    ):
+        filters = filters_from_query(userId, deviceId, folderId, status, type, priority, startDate, endDate)
+        backups = list_device_backups(db, current_user, device_id, filters=filters)
+        return {"backups": [api_backup(backup) for backup in backups]}
+
+    @app.get("/admin/audit-logs")
+    def admin_audit_logs_api(
+        event: str | None = None,
+        startDate: str | None = None,
+        endDate: str | None = None,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA"])),
+        db: Connection = Depends(get_db),
+    ):
+        logs = list_audit_logs(
+            db,
+            current_user,
+            filters={"event": event, "startDate": startDate, "endDate": endDate},
+        )
+        return {"auditLogs": logs}
+
+    @app.post("/devices/register")
+    def register_device_api(
+        payload: DeviceRegisterPayload,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA", "OPERADOR"])),
+        db: Connection = Depends(get_db),
+    ):
+        device, action = register_device(
+            db,
+            current_user,
+            payload.name,
+            payload.hostname,
+            payload.identifier,
+        )
+        return {
+            "deviceId": device["id"],
+            "status": "registered" if action in {"registered", "updated"} else action,
+            "device": api_device(device),
+        }
+
+    @app.post("/monitored-folders")
+    def monitored_folder_api(
+        payload: MonitoredFolderPayload,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA", "OPERADOR"])),
+        db: Connection = Depends(get_db),
+    ):
+        folder = create_monitored_folder(
+            db,
+            current_user,
+            payload.deviceId,
+            payload.path,
+            payload.alias,
+        )
+        return {
+            "folder": {
+                "id": folder["id"],
+                "path": folder["path"],
+                "alias": folder["alias"],
+                "deviceId": folder["device_id"],
+                "userId": folder["user_id"],
+                "companyId": folder["company_id"],
+            }
+        }
+
+    @app.post("/backups")
+    def create_backup_api(
+        payload: BackupCreatePayload,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA", "OPERADOR"])),
+        db: Connection = Depends(get_db),
+    ):
+        backup = create_backup(db, current_user, payload)
+        return {"backup": api_backup(backup)}
+
+    @app.get("/backups")
+    def list_backups_api(
+        userId: str | None = None,
+        deviceId: str | None = None,
+        folderId: str | None = None,
+        status: str | None = None,
+        type: str | None = None,
+        priority: str | None = None,
+        startDate: str | None = None,
+        endDate: str | None = None,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA", "OPERADOR", "VIEWER"])),
+        db: Connection = Depends(get_db),
+    ):
+        filters = filters_from_query(userId, deviceId, folderId, status, type, priority, startDate, endDate)
+        backups = list_backups(db, current_user, filters=filters)
+        return {"backups": [api_backup(backup) for backup in backups]}
+
+    @app.post("/backups/{backup_id}/upload")
+    def upload_backup_api(
+        backup_id: str,
+        file: UploadFile = File(...),
+        current_user=Depends(require_roles(["ADMIN_EMPRESA", "OPERADOR"])),
+        db: Connection = Depends(get_db),
+    ):
+        backup = save_backup_upload(db, current_user, backup_id, file)
+        return {
+            "backupId": backup["id"],
+            "s3Key": backup["s3_key"],
+            "uploadedBytes": backup["uploadedBytes"],
+            "status": "uploaded",
+        }
+
+    @app.patch("/backups/{backup_id}/finish")
+    def finish_backup_api(
+        backup_id: str,
+        payload: BackupFinishPayload,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA", "OPERADOR"])),
+        db: Connection = Depends(get_db),
+    ):
+        backup = finish_backup(db, current_user, backup_id, payload)
+        return {"backup": api_backup(backup)}
+
+    @app.get("/backups/{backup_id}/snapshots")
+    def backup_snapshots_api(
+        backup_id: str,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA", "OPERADOR", "VIEWER"])),
+        db: Connection = Depends(get_db),
+    ):
+        snapshots = list_snapshots(db, current_user, backup_id=backup_id)
+        return {"snapshots": [api_snapshot(snapshot) for snapshot in snapshots]}
+
+    @app.get("/backups/{backup_id}")
+    def backup_detail_api(
+        backup_id: str,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA", "OPERADOR", "VIEWER"])),
+        db: Connection = Depends(get_db),
+    ):
+        backup = get_backup_detail(db, current_user, backup_id)
+        serialized = api_backup(backup)
+        serialized["snapshots"] = [api_snapshot(snapshot) for snapshot in backup["snapshots"]]
+        return {"backup": serialized}
+
+    @app.post("/snapshots")
+    def create_snapshot_api(
+        payload: SnapshotPayload,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA", "OPERADOR"])),
+        db: Connection = Depends(get_db),
+    ):
+        snapshot = create_snapshot(db, current_user, payload)
+        return {"snapshot": api_snapshot(snapshot)}
+
+    @app.get("/snapshots")
+    def list_snapshots_api(
+        current_user=Depends(require_roles(["ADMIN_EMPRESA", "OPERADOR", "VIEWER"])),
+        db: Connection = Depends(get_db),
+    ):
+        snapshots = list_snapshots(db, current_user)
+        return {"snapshots": [api_snapshot(snapshot) for snapshot in snapshots]}
+
+    @app.get("/web/login", response_class=HTMLResponse)
+    def web_login(request: Request, next: str | None = None, db: Connection = Depends(get_db)):
+        current_user = web_user(request, db)
+
+        if current_user and current_user["role"] == "ADMIN_EMPRESA":
+            return RedirectResponse(next or "/web/dashboard", status_code=303)
+
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {
+                "title": "Login",
+                "setup_required": users_count(db) == 0,
+                "error": "",
+                "next": next or "/web/dashboard",
+            },
+        )
+
+    @app.post("/web/login")
+    def web_login_post(
+        request: Request,
+        email: str = Form(...),
+        password: str = Form(...),
+        name: str = Form(default=""),
+        companyName: str = Form(default="Empresa"),
+        next: str = Form(default="/web/dashboard"),
+        db: Connection = Depends(get_db),
+    ):
+        setup_required = users_count(db) == 0
+
+        try:
+            if setup_required:
+                _, user = create_first_admin(
+                    db,
+                    companyName,
+                    name or email,
+                    email,
+                    password,
+                )
+            else:
+                user = authenticate_user(db, email, password)
+
+                if not user:
+                    raise ValueError("Email ou senha invalidos.")
+
+                if user["role"] != "ADMIN_EMPRESA":
+                    raise ValueError("Apenas ADMIN_EMPRESA acessa o painel web.")
+
+                db.commit()
+        except Exception as error:
+            return templates.TemplateResponse(
+                request,
+                "login.html",
+                {
+                    "title": "Login",
+                    "setup_required": setup_required,
+                    "error": str(getattr(error, "detail", error)),
+                    "next": next,
+                },
+                status_code=400,
+            )
+
+        response = RedirectResponse(next or "/web/dashboard", status_code=303)
+        response.set_cookie(
+            COOKIE_NAME,
+            create_access_token(user),
+            httponly=True,
+            samesite="lax",
+        )
+        return response
+
+    @app.post("/web/logout")
+    def web_logout():
+        response = RedirectResponse("/web/login", status_code=303)
+        response.delete_cookie(COOKIE_NAME)
+        return response
+
+    @app.get("/web/dashboard", response_class=HTMLResponse)
+    def web_dashboard(request: Request, db: Connection = Depends(get_db)):
+        current_user, response = require_web_admin(request, db)
+
+        if response:
+            return response
+
+        data = admin_dashboard(db, current_user)
+        return templates.TemplateResponse(
+            request,
+            "dashboard.html",
+            {
+                "title": "Dashboard",
+                "current_user": current_user,
+                "company": data["company"],
+                "summary": data["summary"],
+                "recent_backups": data["recentBackups"],
+            },
+        )
+
+    @app.get("/web/users", response_class=HTMLResponse)
+    def web_users(request: Request, db: Connection = Depends(get_db)):
+        current_user, response = require_web_admin(request, db)
+
+        if response:
+            return response
+
+        return templates.TemplateResponse(
+            request,
+            "users.html",
+            {
+                "title": "Usuarios",
+                "current_user": current_user,
+                "users": list_company_users(db, current_user["company_id"]),
+            },
+        )
+
+    @app.post("/web/users")
+    def web_users_create(
+        request: Request,
+        name: str = Form(...),
+        email: str = Form(...),
+        password: str = Form(...),
+        role: str = Form(...),
+        db: Connection = Depends(get_db),
+    ):
+        current_user, response = require_web_admin(request, db)
+
+        if response:
+            return response
+
+        create_user(db, current_user["company_id"], name, email, password, role)
+        db.commit()
+        return RedirectResponse("/web/users", status_code=303)
+
+    @app.post("/web/users/{user_id}/update")
+    def web_users_update(
+        user_id: str,
+        request: Request,
+        name: str = Form(...),
+        role: str = Form(...),
+        status_value: str = Form(default="ACTIVE", alias="status"),
+        db: Connection = Depends(get_db),
+    ):
+        current_user, response = require_web_admin(request, db)
+
+        if response:
+            return response
+
+        update_company_user(
+            db,
+            current_user["company_id"],
+            user_id,
+            name=name,
+            role=role,
+            status_value=status_value,
+        )
+        return RedirectResponse("/web/users", status_code=303)
+
+    @app.post("/web/users/{user_id}/disable")
+    def web_users_disable(
+        user_id: str,
+        request: Request,
+        db: Connection = Depends(get_db),
+    ):
+        current_user, response = require_web_admin(request, db)
+
+        if response:
+            return response
+
+        disable_company_user(db, current_user["company_id"], user_id)
+        return RedirectResponse("/web/users", status_code=303)
+
+    @app.get("/web/devices", response_class=HTMLResponse)
+    def web_devices(request: Request, db: Connection = Depends(get_db)):
+        current_user, response = require_web_admin(request, db)
+
+        if response:
+            return response
+
+        return templates.TemplateResponse(
+            request,
+            "devices.html",
+            {
+                "title": "Dispositivos",
+                "current_user": current_user,
+                "devices": list_devices(db, current_user),
+            },
+        )
+
+    @app.get("/web/backups", response_class=HTMLResponse)
+    def web_backups(
+        request: Request,
+        userId: str | None = None,
+        deviceId: str | None = None,
+        folderId: str | None = None,
+        status: str | None = None,
+        type: str | None = None,
+        priority: str | None = None,
+        startDate: str | None = None,
+        endDate: str | None = None,
+        db: Connection = Depends(get_db),
+    ):
+        current_user, response = require_web_admin(request, db)
+
+        if response:
+            return response
+
+        filters = filters_from_query(userId, deviceId, folderId, status, type, priority, startDate, endDate)
+        return templates.TemplateResponse(
+            request,
+            "backups.html",
+            {
+                "title": "Backups",
+                "current_user": current_user,
+                "backups": list_backups(db, current_user, filters=filters),
+                "users": list_company_users(db, current_user["company_id"]),
+                "devices": list_devices(db, current_user),
+                "folders": list_company_folders(db, current_user),
+                "filters": filters,
+            },
+        )
+
+    @app.get("/web/backups/{backup_id}", response_class=HTMLResponse)
+    def web_backup_detail(
+        backup_id: str,
+        request: Request,
+        db: Connection = Depends(get_db),
+    ):
+        current_user, response = require_web_admin(request, db)
+
+        if response:
+            return response
+
+        backup = get_backup_detail(db, current_user, backup_id)
+        return templates.TemplateResponse(
+            request,
+            "backup_detail.html",
+            {
+                "title": backup["name"],
+                "current_user": current_user,
+                "backup": backup,
+            },
+        )
+
+    @app.get("/web/snapshots", response_class=HTMLResponse)
+    def web_snapshots(request: Request, db: Connection = Depends(get_db)):
+        current_user, response = require_web_admin(request, db)
+
+        if response:
+            return response
+
+        return templates.TemplateResponse(
+            request,
+            "snapshots.html",
+            {
+                "title": "Snapshots",
+                "current_user": current_user,
+                "snapshots": list_snapshots(db, current_user),
+            },
+        )
+
+    @app.get("/web/audit-logs", response_class=HTMLResponse)
+    def web_audit_logs(
+        request: Request,
+        event: str | None = None,
+        startDate: str | None = None,
+        endDate: str | None = None,
+        db: Connection = Depends(get_db),
+    ):
+        current_user, response = require_web_admin(request, db)
+
+        if response:
+            return response
+
+        filters = {"event": event, "startDate": startDate, "endDate": endDate}
+        return templates.TemplateResponse(
+            request,
+            "audit_logs.html",
+            {
+                "title": "Auditoria",
+                "current_user": current_user,
+                "logs": list_audit_logs(db, current_user, filters=filters),
+                "filters": filters,
+            },
+        )
+
+    return app
+
+
+app = create_app()

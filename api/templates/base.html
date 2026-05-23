@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }} | Smart Backup</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="/web/dashboard">
+        <span class="brand-mark">SB</span>
+        <span>
+          <strong>Smart Backup</strong>
+          <small>{{ current_user.company_id if current_user else "" }}</small>
+        </span>
+      </a>
+      <nav class="nav">
+        <a href="/web/dashboard" class="{{ 'active' if request.url.path == '/web/dashboard' else '' }}">Dashboard</a>
+        <a href="/web/users" class="{{ 'active' if request.url.path == '/web/users' else '' }}">Usuarios</a>
+        <a href="/web/devices" class="{{ 'active' if request.url.path == '/web/devices' else '' }}">Dispositivos</a>
+        <a href="/web/backups" class="{{ 'active' if request.url.path.startswith('/web/backups') else '' }}">Backups</a>
+        <a href="/web/snapshots" class="{{ 'active' if request.url.path == '/web/snapshots' else '' }}">Snapshots</a>
+        <a href="/web/audit-logs" class="{{ 'active' if request.url.path == '/web/audit-logs' else '' }}">Auditoria</a>
+      </nav>
+    </aside>
+    <div class="content">
+      <header class="topbar">
+        <div>
+          <h1>{{ title }}</h1>
+          <p>{{ current_user.name if current_user else "" }}{% if current_user %} · {{ current_user.role }}{% endif %}</p>
+        </div>
+        <form action="/web/logout" method="post">
+          <button class="button ghost" type="submit">Sair</button>
+        </form>
+      </header>
+      <main>
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </div>
+  <script src="{{ url_for('static', path='app.js') }}"></script>
+</body>
+</html>
+

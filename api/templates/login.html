@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login | Smart Backup</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
+</head>
+<body class="login-body">
+  <main class="login-panel">
+    <div class="login-brand">
+      <span class="brand-mark">SB</span>
+      <div>
+        <h1>Smart Backup</h1>
+        <p>Painel multiempresa</p>
+      </div>
+    </div>
+    {% if error %}
+      <div class="alert danger">{{ error }}</div>
+    {% endif %}
+    <form method="post" action="/web/login" class="form-grid">
+      <input type="hidden" name="next" value="{{ next }}">
+      {% if setup_required %}
+        <label>
+          Empresa
+          <input name="companyName" type="text" value="Empresa Alpha" required>
+        </label>
+        <label>
+          Nome do admin
+          <input name="name" type="text" autocomplete="name" required>
+        </label>
+      {% endif %}
+      <label>
+        Email
+        <input name="email" type="email" autocomplete="email" required>
+      </label>
+      <label>
+        Senha
+        <input name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <button class="button primary" type="submit">
+        {{ "Criar admin" if setup_required else "Entrar" }}
+      </button>
+    </form>
+  </main>
+</body>
+</html>
+

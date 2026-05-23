@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <div class="section-title">
+    <h2>Filtros</h2>
+  </div>
+  <form class="filters" method="get" action="/web/audit-logs">
+    <input name="event" placeholder="Evento" value="{{ filters.event or '' }}">
+    <input type="date" name="startDate" value="{{ filters.startDate or '' }}">
+    <input type="date" name="endDate" value="{{ filters.endDate or '' }}">
+    <button class="button primary" type="submit">Filtrar</button>
+    <a class="button ghost" href="/web/audit-logs">Limpar</a>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="section-title">
+    <h2>Eventos</h2>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Evento</th>
+          <th>Usuario</th>
+          <th>Descricao</th>
+          <th>Metadados</th>
+          <th>Data</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for log in logs %}
+          <tr>
+            <td><span class="pill">{{ log.event }}</span></td>
+            <td>{{ log.user_name or "-" }}</td>
+            <td>{{ log.description }}</td>
+            <td><code>{{ log.metadata }}</code></td>
+            <td>{{ log.created_at }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="5" class="empty">Nenhum evento encontrado.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+

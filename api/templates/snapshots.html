@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <div class="section-title">
+    <h2>Snapshots da empresa</h2>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Nome</th>
+          <th>Backup</th>
+          <th>Usuario</th>
+          <th>Dispositivo</th>
+          <th>S3 key</th>
+          <th>Tamanho</th>
+          <th>Criado</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for snapshot in snapshots %}
+          <tr>
+            <td>{{ snapshot.name }}</td>
+            <td><a href="/web/backups/{{ snapshot.backup_id }}">{{ snapshot.backup_name }}</a></td>
+            <td>{{ snapshot.user_name }}</td>
+            <td>{{ snapshot.device_name }}</td>
+            <td class="mono path">{{ snapshot.s3_key }}</td>
+            <td>{{ snapshot.size_bytes | bytes }}</td>
+            <td>{{ snapshot.created_at }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="7" class="empty">Nenhum snapshot registrado.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+

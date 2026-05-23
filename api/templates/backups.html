@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <div class="section-title">
+    <h2>Filtros</h2>
+  </div>
+  <form class="filters" method="get" action="/web/backups">
+    <select name="userId">
+      <option value="">Todos usuarios</option>
+      {% for user in users %}
+        <option value="{{ user.id }}" {{ "selected" if filters.userId == user.id else "" }}>{{ user.name }}</option>
+      {% endfor %}
+    </select>
+    <select name="deviceId">
+      <option value="">Todos dispositivos</option>
+      {% for device in devices %}
+        <option value="{{ device.id }}" {{ "selected" if filters.deviceId == device.id else "" }}>{{ device.name }}</option>
+      {% endfor %}
+    </select>
+    <select name="folderId">
+      <option value="">Todas pastas</option>
+      {% for folder in folders %}
+        <option value="{{ folder.id }}" {{ "selected" if filters.folderId == folder.id else "" }}>{{ folder.path }}</option>
+      {% endfor %}
+    </select>
+    <select name="status">
+      <option value="">Status</option>
+      {% for status_value in ["PENDING", "RUNNING", "SUCCESS", "FAILED", "CANCELED"] %}
+        <option value="{{ status_value }}" {{ "selected" if filters.status == status_value else "" }}>{{ status_value }}</option>
+      {% endfor %}
+    </select>
+    <select name="type">
+      <option value="">Tipo</option>
+      {% for type_value in ["FULL", "INCREMENTAL", "SNAPSHOT"] %}
+        <option value="{{ type_value }}" {{ "selected" if filters.type == type_value else "" }}>{{ type_value }}</option>
+      {% endfor %}
+    </select>
+    <select name="priority">
+      <option value="">Prioridade</option>
+      {% for priority_value in ["LOW", "MEDIUM", "HIGH", "NORMAL"] %}
+        <option value="{{ priority_value }}" {{ "selected" if filters.priority == priority_value else "" }}>{{ priority_value }}</option>
+      {% endfor %}
+    </select>
+    <input type="date" name="startDate" value="{{ filters.startDate or '' }}">
+    <input type="date" name="endDate" value="{{ filters.endDate or '' }}">
+    <button class="button primary" type="submit">Filtrar</button>
+    <a class="button ghost" href="/web/backups">Limpar</a>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="section-title">
+    <h2>Backups</h2>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Nome</th>
+          <th>Usuario</th>
+          <th>Dispositivo</th>
+          <th>Tipo</th>
+          <th>Status</th>
+          <th>Prioridade</th>
+          <th>Tamanho</th>
+          <th>Data</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for backup in backups %}
+          <tr>
+            <td><a href="/web/backups/{{ backup.id }}">{{ backup.name }}</a></td>
+            <td>{{ backup.user_name }}</td>
+            <td>{{ backup.device_name }}</td>
+            <td>{{ backup.type }}</td>
+            <td><span class="status {{ backup.status | lower }}">{{ backup.status }}</span></td>
+            <td>{{ backup.priority }}</td>
+            <td>{{ backup.size_bytes | bytes }}</td>
+            <td>{{ backup.created_at }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="8" class="empty">Nenhum backup encontrado.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+

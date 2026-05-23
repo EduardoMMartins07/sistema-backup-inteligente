@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="metric-grid">
+  <article class="metric">
+    <span>Usuarios</span>
+    <strong>{{ summary.users }}</strong>
+  </article>
+  <article class="metric">
+    <span>Dispositivos</span>
+    <strong>{{ summary.devices }}</strong>
+  </article>
+  <article class="metric">
+    <span>Backups</span>
+    <strong>{{ summary.backups }}</strong>
+  </article>
+  <article class="metric">
+    <span>Sucesso</span>
+    <strong>{{ summary.successfulBackups }}</strong>
+  </article>
+  <article class="metric">
+    <span>Falhas</span>
+    <strong>{{ summary.failedBackups }}</strong>
+  </article>
+  <article class="metric">
+    <span>Tamanho total</span>
+    <strong>{{ summary.totalSizeBytes | bytes }}</strong>
+  </article>
+</section>
+
+<section class="panel">
+  <div class="section-title">
+    <h2>Backups recentes</h2>
+    <a class="button ghost" href="/web/backups">Ver todos</a>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Nome</th>
+          <th>Usuario</th>
+          <th>Dispositivo</th>
+          <th>Pasta</th>
+          <th>Status</th>
+          <th>Tamanho</th>
+          <th>Data</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for backup in recent_backups %}
+          <tr>
+            <td><a href="/web/backups/{{ backup.id }}">{{ backup.name }}</a></td>
+            <td>{{ backup.user_name }}</td>
+            <td>{{ backup.device_name }}</td>
+            <td class="path">{{ backup.folder_path }}</td>
+            <td><span class="status {{ backup.status | lower }}">{{ backup.status }}</span></td>
+            <td>{{ backup.size_bytes | bytes }}</td>
+            <td>{{ backup.created_at }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="7" class="empty">Nenhum backup registrado.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+

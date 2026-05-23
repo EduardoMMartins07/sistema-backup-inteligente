@@ -5,6 +5,8 @@ config/backup_history.json
 config/backup_schedule.json
 config/cloud_settings.json
 config/cloud_secret.key
+config/api.sqlite3
+config/api.sqlite3-*
 config/file_activity.json
 config/llm_classification_cache.json
 config/priority_backup_state.json
@@ -13,6 +15,7 @@ config/priority_backup_state.json
 dataset/
 backups/
 backup_storage/
+api_storage/
 ml/model.pkl
 *.zip
 
@@ -47,5 +50,5 @@ Thumbs.db
 .idea/
 
 # Pasta de tasks
-.tasks/
+tasks/
 .serena/

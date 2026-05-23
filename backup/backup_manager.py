@@ -2121,6 +2121,16 @@ def append_history(entry):
         history = load_history()
         history.append(entry)
         save_json(HISTORY_PATH, history[-50:])
+        sync_local_history_entry_to_api(entry)
+
+
+def sync_local_history_entry_to_api(entry):
+    try:
+        from api.local_history_sync import sync_history_entry
+
+        sync_history_entry(entry)
+    except Exception:
+        pass
 
 
 def sync_history_entry_to_cloud(history_entry, progress_callback=None):
@@ -2252,6 +2262,7 @@ def update_history_entry_cloud_result(snapshot_path, result):
 
         if updated:
             save_json(HISTORY_PATH, history[-50:])
+            sync_local_history_entry_to_api(entry)
 
         return updated
 

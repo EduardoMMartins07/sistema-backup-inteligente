@@ -12,6 +12,11 @@ from security import crypto_service
 USERS_PATH = os.path.join("config", "users.json")
 PBKDF2_ITERATIONS = 260000
 DEFAULT_COMPANY_ID = "default"
+API_TO_DESKTOP_ROLES = {
+    "ADMIN_EMPRESA": "admin",
+    "OPERADOR": "operator",
+    "VIEWER": "viewer",
+}
 
 
 def load_users():
@@ -48,7 +53,10 @@ def save_users(users):
 
 
 def users_exist():
-    return bool(load_users())
+    if load_users():
+        return True
+
+    return api_users_exist()
 
 
 def normalize_username(username):
@@ -152,7 +160,7 @@ def authenticate(username, password):
             break
 
     if not user:
-        return None
+        return authenticate_api_user(normalized_username, password)
 
     if not verify_password(password, user.get("password", {})):
         return None
@@ -173,6 +181,71 @@ def authenticate(username, password):
             return None
 
     return public_user(user)
+
+
+def api_users_exist():
+    try:
+        from api.database import connect
+
+        connection = connect()
+
+        try:
+            row = connection.execute(
+                "SELECT COUNT(*) AS total FROM users WHERE status = 'ACTIVE'"
+            ).fetchone()
+            return bool(row and row["total"])
+        finally:
+            connection.close()
+    except Exception:
+        return False
+
+
+def authenticate_api_user(username, password):
+    try:
+        from api.database import connect, row_to_dict
+        from api.security import verify_password as verify_api_password
+
+        connection = connect()
+
+        try:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM users
+                WHERE email = ? AND status = 'ACTIVE'
+                """,
+                (normalize_username(username),),
+            ).fetchone()
+            user = row_to_dict(row)
+
+            if not user:
+                return None
+
+            if not verify_api_password(password, user.get("password_hash", "")):
+                return None
+
+            return public_api_user(user)
+        finally:
+            connection.close()
+    except Exception:
+        return None
+
+
+def public_api_user(user):
+    role = API_TO_DESKTOP_ROLES.get(user.get("role"))
+
+    if not role:
+        return None
+
+    return {
+        "username": user.get("email"),
+        "name": user.get("name") or user.get("email"),
+        "role": role,
+        "company_id": user.get("company_id", DEFAULT_COMPANY_ID),
+        "created_at": user.get("created_at"),
+        "api_user_id": user.get("id"),
+        "auth_source": "api",
+    }
 
 
 def validate_user_payload(username, password, role):

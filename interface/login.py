@@ -135,11 +135,11 @@ class LoginWindow:
         self.panel = self.create_shell()
         self.create_title(
             "SMART BACKUP",
-            "Entre com seu usuario para abrir o painel."
+            "Entre com seu usuario ou email para abrir o painel."
         )
 
         form = self.create_form_frame()
-        self.create_label(form, "Usuario", 0)
+        self.create_label(form, "Usuario ou email", 0)
         username_entry = self.create_entry(form, self.username_var, 1)
         self.create_label(form, "Senha", 2)
         password_entry = self.create_entry(form, self.password_var, 3, show="*")

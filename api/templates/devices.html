@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <div class="section-title">
+    <h2>Dispositivos registrados</h2>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Nome</th>
+          <th>Hostname</th>
+          <th>Usuario</th>
+          <th>Identificador</th>
+          <th>Ultimo contato</th>
+          <th>Pastas</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for device in devices %}
+          <tr>
+            <td>{{ device.name }}</td>
+            <td>{{ device.hostname }}</td>
+            <td>{{ device.user_name }}</td>
+            <td class="mono">{{ device.identifier }}</td>
+            <td>{{ device.last_seen_at }}</td>
+            <td>
+              {% for folder in device.folders %}
+                <div class="path">{{ folder.path }}</div>
+              {% else %}
+                <span class="muted">Sem pastas</span>
+              {% endfor %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6" class="empty">Nenhum dispositivo registrado.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+

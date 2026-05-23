@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="detail-grid">
+  <article class="panel">
+    <div class="section-title">
+      <h2>Backup</h2>
+      <span class="status {{ backup.status | lower }}">{{ backup.status }}</span>
+    </div>
+    <dl class="details">
+      <dt>ID</dt><dd class="mono">{{ backup.id }}</dd>
+      <dt>Tipo</dt><dd>{{ backup.type }}</dd>
+      <dt>Prioridade</dt><dd>{{ backup.priority }}</dd>
+      <dt>Tamanho</dt><dd>{{ backup.size_bytes | bytes }}</dd>
+      <dt>Arquivos</dt><dd>{{ backup.file_count }}</dd>
+      <dt>Checksum</dt><dd class="mono">{{ backup.checksum or "-" }}</dd>
+      <dt>S3 key</dt><dd class="mono path">{{ backup.s3_key }}</dd>
+      <dt>Inicio</dt><dd>{{ backup.started_at }}</dd>
+      <dt>Fim</dt><dd>{{ backup.finished_at or "-" }}</dd>
+      <dt>Erro</dt><dd>{{ backup.error_message or "-" }}</dd>
+    </dl>
+  </article>
+  <article class="panel">
+    <div class="section-title">
+      <h2>Metadados</h2>
+    </div>
+    <pre class="code">{{ backup.metadata | tojson(indent=2) }}</pre>
+  </article>
+</section>
+
+<section class="panel">
+  <div class="section-title">
+    <h2>Snapshots</h2>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Nome</th>
+          <th>S3 key</th>
+          <th>Tamanho</th>
+          <th>Arquivos</th>
+          <th>Criado</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for snapshot in backup.snapshots %}
+          <tr>
+            <td>{{ snapshot.name }}</td>
+            <td class="mono path">{{ snapshot.s3_key }}</td>
+            <td>{{ snapshot.size_bytes | bytes }}</td>
+            <td>{{ snapshot.file_count }}</td>
+            <td>{{ snapshot.created_at }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="5" class="empty">Nenhum snapshot vinculado.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+
