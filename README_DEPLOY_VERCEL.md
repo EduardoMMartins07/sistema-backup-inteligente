@@ -1,14 +1,17 @@
-# Deploy no Vercel (com Supabase + Cloudflare R2)
+# Deploy no Vercel (com Supabase — sem S3 por enquanto)
 
-## ⚠️ Requisitos obrigatorios
+## ⚠️ Requisitos
 
-| Recurso    | Por que                                    | Opcao que voce ja usa |
-| ---------- | ------------------------------------------ | --------------------- |
-| PostgreSQL | Vercel nao tem filesystem persistente      | **Supabase**          |
-| Bucket S3  | Armazenamento de backups efemero no Vercel | Cloudflare R2         |
+| Recurso    | Por que                                    | Status               |
+| ---------- | ------------------------------------------ | -------------------- |
+| PostgreSQL | Vercel nao tem filesystem persistente      | ✅ **Supabase** OK   |
+| Bucket S3  | Armazenamento de backups (opcional p/ teste) | ❌ Ainda sem S3    |
 
 > **SQLite nao funciona no Vercel.** Toda vez que a funcao "esfria", os dados seriam perdidos.
-> Como voce ja usa **Supabase** (PostgreSQL) e tem suporte a S3, a migracao e tranquila.
+> Por isso usamos o **Supabase** (PostgreSQL) que voce ja tem configurado.
+>
+> ⚡ Sem S3: a **interface web, login, dashboard e gerenciamento** funcionam.
+> Apenas o **upload de backups** falhara ate configurar um bucket.
 
 ---
 
@@ -89,26 +92,41 @@ vercel --prod
 
 No dashboard do Vercel (ou via CLI com `vercel env add`), configure:
 
-| Variavel                          | Valor                                                |
-| --------------------------------- | ---------------------------------------------------- |
-| `SMARTBACKUP_ENV`                 | `production`                                         |
-| `API_BASE_URL`                    | `https://seu-projeto.vercel.app`                     |
-| `DATABASE_URL`                    | `postgresql://postgres:...` (string do **Supabase**) |
-| `SMARTBACKUP_JWT_SECRET`          | `um-valor-longo-e-aleatorio-aqui`                    |
-| `SMARTBACKUP_API_STORAGE_BACKEND` | `s3`                                                 |
-| `AWS_ACCESS_KEY_ID`               | (credencial do R2)                                   |
-| `AWS_SECRET_ACCESS_KEY`           | (credencial do R2)                                   |
-| `AWS_REGION`                      | `auto`                                               |
-| `AWS_S3_BUCKET`                   | `smartbackup-files`                                  |
-| `AWS_ENDPOINT_URL`                | `https://<accountid>.r2.cloudflarestorage.com`       |
-| `CORS_ORIGIN`                     | `https://seu-projeto.vercel.app`                     |
-| `MAX_UPLOAD_SIZE_MB`              | `500`                                                |
+### Obrigatorias (para a API iniciar)
+
+| Variavel                 | Valor                                                           |
+| ------------------------ | --------------------------------------------------------------- |
+| `SMARTBACKUP_ENV`        | `production`                                                    |
+| `API_BASE_URL`           | `https://seu-projeto.vercel.app`                                |
+| `DATABASE_URL`           | `postgresql://postgres:!Dudu2505202@db.kybgqdcndueweyhssfhl.supabase.co:5432/postgres` |
+| `SMARTBACKUP_JWT_SECRET` | `um-valor-longo-e-aleatorio-aqui`                               |
+| `PORT`                   | `8000`                                                          |
+
+### Placeholders AWS (para nao travar — troque depois pelos reais)
+
+| Variavel                | Valor                   |
+| ----------------------- | ----------------------- |
+| `AWS_ACCESS_KEY_ID`     | `placeholder`           |
+| `AWS_SECRET_ACCESS_KEY` | `placeholder`           |
+| `AWS_REGION`            | `sa-east-1`             |
+| `AWS_S3_BUCKET`         | `placeholder-bucket`    |
+
+### Opcionais
+
+| Variavel             | Valor                              |
+| -------------------- | ---------------------------------- |
+| `CORS_ORIGIN`        | `https://seu-projeto.vercel.app`   |
+| `MAX_UPLOAD_SIZE_MB` | `500`                              |
 
 > **Dica:** gere um JWT_SECRET forte com:
 >
 > ```bash
 > python -c "import secrets; print(secrets.token_urlsafe(48))"
 > ```
+>
+> ⚠️ Com placeholders AWS o app inicia, mas **upload de backups** falha.
+> Quando quiser configurar um bucket de verdade (Backblaze B2, R2 ou AWS S3),
+> e so trocar as variaveis.
 
 ---
 
