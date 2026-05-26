@@ -235,9 +235,9 @@ class IncrementalBackupTests(unittest.TestCase):
         os.environ["BACKUP_DEV_MODE"] = "TrUe"
 
         self.assertTrue(is_dev_mode_enabled())
-        self.assertEqual(timedelta(minutes=30), get_backup_interval("baixa"))
-        self.assertEqual(timedelta(minutes=15), get_backup_interval("media"))
-        self.assertEqual(timedelta(minutes=5), get_backup_interval("alta"))
+        self.assertEqual(timedelta(minutes=10), get_backup_interval("baixa"))
+        self.assertEqual(timedelta(minutes=5), get_backup_interval("media"))
+        self.assertEqual(timedelta(minutes=2), get_backup_interval("alta"))
 
     def test_priority_scheduler_check_interval_changes_in_dev_mode(self):
         self.assertEqual(600, get_priority_scheduler_check_interval_seconds())
@@ -278,20 +278,20 @@ class IncrementalBackupTests(unittest.TestCase):
         before_manifest, before_decisions, _ = build_priority_eligible_manifest(
             directories=[str(self.source)],
             backup_destination=str(self.destination),
-            now=self.now + timedelta(minutes=4),
+            now=self.now + timedelta(minutes=1),
             priority_index=priority_index,
         )
         after_manifest, after_decisions, _ = build_priority_eligible_manifest(
             directories=[str(self.source)],
             backup_destination=str(self.destination),
-            now=self.now + timedelta(minutes=5, seconds=1),
+            now=self.now + timedelta(minutes=2, seconds=1),
             priority_index=priority_index,
         )
         file_path.write_text("v2", encoding="utf-8")
         changed_manifest, changed_decisions, _ = build_priority_eligible_manifest(
             directories=[str(self.source)],
             backup_destination=str(self.destination),
-            now=self.now + timedelta(minutes=5, seconds=2),
+            now=self.now + timedelta(minutes=2, seconds=2),
             priority_index=priority_index,
         )
 
@@ -352,26 +352,26 @@ class IncrementalBackupTests(unittest.TestCase):
         medium_before, _, _ = build_priority_eligible_manifest(
             directories=[str(medium_dir)],
             backup_destination=str(self.destination),
-            now=self.now + timedelta(minutes=14),
+            now=self.now + timedelta(minutes=4),
             priority_index=medium_index,
         )
         medium_file.write_text("media alterada", encoding="utf-8")
         medium_after, _, _ = build_priority_eligible_manifest(
             directories=[str(medium_dir)],
             backup_destination=str(self.destination),
-            now=self.now + timedelta(minutes=15, seconds=1),
+            now=self.now + timedelta(minutes=5, seconds=1),
             priority_index=medium_index,
         )
         low_before, _, _ = build_priority_eligible_manifest(
             directories=[str(low_dir)],
             backup_destination=str(self.destination),
-            now=self.now + timedelta(minutes=29),
+            now=self.now + timedelta(minutes=9),
             priority_index=low_index,
         )
         low_after, low_after_decisions, _ = build_priority_eligible_manifest(
             directories=[str(low_dir)],
             backup_destination=str(self.destination),
-            now=self.now + timedelta(minutes=30, seconds=1),
+            now=self.now + timedelta(minutes=10, seconds=1),
             priority_index=low_index,
         )
 
@@ -503,7 +503,7 @@ class IncrementalBackupTests(unittest.TestCase):
         self.assertEqual(1, len(self.object_paths()))
         self.assertEqual(1, result["files_not_eligible"])
 
-    def test_low_priority_in_dev_mode_is_eligible_after_30_minutes(self):
+    def test_low_priority_in_dev_mode_is_eligible_after_10_minutes(self):
         os.environ["BACKUP_DEV_MODE"] = "true"
         index_entry = {
             "last_priority": "baixa",
@@ -515,18 +515,18 @@ class IncrementalBackupTests(unittest.TestCase):
             is_file_eligible_for_backup(
                 file_metadata,
                 index_entry,
-                self.now + timedelta(minutes=29)
+                self.now + timedelta(minutes=9)
             )
         )
         self.assertTrue(
             is_file_eligible_for_backup(
                 file_metadata,
                 index_entry,
-                self.now + timedelta(minutes=30, seconds=1)
+                self.now + timedelta(minutes=10, seconds=1)
             )
         )
 
-    def test_medium_priority_in_dev_mode_is_eligible_after_15_minutes(self):
+    def test_medium_priority_in_dev_mode_is_eligible_after_5_minutes(self):
         os.environ["BACKUP_DEV_MODE"] = "true"
         index_entry = {
             "last_priority": "media",
@@ -538,14 +538,14 @@ class IncrementalBackupTests(unittest.TestCase):
             is_file_eligible_for_backup(
                 file_metadata,
                 index_entry,
-                self.now + timedelta(minutes=14)
+                self.now + timedelta(minutes=4)
             )
         )
         self.assertTrue(
             is_file_eligible_for_backup(
                 file_metadata,
                 index_entry,
-                self.now + timedelta(minutes=15, seconds=1)
+                self.now + timedelta(minutes=5, seconds=1)
             )
         )
 
@@ -571,7 +571,7 @@ class IncrementalBackupTests(unittest.TestCase):
         self.assertEqual(1, changed["objects_stored"])
         self.assertEqual(1, unchanged["files_unchanged"])
 
-    def test_high_priority_in_dev_mode_is_eligible_after_5_minutes(self):
+    def test_high_priority_in_dev_mode_is_eligible_after_2_minutes(self):
         os.environ["BACKUP_DEV_MODE"] = "true"
         index_entry = {
             "last_priority": "alta",
@@ -584,14 +584,14 @@ class IncrementalBackupTests(unittest.TestCase):
             is_file_eligible_for_backup(
                 file_metadata,
                 index_entry,
-                self.now + timedelta(minutes=4)
+                self.now + timedelta(minutes=1)
             )
         )
         self.assertTrue(
             is_file_eligible_for_backup(
                 file_metadata,
                 index_entry,
-                self.now + timedelta(minutes=5, seconds=1)
+                self.now + timedelta(minutes=2, seconds=1)
             )
         )
 
@@ -714,11 +714,50 @@ class IncrementalBackupTests(unittest.TestCase):
         )
 
         self.assertTrue(result["skipped"])
-        self.assertEqual(0, len(backup_manager.load_history()))
+        self.assertEqual("no_changes", result["backup_result"])
+        history = backup_manager.load_history()
+        self.assertEqual(1, len(history))
+        self.assertEqual("no_changes", history[0]["backup_result"])
+        self.assertTrue(history[0]["scanner_executed"])
+        self.assertEqual([], history[0]["file_changes"])
+        self.assertTrue(history[0]["timestamp"])
+        self.assertTrue(history[0]["started_at"])
         self.assertEqual(
             "arquivo sem alteracao desde a ultima snapshot",
             result["priority_decisions"][0]["reason"]
         )
+
+    def test_priority_job_records_deleted_files_without_new_snapshot(self):
+        os.environ["BACKUP_DEV_MODE"] = "true"
+        file_path = self.write_file("A.txt", "v1")
+        self.configure_priority_job_environment([file_path], "alta")
+
+        run_backup_job(
+            directories=[str(self.source)],
+            backup_destination=str(self.destination),
+            trigger="manual",
+            username="sistema",
+            user_role="system",
+            company_id="default",
+            run_scan_first=False,
+        )
+
+        file_path.unlink()
+
+        result = run_priority_backup_job(
+            run_scan_first=False,
+            username="sistema",
+            user_role="system",
+        )
+
+        history = backup_manager.load_history()
+        self.assertTrue(result["skipped"])
+        self.assertEqual("deletions_detected", result["backup_result"])
+        self.assertEqual(2, len(history))
+        self.assertEqual("deletions_detected", history[-1]["backup_result"])
+        self.assertEqual(["excluido"], [item["action"] for item in history[-1]["file_changes"]])
+        self.assertEqual("A.txt", history[-1]["file_changes"][0]["name"])
+        self.assertFalse(history[-1]["backup_path"])
 
     def test_priority_job_marks_partial_backup_without_false_deletions(self):
         high_file = self.write_file("A.txt", "high")
@@ -1172,6 +1211,48 @@ class IncrementalBackupTests(unittest.TestCase):
         self.assertEqual(["adicionado"], [item["action"] for item in alice_first["file_changes"]])
         self.assertEqual(["adicionado"], [item["action"] for item in bob_first["file_changes"]])
         self.assertEqual([], alice_second["file_changes"])
+
+    def test_scheduled_backup_records_history_when_no_files_changed(self):
+        backup_manager.HISTORY_PATH = str(self.root / "config" / "backup_history.json")
+        file_path = self.write_file("A.txt", "a")
+        first_run_at = datetime(2026, 5, 20, 8, 0, 0)
+        scheduled_run_at = datetime(2026, 5, 20, 8, 2, 0)
+
+        run_backup_job(
+            directories=[str(self.source)],
+            backup_destination=str(self.destination),
+            trigger="agendado",
+            username="Alice",
+            user_role="operator",
+            company_id="default",
+            now=first_run_at,
+            run_scan_first=False,
+        )
+
+        with patch("scanner.scanner.run_scanner") as run_scanner_mock:
+            second = run_backup_job(
+                directories=[str(self.source)],
+                backup_destination=str(self.destination),
+                trigger="agendado",
+                username="Alice",
+                user_role="operator",
+                company_id="default",
+                now=scheduled_run_at,
+            )
+
+        history = backup_manager.load_history()
+        self.assertEqual(2, len(history))
+        self.assertEqual("no_changes", second["backup_result"])
+        self.assertEqual("no_changes", history[-1]["backup_result"])
+        self.assertTrue(history[-1]["scanner_executed"])
+        self.assertEqual([], history[-1]["file_changes"])
+        self.assertEqual("20/05/2026 08:02:00", history[-1]["timestamp"])
+        self.assertIn("nenhum arquivo mudou", history[-1]["backup_description"])
+        run_scanner_mock.assert_any_call(
+            should_cancel=None,
+            progress_callback=None,
+            classify_files=False,
+        )
 
 
 if __name__ == "__main__":

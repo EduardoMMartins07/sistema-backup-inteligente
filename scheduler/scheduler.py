@@ -15,6 +15,10 @@ from scanner.scanner import is_shutdown_requested
 from scanner.scanner import wait_for_shutdown
 
 
+def _ts():
+    return datetime.now().strftime("%H:%M:%S")
+
+
 def execute_scheduled_backup_once(now=None):
     now = now or datetime.now()
 
@@ -22,7 +26,7 @@ def execute_scheduled_backup_once(now=None):
         return None
 
     if is_backup_job_running():
-        print("Backup agendado ignorado: outro backup esta em andamento.")
+        print(f"[{_ts()}] Backup agendado ignorado: outro backup esta em andamento.")
         return None
 
     schedule = load_schedule()
@@ -34,29 +38,30 @@ def execute_scheduled_backup_once(now=None):
             trigger="agendado",
             username=context["username"],
             user_role=context["user_role"],
-            company_id=context["company_id"]
+            company_id=context["company_id"],
+            now=now
         )
         mark_schedule_executed(now)
-        print(f"Backup agendado criado: {result['backup_path']}")
+        print(f"[{_ts()}] Backup agendado criado: {result['backup_path']}")
         return True
     except Exception as error:
         mark_schedule_failed(error, now=now, context=context)
-        print(f"Erro ao executar backup agendado: {error}")
+        print(f"[{_ts()}] Erro ao executar backup agendado: {error}")
         return False
 
 
 def start_scheduler():
-    print("Agendador de backup iniciado.")
+    print(f"[{_ts()}] Agendador de backup iniciado.")
     last_priority_check_at = None
     priority_check_interval_seconds = get_priority_scheduler_check_interval_seconds()
     print(
-        "Intervalo de verificacao da politica de prioridade: "
+        f"[{_ts()}] Intervalo de verificacao da politica de prioridade: "
         f"{priority_check_interval_seconds}s"
     )
 
     while True:
         if is_shutdown_requested():
-            print("Agendador interrompido (shutdown).")
+            print(f"[{_ts()}] Agendador interrompido (shutdown).")
             break
 
         now = datetime.now()
@@ -78,21 +83,34 @@ def start_scheduler():
                 and not is_backup_job_running()
             ):
                 last_priority_check_at = now
+
+                from backup.backup_manager import is_dev_mode_enabled
+                if is_dev_mode_enabled():
+                    print(f"[{_ts()}] [DEV MODE] Verificando arquivos por prioridade...")
+
+                schedule = load_schedule()
+                context = get_schedule_run_context(schedule)
                 result = run_priority_backup_job(
                     trigger="politica_prioridade",
-                    username="sistema",
-                    user_role="system"
+                    username=context["username"],
+                    user_role=context["user_role"],
+                    company_id=context["company_id"],
+                    now=now
                 )
 
                 if result.get("skipped"):
-                    print(f"Backup por prioridade ignorado: {result.get('reason')}")
+                    print(f"[{_ts()}] Backup por prioridade ignorado: {result.get('reason')}")
+                elif is_dev_mode_enabled():
+                    print(f"[{_ts()}] [DEV MODE] Backup por prioridade criado: {result['backup_path']}")
                 else:
-                    print(f"Backup por prioridade criado: {result['backup_path']}")
+                    print(f"[{_ts()}] Backup por prioridade criado: {result['backup_path']}")
             elif priority_policy_enabled and should_check_priority and is_backup_job_running():
-                print("Backup por prioridade ignorado: outro backup esta em andamento.")
+                print(f"[{_ts()}] Backup por prioridade ignorado: outro backup esta em andamento.")
         except Exception as error:
-            print(f"Erro ao executar backup por prioridade: {error}")
+            import traceback
+            print(f"[{_ts()}] Erro ao executar backup por prioridade: {error}")
+            traceback.print_exc()
 
         if wait_for_shutdown(20):
-            print("Agendador interrompido (shutdown).")
+            print(f"[{_ts()}] Agendador interrompido (shutdown).")
             break

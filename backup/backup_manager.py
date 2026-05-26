@@ -50,9 +50,9 @@ PRIORITY_INTERVALS = {
     PRIORITY_HIGH: timedelta(hours=4),
 }
 DEV_PRIORITY_INTERVALS = {
-    PRIORITY_LOW: timedelta(minutes=30),
-    PRIORITY_MEDIUM: timedelta(minutes=15),
-    PRIORITY_HIGH: timedelta(minutes=5),
+    PRIORITY_LOW: timedelta(minutes=10),
+    PRIORITY_MEDIUM: timedelta(minutes=5),
+    PRIORITY_HIGH: timedelta(minutes=2),
 }
 
 INTERNAL_IGNORED_PATHS = [
@@ -240,6 +240,19 @@ def is_path_ignored(path, config=None, backup_destination=None):
     return False
 
 
+def is_temp_or_locked_file(filename):
+    """Retorna True se o arquivo for temporario (.tmp) ou bloqueado pelo Office (~$)."""
+    basename = os.path.basename(filename or "")
+    return (
+        basename.endswith(".tmp")
+        or basename.startswith("~$")
+        or basename.startswith("~")
+        and (
+            basename.lower().endswith((".tmp", ".docx", ".xlsx", ".pptx"))
+        )
+    )
+
+
 def ensure_not_cancelled(cancel_callback=None):
     if cancel_callback and cancel_callback():
         raise BackupCancelledError("Backup cancelado pelo usuario.")
@@ -267,6 +280,9 @@ def add_directory_to_zip(archive, directory, config=None, backup_destination=Non
             file_path = os.path.join(root, file_name)
 
             if is_path_ignored(file_path, config, backup_destination):
+                continue
+
+            if is_temp_or_locked_file(file_name):
                 continue
 
             relative_path = os.path.relpath(file_path, normalized_directory)
@@ -300,6 +316,9 @@ def build_backup_manifest(directories=None, config=None, backup_destination=None
                 file_path = os.path.join(root, file_name)
 
                 if is_path_ignored(file_path, config, backup_destination):
+                    continue
+
+                if is_temp_or_locked_file(file_name):
                     continue
 
                 relative_path = os.path.relpath(file_path, normalized_directory)
@@ -552,6 +571,7 @@ def build_priority_eligible_manifest(
                 "priority": priority,
                 "included": include_file,
                 "reason": reason,
+                "time_eligible": time_eligible if priority != PRIORITY_LOW else False,
                 "last_backup_at": index_entry.get("last_backup_at", ""),
                 "last_hash": index_entry.get("last_hash", ""),
                 "required_interval": format_interval_for_log(get_backup_interval(priority)),
@@ -683,6 +703,115 @@ def get_latest_full_history_entry(username=None, company_id=None):
     return None
 
 
+def get_latest_deletion_baseline_snapshot(username=None, company_id=None):
+    history = load_history()
+
+    for entry in reversed(history):
+        if not history_entry_matches_scope(entry, username, company_id):
+            continue
+
+        snapshot = entry.get("file_snapshot")
+
+        if not isinstance(snapshot, dict):
+            continue
+
+        if is_full_history_entry(entry):
+            return snapshot
+
+        if entry.get("history_group_type") == "scan_only" and (
+            snapshot or entry.get("backup_result") == "deletions_detected"
+        ):
+            return snapshot
+
+    return {}
+
+
+def get_deleted_file_changes(previous_snapshot, current_snapshot):
+    return [
+        change
+        for change in build_file_changes(previous_snapshot, current_snapshot)
+        if change.get("action") == "excluido"
+    ]
+
+
+def build_scan_only_history_entry(
+    now=None,
+    trigger="politica_prioridade",
+    username=None,
+    user_role=None,
+    company_id=None,
+    priority_decisions=None,
+    total_files=0,
+    file_changes=None,
+    file_snapshot=None,
+    backup_description=None,
+    backup_result="no_changes",
+):
+    now = now or datetime.now()
+    priority_decisions = priority_decisions or []
+    file_changes = file_changes or []
+    file_snapshot = file_snapshot or {}
+    unchanged_count = sum(
+        1
+        for decision in priority_decisions
+        if decision.get("time_eligible") and not decision.get("included")
+    )
+    not_eligible_count = sum(
+        1
+        for decision in priority_decisions
+        if not decision.get("time_eligible") and not decision.get("included")
+    )
+
+    return {
+        "timestamp": now.strftime("%d/%m/%Y %H:%M:%S"),
+        "started_at": now.isoformat(timespec="seconds"),
+        "finished_at": now.isoformat(timespec="seconds"),
+        "backup_file": "",
+        "backup_name": "verificacao agendada",
+        "backup_description": backup_description or "Scanner executado no agendamento, nenhum arquivo mudou.",
+        "backup_path": "",
+        "backup_folder": "",
+        "snapshot_id": "",
+        "snapshot_path": "",
+        "backup_storage": "",
+        "storage_mode": "incremental",
+        "total_files": total_files,
+        "objects_stored": 0,
+        "objects_referenced": 0,
+        "files_unchanged": unchanged_count,
+        "files_not_eligible": not_eligible_count,
+        "duplicate_files_skipped": 0,
+        "trigger": trigger,
+        "user": username or "sistema",
+        "user_role": user_role or "system",
+        "company_id": company_id or "default",
+        "encrypted": False,
+        "encryption_algorithm": "",
+        "backup_encryption": {},
+        "compacted_size_bytes": None,
+        "file_changes": file_changes,
+        "file_snapshot": file_snapshot,
+        "status_counts": {
+            "skipped_unchanged": unchanged_count,
+            "skipped_not_eligible": not_eligible_count,
+        },
+        "warnings_count": 0,
+        "priority_policy": trigger == "politica_prioridade",
+        "partial_backup": True,
+        "priority_decisions": priority_decisions,
+        "history_group_type": "scan_only",
+        "backup_result": backup_result,
+        "scanner_executed": True,
+        "status": "completed",
+    }
+
+
+def append_scan_only_history(**kwargs):
+    entry = build_scan_only_history_entry(**kwargs)
+    append_history(entry)
+    return entry
+
+
 def build_file_changes(previous_snapshot, current_snapshot, detect_deletions=True):
     changes = []
     previous_keys = set(previous_snapshot.keys())
@@ -762,7 +891,8 @@ def sanitize_backup_name(name):
 
 
 def log_backup_decision(level, message):
-    print(f"[{level}] {message}")
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    print(f"[{timestamp}][{level}] {message}")
 
 
 def is_dev_mode_enabled():
@@ -2554,6 +2684,13 @@ def run_backup_job(
     file_changes = build_file_changes(previous_snapshot, current_snapshot)
     completed_at = started_at
     encrypted_archive = {}
+    effective_backup_description = backup_description or ""
+
+    if not effective_backup_description and not file_changes:
+        if trigger == "agendado":
+            effective_backup_description = "Scanner executado no agendamento, nenhum arquivo mudou."
+        else:
+            effective_backup_description = "Scanner executado, nenhum arquivo mudou."
 
     if user_master_key:
         if progress_callback:
@@ -2593,7 +2730,7 @@ def run_backup_job(
         "finished_at": completed_at.isoformat(timespec="seconds"),
         "backup_file": os.path.basename(incremental_result["snapshot_path"]),
         "backup_name": backup_name or "",
-        "backup_description": backup_description or "",
+        "backup_description": effective_backup_description,
         "backup_path": incremental_result["snapshot_path"],
         "backup_base_destination": base_backup_destination,
         "backup_user_directory": backup_destination,
@@ -2626,6 +2763,8 @@ def run_backup_job(
         "status_counts": incremental_result["status_counts"],
         "warnings_count": len(incremental_result["warnings"]),
         "history_group_type": "full",
+        "backup_result": "no_changes" if not file_changes else "completed",
+        "scanner_executed": bool(run_scan_first),
         "status": "completed",
     }
     should_start_cloud_sync = apply_initial_cloud_sync_status(history_entry)
@@ -2712,6 +2851,21 @@ def run_priority_backup_job(
         username=effective_username,
         company_id=effective_company_id
     )
+    deletion_baseline_snapshot = get_latest_deletion_baseline_snapshot(
+        username=effective_username,
+        company_id=effective_company_id
+    )
+    current_full_snapshot = build_file_snapshot(
+        build_backup_manifest(
+            directories=directories,
+            config=config,
+            backup_destination=backup_destination,
+        )
+    )
+    deleted_file_changes = get_deleted_file_changes(
+        deletion_baseline_snapshot,
+        current_full_snapshot,
+    )
     priority_index = load_dataset_priority_index()
     incremental_index = load_incremental_index(backup_destination)
     eligible_manifest, priority_decisions, priority_index = build_priority_eligible_manifest(
@@ -2727,12 +2881,50 @@ def run_priority_backup_job(
         if progress_callback:
             progress_callback(100, "Nenhum arquivo elegivel pela politica de prioridade.")
 
-        return {
+        result = {
             "skipped": True,
             "reason": "Nenhum arquivo elegivel pela politica de prioridade.",
             "trigger": trigger,
             "priority_decisions": priority_decisions,
         }
+
+        should_record_scan = any(
+            decision.get("time_eligible") and not decision.get("included")
+            for decision in priority_decisions
+        )
+
+        if deleted_file_changes:
+            history_entry = append_scan_only_history(
+                now=started_at,
+                trigger=trigger,
+                username=effective_username,
+                user_role=user_role or "system",
+                company_id=effective_company_id,
+                priority_decisions=priority_decisions,
+                total_files=len(current_full_snapshot),
+                file_changes=deleted_file_changes,
+                file_snapshot=current_full_snapshot,
+                backup_description="Scanner executado no agendamento, arquivos excluidos foram detectados.",
+                backup_result="deletions_detected",
+            )
+            result.update(history_entry)
+            result["skipped"] = True
+            result["reason"] = "Scanner executado no agendamento, arquivos excluidos foram detectados."
+        elif should_record_scan:
+            history_entry = append_scan_only_history(
+                now=started_at,
+                trigger=trigger,
+                username=effective_username,
+                user_role=user_role or "system",
+                company_id=effective_company_id,
+                priority_decisions=priority_decisions,
+                total_files=len(priority_decisions),
+            )
+            result.update(history_entry)
+            result["skipped"] = True
+            result["reason"] = "Scanner executado no agendamento, nenhum arquivo mudou."
+
+        return result
 
     if progress_callback:
         progress_callback(40, "Criando snapshot incremental por prioridade.")
@@ -2931,6 +3123,20 @@ def is_time_within_window(current_time, start_time, end_time):
     return current_time >= start_time or current_time <= end_time
 
 
+def _get_window_date(reference_dt, start_time, end_time):
+    """Retorna a data de referencia da janela de agendamento.
+
+    Para janelas noturnas (ex: 21:00 - 07:00), a "data da janela"
+    e o dia em que a janela comecou (o dia do start_time).
+    """
+    if start_time and end_time and start_time > end_time:
+        # Janela noturna: se ja passou da meia-noite mas ainda nao
+        # atingiu o start_time, a janela comecou no dia anterior.
+        if reference_dt.time() < start_time:
+            return reference_dt.date() - timedelta(days=1)
+    return reference_dt.date()
+
+
 def is_schedule_due(now=None):
     now = now or datetime.now()
     schedule = load_schedule()
@@ -2958,7 +3164,10 @@ def is_schedule_due(now=None):
     except ValueError:
         return True
 
-    return last_run.date() != now.date()
+    current_window = _get_window_date(now, start_time, end_time)
+    last_window = _get_window_date(last_run, start_time, end_time)
+
+    return current_window != last_window
 
 
 def mark_schedule_executed(now=None):

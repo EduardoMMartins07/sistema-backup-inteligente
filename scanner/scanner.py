@@ -8,6 +8,7 @@ from datetime import datetime
 
 from backup.backup_manager import BackupCancelledError
 from backup.backup_manager import is_path_ignored
+from backup.backup_manager import is_temp_or_locked_file
 from ml.llm_classifier import classify_file_importance
 from utils.file_hash import calculate_file_hash
 
@@ -405,6 +406,9 @@ def scan_directory(
         for file in files:
             ensure_not_cancelled(should_cancel)
 
+            if is_temp_or_locked_file(file):
+                continue
+
             try:
                 path = os.path.join(root, file)
 
@@ -457,7 +461,7 @@ def scan_directory(
                 )
 
             except Exception as error:
-                print("Erro ao ler arquivo:", file, error)
+                print("[AVISO] Erro ao ler arquivo:", file, error)
 
     return results
 

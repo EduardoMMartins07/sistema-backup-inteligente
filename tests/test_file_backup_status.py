@@ -5,6 +5,7 @@ from pathlib import Path
 from interface.gui import BACKUP_STATUS_IN_BACKUP
 from interface.gui import BACKUP_STATUS_PENDING
 from interface.gui import BACKUP_STATUS_PENDING_DELETE
+from interface.gui import split_history_entries_for_tree
 from interface.gui import build_file_status_rows
 
 
@@ -136,6 +137,28 @@ class FileBackupStatusTests(unittest.TestCase):
         self.assertEqual(BACKUP_STATUS_PENDING, rows[0]["backup_status"])
         self.assertEqual("-", rows[0]["added_to_backup_at"])
         self.assertEqual("-", rows[0]["added_in_backup"])
+
+    def test_history_tree_groups_scan_only_entries_separately(self):
+        full = {"backup_name": "Completo", "history_group_type": "full"}
+        priority = {
+            "backup_name": "Prioridade",
+            "history_group_type": "priority_snapshot",
+        }
+        scanner = {
+            "backup_name": "verificacao agendada",
+            "history_group_type": "scan_only",
+            "scanner_executed": True,
+        }
+
+        groups = split_history_entries_for_tree([
+            (0, full),
+            (1, scanner),
+            (2, priority),
+        ])
+
+        self.assertEqual([(0, full)], groups["full_entries"])
+        self.assertEqual([(2, priority)], groups["priority_entries"])
+        self.assertEqual([(1, scanner)], groups["scanner_entries"])
 
 
 if __name__ == "__main__":

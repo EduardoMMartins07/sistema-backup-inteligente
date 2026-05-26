@@ -98,6 +98,48 @@ def get_history_backup_label(entry):
     return entry.get("backup_name", "") or entry.get("backup_file", "-")
 
 
+def is_scanner_history_entry(entry):
+    if not isinstance(entry, dict):
+        return False
+
+    return (
+        entry.get("history_group_type") == "scan_only"
+        or (
+            entry.get("scanner_executed")
+            and entry.get("backup_result") in {"no_changes", "deletions_detected"}
+        )
+    )
+
+
+def is_priority_history_entry_data(entry):
+    if not isinstance(entry, dict):
+        return False
+
+    return (
+        entry.get("history_group_type") == "priority_snapshot"
+        or entry.get("partial_backup")
+        or entry.get("priority_policy")
+    )
+
+
+def split_history_entries_for_tree(indexed_entries):
+    groups = {
+        "full_entries": [],
+        "priority_entries": [],
+        "scanner_entries": [],
+    }
+
+    for index, entry in indexed_entries:
+        if is_scanner_history_entry(entry):
+            groups["scanner_entries"].append((index, entry))
+        elif is_priority_history_entry_data(entry):
+            groups["priority_entries"].append((index, entry))
+        else:
+            groups["full_entries"].append((index, entry))
+
+    return groups
+
+
 def get_file_extension(file_name):
     return os.path.splitext(str(file_name or ""))[1].lstrip(".").lower()
 
@@ -6530,14 +6572,13 @@ class BackupGUI:
         indexed_history = {}
 
         def is_priority_history_entry(entry):
-            return (
-                entry.get("history_group_type") == "priority_snapshot"
-                or entry.get("partial_backup")
-                or entry.get("priority_policy")
-            )
+            return is_priority_history_entry_data(entry)
 
         def is_full_history_entry(entry):
-            return not is_priority_history_entry(entry)
+            return (
+                not is_priority_history_entry(entry)
+                and not is_scanner_history_entry(entry)
+            )
 
         def get_history_tree_name(entry):
             name = entry.get("backup_name", "") or entry.get("backup_file", "-")
@@ -6586,16 +6627,10 @@ class BackupGUI:
                 for index, entry in enumerate(history)
                 if entry_matches_history_filters(entry)
             ]
-            full_entries = [
-                (index, entry)
-                for index, entry in visible_entries
-                if is_full_history_entry(entry)
-            ]
-            priority_entries = [
-                (index, entry)
-                for index, entry in visible_entries
-                if is_priority_history_entry(entry)
-            ]
+            history_groups = split_history_entries_for_tree(visible_entries)
+            full_entries = history_groups["full_entries"]
+            priority_entries = history_groups["priority_entries"]
+            scanner_entries = history_groups["scanner_entries"]
             full_item_by_history_index = {}
 
             for index, entry in reversed(full_entries):
@@ -6638,6 +6673,40 @@ class BackupGUI:
                     backup_tree.insert(
                         "",
                         0,
+                        iid=item_id,
+                        text=get_history_tree_name(entry),
+                        values=get_history_item_values(entry)
+                    )
+
+            if scanner_entries:
+                latest_scanner = scanner_entries[-1][1]
+                scanner_group_id = "group:scanners"
+                backup_tree.insert(
+                    "",
+                    tk.END,
+                    iid=scanner_group_id,
+                    text="Scanners",
+                    values=(
+                        latest_scanner.get("timestamp", "-"),
+                        "-",
+                        f"{len(scanner_entries)} verificacoes",
+                        "-",
+                        "-",
+                        "-",
+                        sum(
+                            len(entry.get("file_changes", []))
+                            for _, entry in scanner_entries
+                        )
+                    ),
+                    open=False
+                )
+
+                for index, entry in reversed(scanner_entries):
+                    item_id = f"entry:{index}"
+                    indexed_history[item_id] = entry
+                    backup_tree.insert(
+                        scanner_group_id,
+                        tk.END,
                         iid=item_id,
                         text=get_history_tree_name(entry),
                         values=get_history_item_values(entry)

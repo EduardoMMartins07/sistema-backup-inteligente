@@ -67,7 +67,8 @@ class SchedulerTests(unittest.TestCase):
             trigger="agendado",
             username="dudu",
             user_role="operator",
-            company_id="default"
+            company_id="default",
+            now=now
         )
         schedule = self.load_schedule()
         self.assertEqual("executed", schedule["status"])
@@ -129,6 +130,21 @@ class SchedulerTests(unittest.TestCase):
 
         self.assertTrue(can_view_backup_entry(current_user, entry))
 
+    def test_non_default_company_user_can_see_legacy_system_scheduled_backups(self):
+        current_user = {
+            "username": "diogosonegueti@gmail.com",
+            "role": "admin",
+            "company_id": "company_diogo",
+        }
+        entry = {
+            "trigger": "politica_prioridade",
+            "user": "sistema",
+            "user_role": "system",
+            "company_id": "default",
+        }
+
+        self.assertTrue(can_view_backup_entry(current_user, entry))
+
     def test_scheduler_exits_as_soon_as_shutdown_wait_is_triggered(self):
         with patch.object(scheduler, "is_shutdown_requested", return_value=False):
             with patch.object(scheduler, "execute_scheduled_backup_once") as execute:
@@ -151,6 +167,50 @@ class SchedulerTests(unittest.TestCase):
 
         execute.assert_called_once()
         wait_for_shutdown.assert_called_once_with(20)
+
+    def test_priority_policy_runs_with_saved_schedule_user_context(self):
+        self.write_schedule(
+            scheduled_username="diogosonegueti@gmail.com",
+            scheduled_user_role="admin",
+            scheduled_company_id="company_diogo",
+        )
+
+        with patch.object(scheduler, "is_shutdown_requested", return_value=False):
+            with patch.object(scheduler, "execute_scheduled_backup_once"):
+                with patch.object(
+                    scheduler,
+                    "is_priority_backup_policy_enabled",
+                    return_value=True
+                ):
+                    with patch.object(
+                        scheduler,
+                        "get_priority_scheduler_check_interval_seconds",
+                        return_value=60
+                    ):
+                        with patch.object(
+                            scheduler,
+                            "is_backup_job_running",
+                            return_value=False
+                        ):
+                            with patch.object(
+                                scheduler,
+                                "run_priority_backup_job",
+                                return_value={"skipped": True, "reason": "teste"}
+                            ) as run_priority:
+                                with patch.object(
+                                    scheduler,
+                                    "wait_for_shutdown",
+                                    return_value=True
+                                ):
+                                    scheduler.start_scheduler()
+
+        run_priority.assert_called_once()
+        self.assertEqual(
+            "diogosonegueti@gmail.com",
+            run_priority.call_args.kwargs["username"],
+        )
+        self.assertEqual("admin", run_priority.call_args.kwargs["user_role"])
+        self.assertEqual("company_diogo", run_priority.call_args.kwargs["company_id"])
 
 
 if __name__ == "__main__":
