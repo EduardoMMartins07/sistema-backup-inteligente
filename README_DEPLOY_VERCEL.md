@@ -2,10 +2,10 @@
 
 ## ⚠️ Requisitos obrigatorios
 
-| Recurso    | Por que                                      | Opcao que voce ja usa     |
-|------------|----------------------------------------------|---------------------------|
-| PostgreSQL | Vercel nao tem filesystem persistente        | **Supabase**              |
-| Bucket S3  | Armazenamento de backups efemero no Vercel   | Cloudflare R2             |
+| Recurso    | Por que                                    | Opcao que voce ja usa |
+| ---------- | ------------------------------------------ | --------------------- |
+| PostgreSQL | Vercel nao tem filesystem persistente      | **Supabase**          |
+| Bucket S3  | Armazenamento de backups efemero no Vercel | Cloudflare R2         |
 
 > **SQLite nao funciona no Vercel.** Toda vez que a funcao "esfria", os dados seriam perdidos.
 > Como voce ja usa **Supabase** (PostgreSQL) e tem suporte a S3, a migracao e tranquila.
@@ -34,6 +34,7 @@
 
 > 💡 Dica: se preferir usar o **pooler** (PgBouncer) do Supabase para ambientes
 > serverless, use a porta `6543` em vez de `5432`:
+>
 > ```
 > postgresql://postgres:[YOUR-PASSWORD]@db.xxxx.supabase.co:6543/postgres
 > ```
@@ -88,22 +89,23 @@ vercel --prod
 
 No dashboard do Vercel (ou via CLI com `vercel env add`), configure:
 
-| Variavel                            | Valor                                                  |
-|-------------------------------------|--------------------------------------------------------|
-| `SMARTBACKUP_ENV`                   | `production`                                           |
-| `API_BASE_URL`                      | `https://seu-projeto.vercel.app`                       |
-| `DATABASE_URL`                      | `postgresql://postgres:...` (string do **Supabase**)   |
-| `SMARTBACKUP_JWT_SECRET`            | `um-valor-longo-e-aleatorio-aqui`                      |
-| `SMARTBACKUP_API_STORAGE_BACKEND`   | `s3`                                                   |
-| `AWS_ACCESS_KEY_ID`                 | (credencial do R2)                                     |
-| `AWS_SECRET_ACCESS_KEY`             | (credencial do R2)                                     |
-| `AWS_REGION`                        | `auto`                                                 |
-| `AWS_S3_BUCKET`                     | `smartbackup-files`                                    |
-| `AWS_ENDPOINT_URL`                  | `https://<accountid>.r2.cloudflarestorage.com`         |
-| `CORS_ORIGIN`                       | `https://seu-projeto.vercel.app`                       |
-| `MAX_UPLOAD_SIZE_MB`                | `500`                                                  |
+| Variavel                          | Valor                                                |
+| --------------------------------- | ---------------------------------------------------- |
+| `SMARTBACKUP_ENV`                 | `production`                                         |
+| `API_BASE_URL`                    | `https://seu-projeto.vercel.app`                     |
+| `DATABASE_URL`                    | `postgresql://postgres:...` (string do **Supabase**) |
+| `SMARTBACKUP_JWT_SECRET`          | `um-valor-longo-e-aleatorio-aqui`                    |
+| `SMARTBACKUP_API_STORAGE_BACKEND` | `s3`                                                 |
+| `AWS_ACCESS_KEY_ID`               | (credencial do R2)                                   |
+| `AWS_SECRET_ACCESS_KEY`           | (credencial do R2)                                   |
+| `AWS_REGION`                      | `auto`                                               |
+| `AWS_S3_BUCKET`                   | `smartbackup-files`                                  |
+| `AWS_ENDPOINT_URL`                | `https://<accountid>.r2.cloudflarestorage.com`       |
+| `CORS_ORIGIN`                     | `https://seu-projeto.vercel.app`                     |
+| `MAX_UPLOAD_SIZE_MB`              | `500`                                                |
 
 > **Dica:** gere um JWT_SECRET forte com:
+>
 > ```bash
 > python -c "import secrets; print(secrets.token_urlsafe(48))"
 > ```
@@ -141,13 +143,13 @@ Siga o fluxo de **Primeiro Acesso** para criar o admin inicial.
 
 ## 7. Limites do plano Hobby (gratuito)
 
-| Recurso              | Limite             |
-|----------------------|--------------------|
-| Duracao da funcao    | 10s (Hobby) / 60s (Pro) |
-| Memoria              | 1024 MB maxima      |
+| Recurso              | Limite                        |
+| -------------------- | ----------------------------- |
+| Duracao da funcao    | 10s (Hobby) / 60s (Pro)       |
+| Memoria              | 1024 MB maxima                |
 | Tamanho do upload    | 4.5 MB (Hobby) / ~50 MB (Pro) |
-| Requests simultaneos | 1000               |
-| Cold starts          | Sim (alguns segundos) |
+| Requests simultaneos | 1000                          |
+| Cold starts          | Sim (alguns segundos)         |
 
 > Para uploads maiores, considere usar **presigned URLs** do S3 (ja implementado
 > no codigo) ou migrar para o plano Pro.
@@ -156,13 +158,13 @@ Siga o fluxo de **Primeiro Acesso** para criar o admin inicial.
 
 ## 8. Diferencas entre Vercel e Render
 
-| Caracteristica       | Vercel (serverless)         | Render (Web Service)     |
-|----------------------|-----------------------------|--------------------------|
-| Modelo               | Funcoes efemeras (cold start) | Container sempre ativo  |
-| Filesystem           | Read-only (exceto /tmp)     | Persistente              |
-| Upload direto        | Limitado a 4.5 MB (Hobby)   | Ilimitado (disco)        |
-| Custo                | Gratuito (Hobby)            | Gratuito (pausa dorme)   |
-| Complexidade         | Media (banco externo + S3)  | Baixa                    |
+| Caracteristica | Vercel (serverless)           | Render (Web Service)   |
+| -------------- | ----------------------------- | ---------------------- |
+| Modelo         | Funcoes efemeras (cold start) | Container sempre ativo |
+| Filesystem     | Read-only (exceto /tmp)       | Persistente            |
+| Upload direto  | Limitado a 4.5 MB (Hobby)     | Ilimitado (disco)      |
+| Custo          | Gratuito (Hobby)              | Gratuito (pausa dorme) |
+| Complexidade   | Media (banco externo + S3)    | Baixa                  |
 
 Se o limite de upload for um problema, **Render** (ou Docker em VPS) pode ser
 mais adequado.
@@ -171,10 +173,10 @@ mais adequado.
 
 ## 9. Solucao de problemas
 
-| Problema                          | Causa provavel                          | Solucao                                              |
-|-----------------------------------|-----------------------------------------|------------------------------------------------------|
-| `/ready` retorna 503              | Variaveis de ambiente ausentes          | Confira todas as envs no Vercel dashboard            |
-| `500 Internal Server Error`       | Erro de import ou dependencia faltando  | Verifique `requirements-vercel.txt`                  |
-| Login falha / nao persiste        | DATABASE_URL apontando para SQLite      | Configure a URL do **Supabase**                      |
-| Upload retorna 413                | Limite de tamanho do Vercel             | Use presigned URLs S3 ou plano Pro                   |
-| Static files (CSS/JS) nao carregam | Caminho relativo quebrado no serverless | Verifique `api/index.py` e `vercel.json`            |
+| Problema                           | Causa provavel                          | Solucao                                   |
+| ---------------------------------- | --------------------------------------- | ----------------------------------------- |
+| `/ready` retorna 503               | Variaveis de ambiente ausentes          | Confira todas as envs no Vercel dashboard |
+| `500 Internal Server Error`        | Erro de import ou dependencia faltando  | Verifique `requirements-vercel.txt`       |
+| Login falha / nao persiste         | DATABASE_URL apontando para SQLite      | Configure a URL do **Supabase**           |
+| Upload retorna 413                 | Limite de tamanho do Vercel             | Use presigned URLs S3 ou plano Pro        |
+| Static files (CSS/JS) nao carregam | Caminho relativo quebrado no serverless | Verifique `api/index.py` e `vercel.json`  |

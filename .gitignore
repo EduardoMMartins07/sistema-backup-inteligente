@@ -1,3 +1,6 @@
+# Variaveis de ambiente (contem senhas e chaves)
+.env
+
 # Configuracoes e dados locais
 config/config.json
 config/users.json
