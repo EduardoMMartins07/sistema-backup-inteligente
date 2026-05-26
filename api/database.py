@@ -1,3 +1,5 @@
+import os
+import socket
 import sqlite3
 import re
 from datetime import datetime, timezone
@@ -146,6 +148,33 @@ def get_db_path():
     return get_settings().db_path
 
 
+def _force_ipv4_url(database_url):
+    """Resolve o hostname para IPv4 e substitui no lugar do hostname original.
+
+    Necessario porque alguns provedores (ex: Supabase) expoem apenas registros
+    AAAA (IPv6), e ambientes como Vercel serverless nao suportam conexao IPv6.
+    """
+    parsed = urlparse(database_url)
+    hostname = parsed.hostname or ""
+
+    if not hostname:
+        return database_url
+
+    try:
+        # Tenta resolver IPv4; se falhar, mantem a URL original
+        addrs = socket.getaddrinfo(hostname, parsed.port or 5432, socket.AF_INET)
+        if not addrs:
+            return database_url
+        ipv4 = addrs[0][4][0]
+    except socket.gaierror:
+        return database_url
+
+    if ipv4 == hostname:
+        return database_url
+
+    return database_url.replace(hostname, ipv4, 1)
+
+
 class PostgresConnection:
 
     def __init__(self, database_url):
@@ -158,7 +187,8 @@ class PostgresConnection:
             ) from error
 
         self._psycopg = psycopg
-        self._connection = psycopg.connect(database_url, row_factory=dict_row)
+        url = _force_ipv4_url(database_url)
+        self._connection = psycopg.connect(url, row_factory=dict_row)
 
     def execute(self, sql, params=None):
         return self._connection.execute(self._translate_sql(sql), params)
