@@ -25,7 +25,10 @@ def require_found(resource, message="Recurso nao encontrado."):
 
 
 def json_dumps(data):
-    return json.dumps(data or {}, ensure_ascii=False, separators=(",", ":"))
+    if data is None:
+        data = {}
+
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
 
 def json_loads(value, default=None):
@@ -195,6 +198,12 @@ def create_first_admin(db, company_name, name, email, password):
     if users_count(db) > 0:
         raise HTTPException(status_code=409, detail="Administrador inicial ja existe.")
 
+    company, user = create_company_with_admin(db, company_name, name, email, password)
+    db.commit()
+    return company, user
+
+
+def create_company_with_admin(db, company_name, name, email, password):
     company = create_company(db, company_name)
     user = create_user(
         db,
@@ -204,7 +213,14 @@ def create_first_admin(db, company_name, name, email, password):
         password,
         "ADMIN_EMPRESA",
     )
-    db.commit()
+    audit_log(
+        db,
+        company["id"],
+        user["id"],
+        "COMPANY_CREATED",
+        f"Empresa criada: {company['name']}",
+        {"companyId": company["id"]},
+    )
     return company, user
 
 
@@ -215,7 +231,7 @@ def list_company_users(db, company_id):
             SELECT id, company_id, name, email, role, status, created_at, updated_at
             FROM users
             WHERE company_id = ?
-            ORDER BY status ASC, name COLLATE NOCASE ASC
+            ORDER BY status ASC, LOWER(name) ASC
             """,
             (company_id,),
         ).fetchall()
@@ -845,6 +861,109 @@ def list_company_folders(db, current_user):
             (current_user["company_id"],),
         ).fetchall()
     )
+
+
+def _desktop_cache_device_id(device_id=None):
+    return str(device_id or "").strip()
+
+
+def get_desktop_config_cache(db, current_user, device_id=None):
+    scope_device_id = _desktop_cache_device_id(device_id)
+    config_row = db.execute(
+        """
+        SELECT config_json
+        FROM desktop_configs
+        WHERE company_id = ? AND user_id = ? AND device_id = ?
+        """,
+        (current_user["company_id"], current_user["id"], scope_device_id),
+    ).fetchone()
+    history_row = db.execute(
+        """
+        SELECT history_json
+        FROM desktop_history
+        WHERE company_id = ? AND user_id = ? AND device_id = ?
+        """,
+        (current_user["company_id"], current_user["id"], scope_device_id),
+    ).fetchone()
+    config = json_loads(config_row["config_json"], default={}) if config_row else {}
+    history = json_loads(history_row["history_json"], default=[]) if history_row else []
+
+    if not isinstance(config, dict):
+        config = {}
+
+    if not isinstance(history, list):
+        history = []
+
+    return {
+        "config": config,
+        "history": history,
+        "deviceId": scope_device_id or None,
+    }
+
+
+def save_desktop_config_cache(db, current_user, config=None, history=None, device_id=None):
+    scope_device_id = _desktop_cache_device_id(device_id)
+    now = utc_now()
+    config_payload = config if isinstance(config, dict) else {}
+    history_payload = history if isinstance(history, list) else []
+    config_id = new_id("desktop_config")
+    history_id = new_id("desktop_history")
+    scope = {
+        "company_id": current_user["company_id"],
+        "user_id": current_user["id"],
+        "device_id": scope_device_id,
+        "updated_at": now,
+    }
+    db.execute(
+        """
+        INSERT INTO desktop_configs (
+            id, company_id, user_id, device_id, config_json, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(company_id, user_id, device_id) DO UPDATE SET
+            config_json = excluded.config_json,
+            updated_at = excluded.updated_at
+        """,
+        (
+            config_id,
+            scope["company_id"],
+            scope["user_id"],
+            scope["device_id"],
+            json_dumps(config_payload),
+            now,
+            scope["updated_at"],
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO desktop_history (
+            id, company_id, user_id, device_id, history_json, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(company_id, user_id, device_id) DO UPDATE SET
+            history_json = excluded.history_json,
+            updated_at = excluded.updated_at
+        """,
+        (
+            history_id,
+            scope["company_id"],
+            scope["user_id"],
+            scope["device_id"],
+            json_dumps(history_payload),
+            now,
+            scope["updated_at"],
+        ),
+    )
+    audit_log(
+        db,
+        current_user["company_id"],
+        current_user["id"],
+        "DESKTOP_CONFIG_SYNCED",
+        "Cache essencial do desktop sincronizado.",
+        {"deviceId": scope_device_id},
+    )
+    db.commit()
+    return get_desktop_config_cache(db, current_user, device_id=scope_device_id)
 
 
 def validate_admin_company_resource(db, table, resource_id, company_id, message):

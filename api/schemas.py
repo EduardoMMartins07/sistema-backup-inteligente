@@ -10,6 +10,13 @@ class FirstAdminPayload(BaseModel):
     password: str
 
 
+class CompanyCreatePayload(BaseModel):
+    companyName: str = Field(default="Empresa")
+    name: str
+    email: str
+    password: str
+
+
 class LoginPayload(BaseModel):
     email: str
     password: str
@@ -75,3 +82,9 @@ class SnapshotPayload(BaseModel):
     sizeBytes: int = 0
     fileCount: int = 0
     checksum: str | None = ""
+
+
+class DesktopConfigPayload(BaseModel):
+    config: dict[str, Any] = Field(default_factory=dict)
+    history: list[dict[str, Any]] = Field(default_factory=list)
+    deviceId: str | None = None

@@ -270,18 +270,31 @@ def init_db(db_path=None):
     connection = connect(db_path)
 
     try:
-        connection.executescript(load_schema_sql())
-        connection.execute(
-            """
-            INSERT INTO api_migrations (id, name, applied_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(id) DO NOTHING
-            """,
-            (MIGRATION_NAME, MIGRATION_NAME, utc_now()),
-        )
+        for migration_name, migration_sql in load_migrations():
+            connection.executescript(migration_sql)
+            connection.execute(
+                """
+                INSERT INTO api_migrations (id, name, applied_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(id) DO NOTHING
+                """,
+                (migration_name, migration_name, utc_now()),
+            )
         connection.commit()
     finally:
         connection.close()
+
+
+def load_migrations():
+    migration_paths = sorted(MIGRATIONS_DIR.glob("*.sql"))
+
+    if migration_paths:
+        return [
+            (path.stem, path.read_text(encoding="utf-8"))
+            for path in migration_paths
+        ]
+
+    return [(MIGRATION_NAME, SCHEMA_SQL)]
 
 
 def load_schema_sql():

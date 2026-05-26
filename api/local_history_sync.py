@@ -18,7 +18,23 @@ def _safe_id(value, prefix):
 
 
 def _json_dumps(data):
-    return json.dumps(data or {}, ensure_ascii=False, separators=(",", ":"))
+    if data is None:
+        data = {}
+
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+
+
+def _load_json_file(path, default):
+    if not os.path.exists(path):
+        return default
+
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (OSError, json.JSONDecodeError):
+        return default
+
+    return data if isinstance(data, type(default)) else default
 
 
 def _find_api_user(db, entry):
@@ -136,6 +152,56 @@ def _ensure_local_folder(db, user, device, entry):
         folder,
     )
     return folder
+
+
+def _sync_desktop_cache_files(db, user, device):
+    now = utc_now()
+    device_id = device.get("id", "")
+    config = _load_json_file(os.path.join("config", "config.json"), {})
+    history = _load_json_file(os.path.join("config", "backup_history.json"), [])
+    config_id = _safe_id(f"{user['id']}_{device_id}", "desktop_config")
+    history_id = _safe_id(f"{user['id']}_{device_id}", "desktop_history")
+
+    db.execute(
+        """
+        INSERT INTO desktop_configs (
+            id, company_id, user_id, device_id, config_json, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(company_id, user_id, device_id) DO UPDATE SET
+            config_json = excluded.config_json,
+            updated_at = excluded.updated_at
+        """,
+        (
+            config_id,
+            user["company_id"],
+            user["id"],
+            device_id,
+            _json_dumps(config),
+            now,
+            now,
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO desktop_history (
+            id, company_id, user_id, device_id, history_json, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(company_id, user_id, device_id) DO UPDATE SET
+            history_json = excluded.history_json,
+            updated_at = excluded.updated_at
+        """,
+        (
+            history_id,
+            user["company_id"],
+            user["id"],
+            device_id,
+            _json_dumps(history[-50:]),
+            now,
+            now,
+        ),
+    )
 
 
 def _backup_status(entry):
@@ -294,6 +360,7 @@ def sync_history_entry(entry):
                 ),
             )
 
+        _sync_desktop_cache_files(db, user, device)
         audit_log(
             db,
             user["company_id"],

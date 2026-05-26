@@ -17,7 +17,9 @@ from api.logging_config import configure_logging, get_logger
 from api.schemas import (
     BackupCreatePayload,
     BackupFinishPayload,
+    CompanyCreatePayload,
     DeviceRegisterPayload,
+    DesktopConfigPayload,
     FirstAdminPayload,
     LoginPayload,
     MonitoredFolderPayload,
@@ -31,6 +33,7 @@ from api.services import (
     admin_dashboard,
     authenticate_user,
     create_backup,
+    create_company_with_admin,
     create_first_admin,
     create_monitored_folder,
     create_snapshot,
@@ -40,6 +43,7 @@ from api.services import (
     get_backup_for_user_action,
     get_backup_detail,
     get_company_by_id,
+    get_desktop_config_cache,
     get_user_by_id,
     list_audit_logs,
     list_backups,
@@ -53,6 +57,7 @@ from api.services import (
     public_user,
     register_device,
     save_backup_upload,
+    save_desktop_config_cache,
     update_company_user,
     users_count,
 )
@@ -361,6 +366,24 @@ def create_app():
         response["company"] = public_company(company)
         return response
 
+    @app.post("/api/companies")
+    def create_company_api(
+        payload: CompanyCreatePayload,
+        db: Connection = Depends(get_db),
+    ):
+        company, user = create_company_with_admin(
+            db,
+            payload.companyName,
+            payload.name,
+            payload.email,
+            payload.password,
+        )
+        db.commit()
+        logger.info("Company created company=%s admin=%s", company["id"], user["id"])
+        response = build_auth_response(user)
+        response["company"] = public_company(company)
+        return response
+
     @app.post("/auth/login")
     def auth_login(
         payload: LoginPayload,
@@ -399,6 +422,28 @@ def create_app():
             "user": public_user(current_user),
             "company": public_company(company),
         }
+
+    @app.get("/api/config/desktop")
+    def get_desktop_config_api(
+        deviceId: str | None = None,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA", "OPERADOR", "VIEWER"])),
+        db: Connection = Depends(get_db),
+    ):
+        return get_desktop_config_cache(db, current_user, device_id=deviceId)
+
+    @app.put("/api/config/desktop")
+    def save_desktop_config_api(
+        payload: DesktopConfigPayload,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA", "OPERADOR", "VIEWER"])),
+        db: Connection = Depends(get_db),
+    ):
+        return save_desktop_config_cache(
+            db,
+            current_user,
+            config=payload.config,
+            history=payload.history,
+            device_id=payload.deviceId,
+        )
 
     @app.get("/admin/dashboard")
     def admin_dashboard_api(
@@ -675,18 +720,25 @@ def create_app():
         return {"snapshots": [api_snapshot(snapshot) for snapshot in snapshots]}
 
     @app.get("/web/login", response_class=HTMLResponse)
-    def web_login(request: Request, next: str | None = None, db: Connection = Depends(get_db)):
+    def web_login(
+        request: Request,
+        next: str | None = None,
+        signup: str | None = None,
+        db: Connection = Depends(get_db),
+    ):
         current_user = web_user(request, db)
 
         if current_user and current_user["role"] == "ADMIN_EMPRESA":
             return RedirectResponse(next or "/web/dashboard", status_code=303)
 
+        signup_mode = str(signup or "").lower() in {"1", "true", "yes", "sim"}
         return templates.TemplateResponse(
             request,
             "login.html",
             {
                 "title": "Login",
                 "setup_required": users_count(db) == 0,
+                "signup_mode": signup_mode,
                 "error": "",
                 "next": next or "/web/dashboard",
             },
@@ -699,13 +751,24 @@ def create_app():
         password: str = Form(...),
         name: str = Form(default=""),
         companyName: str = Form(default="Empresa"),
+        action: str = Form(default="login"),
         next: str = Form(default="/web/dashboard"),
         db: Connection = Depends(get_db),
     ):
         setup_required = users_count(db) == 0
+        signup_mode = action == "signup"
 
         try:
-            if setup_required:
+            if signup_mode:
+                _, user = create_company_with_admin(
+                    db,
+                    companyName,
+                    name or email,
+                    email,
+                    password,
+                )
+                db.commit()
+            elif setup_required:
                 _, user = create_first_admin(
                     db,
                     companyName,
@@ -737,6 +800,7 @@ def create_app():
                 {
                     "title": "Login",
                     "setup_required": setup_required,
+                    "signup_mode": signup_mode,
                     "error": str(getattr(error, "detail", error)),
                     "next": next,
                 },

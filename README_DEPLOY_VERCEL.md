@@ -2,9 +2,9 @@
 
 ## ⚠️ Requisitos
 
-| Recurso    | Por que                                    | Status               |
-| ---------- | ------------------------------------------ | -------------------- |
-| PostgreSQL | Vercel nao tem filesystem persistente      | ✅ **Supabase** OK   |
+| Recurso    | Por que                                      | Status             |
+| ---------- | -------------------------------------------- | ------------------ |
+| PostgreSQL | Vercel nao tem filesystem persistente        | ✅ **Supabase** OK |
 | Bucket S3  | Armazenamento de backups (opcional p/ teste) | ❌ Ainda sem S3    |
 
 > **SQLite nao funciona no Vercel.** Toda vez que a funcao "esfria", os dados seriam perdidos.
@@ -94,29 +94,29 @@ No dashboard do Vercel (ou via CLI com `vercel env add`), configure:
 
 ### Obrigatorias (para a API iniciar)
 
-| Variavel                 | Valor                                                           |
-| ------------------------ | --------------------------------------------------------------- |
-| `SMARTBACKUP_ENV`        | `production`                                                    |
-| `API_BASE_URL`           | `https://seu-projeto.vercel.app`                                |
+| Variavel                 | Valor                                                                                  |
+| ------------------------ | -------------------------------------------------------------------------------------- |
+| `SMARTBACKUP_ENV`        | `production`                                                                           |
+| `API_BASE_URL`           | `https://seu-projeto.vercel.app`                                                       |
 | `DATABASE_URL`           | `postgresql://postgres:!Dudu2505202@db.kybgqdcndueweyhssfhl.supabase.co:5432/postgres` |
-| `SMARTBACKUP_JWT_SECRET` | `um-valor-longo-e-aleatorio-aqui`                               |
-| `PORT`                   | `8000`                                                          |
+| `SMARTBACKUP_JWT_SECRET` | `um-valor-longo-e-aleatorio-aqui`                                                      |
+| `PORT`                   | `8000`                                                                                 |
 
 ### Placeholders AWS (para nao travar — troque depois pelos reais)
 
-| Variavel                | Valor                   |
-| ----------------------- | ----------------------- |
-| `AWS_ACCESS_KEY_ID`     | `placeholder`           |
-| `AWS_SECRET_ACCESS_KEY` | `placeholder`           |
-| `AWS_REGION`            | `sa-east-1`             |
-| `AWS_S3_BUCKET`         | `placeholder-bucket`    |
+| Variavel                | Valor                |
+| ----------------------- | -------------------- |
+| `AWS_ACCESS_KEY_ID`     | `placeholder`        |
+| `AWS_SECRET_ACCESS_KEY` | `placeholder`        |
+| `AWS_REGION`            | `sa-east-1`          |
+| `AWS_S3_BUCKET`         | `placeholder-bucket` |
 
 ### Opcionais
 
-| Variavel             | Valor                              |
-| -------------------- | ---------------------------------- |
-| `CORS_ORIGIN`        | `https://seu-projeto.vercel.app`   |
-| `MAX_UPLOAD_SIZE_MB` | `500`                              |
+| Variavel             | Valor                            |
+| -------------------- | -------------------------------- |
+| `CORS_ORIGIN`        | `https://seu-projeto.vercel.app` |
+| `MAX_UPLOAD_SIZE_MB` | `500`                            |
 
 > **Dica:** gere um JWT_SECRET forte com:
 >

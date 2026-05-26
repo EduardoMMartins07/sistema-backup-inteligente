@@ -17,6 +17,13 @@ API_TO_DESKTOP_ROLES = {
     "OPERADOR": "operator",
     "VIEWER": "viewer",
 }
+DESKTOP_TO_API_ROLES = {
+    "admin": "ADMIN_EMPRESA",
+    "operator": "OPERADOR",
+    "viewer": "VIEWER",
+}
+API_SYNC_PENDING_STATUSES = {"pending", "failed"}
+API_LOGIN_CLIENT = None
 
 
 def load_users():
@@ -121,6 +128,20 @@ def public_user(user):
         "created_at": user.get("created_at"),
     }
 
+    for key in (
+        "api_sync_status",
+        "api_user_id",
+        "api_company_id",
+        "api_sync_error",
+        "api_synced_at",
+        "auth_source",
+        "auth_token",
+        "api_sync_action",
+        "company_name",
+    ):
+        if user.get(key):
+            public_data[key] = user.get(key)
+
     if user.get("_session_master_key"):
         public_data["session_master_key"] = user["_session_master_key"]
 
@@ -151,6 +172,13 @@ def attach_new_crypto_metadata(user, password):
 
 def authenticate(username, password):
     normalized_username = normalize_username(username)
+
+    api_user = authenticate_api_http_user(normalized_username, password)
+
+    if api_user:
+        cache_api_user(api_user, password)
+        return api_user
+
     users = load_users()
     user = None
 
@@ -244,6 +272,8 @@ def public_api_user(user):
         "company_id": user.get("company_id", DEFAULT_COMPANY_ID),
         "created_at": user.get("created_at"),
         "api_user_id": user.get("id"),
+        "api_company_id": user.get("company_id", DEFAULT_COMPANY_ID),
+        "api_sync_status": "synced",
         "auth_source": "api",
     }
 
@@ -266,28 +296,70 @@ def validate_user_payload(username, password, role):
     return normalized_username
 
 
-def create_user(username, password, role, name=None):
+def create_user(
+    username,
+    password,
+    role,
+    name=None,
+    company_id=None,
+    api_sync_status=None,
+    api_user_id=None,
+    api_company_id=None,
+    api_sync_action=None,
+    company_name=None,
+):
     normalized_username = validate_user_payload(username, password, role)
     users = load_users()
     display_name = name.strip() if name and name.strip() else normalized_username
     normalized_display_name = normalize_name(display_name)
+    effective_company_id = company_id or api_company_id or DEFAULT_COMPANY_ID
 
-    if any(user.get("username") == normalized_username for user in users):
+    if any(
+        user.get("username") == normalized_username
+        and user.get("company_id", DEFAULT_COMPANY_ID) == effective_company_id
+        for user in users
+    ):
         raise ValueError("Ja existe esse usuario cadastrado.")
 
-    if any(normalize_name(user.get("name")) == normalized_display_name for user in users):
+    if any(
+        normalize_name(user.get("name")) == normalized_display_name
+        and user.get("company_id", DEFAULT_COMPANY_ID) == effective_company_id
+        for user in users
+    ):
         raise ValueError("Ja existe um usuario com esse nome de exibicao.")
 
     now = datetime.now().isoformat(timespec="seconds")
+    sync_status = api_sync_status
+
+    if sync_status is None:
+        sync_status = "pending" if os.environ.get("API_BASE_URL") else "local"
+
     user = {
         "username": normalized_username,
         "name": display_name,
         "role": role,
-        "company_id": DEFAULT_COMPANY_ID,
+        "company_id": effective_company_id,
         "password": hash_password(password),
         "created_at": now,
         "updated_at": now,
+        "api_sync_status": sync_status,
     }
+
+    if api_user_id:
+        user["api_user_id"] = api_user_id
+
+    if api_company_id:
+        user["api_company_id"] = api_company_id
+        user["company_id"] = api_company_id
+
+    if api_sync_action:
+        user["api_sync_action"] = api_sync_action
+
+    if company_name:
+        user["company_name"] = company_name
+
+    if sync_status in API_SYNC_PENDING_STATUSES or sync_status == "syncing":
+        user["api_sync_password"] = password
 
     if crypto_service.is_crypto_available():
         attach_new_crypto_metadata(user, password)
@@ -295,6 +367,140 @@ def create_user(username, password, role, name=None):
     users.append(user)
     save_users(users)
     return public_user(user)
+
+
+def authenticate_api_http_user(username, password):
+    try:
+        if API_LOGIN_CLIENT is not None:
+            return API_LOGIN_CLIENT(username, password)
+
+        from auth import api_client
+
+        if not api_client.is_configured():
+            return None
+
+        return api_client.login(username, password)
+    except Exception:
+        return None
+
+
+def cache_api_user(api_user, password):
+    if not api_user:
+        return
+
+    users = load_users()
+    normalized_username = normalize_username(api_user.get("username"))
+
+    if not normalized_username:
+        return
+
+    now = datetime.now().isoformat(timespec="seconds")
+
+    for user in users:
+        if user.get("username") != normalized_username:
+            continue
+
+        user["name"] = api_user.get("name") or user.get("name") or normalized_username
+        user["role"] = api_user.get("role") or user.get("role")
+        user["company_id"] = api_user.get("company_id") or user.get("company_id", DEFAULT_COMPANY_ID)
+        user["api_company_id"] = api_user.get("api_company_id") or user.get("company_id")
+        user["api_user_id"] = api_user.get("api_user_id") or user.get("api_user_id")
+        user["api_sync_status"] = "synced"
+        user["auth_source"] = "api"
+        user["updated_at"] = now
+        user["password"] = hash_password(password)
+        user.pop("api_sync_password", None)
+        save_users(users)
+        return
+
+    user = {
+        "username": normalized_username,
+        "name": api_user.get("name") or normalized_username,
+        "role": api_user.get("role"),
+        "company_id": api_user.get("company_id") or DEFAULT_COMPANY_ID,
+        "api_company_id": api_user.get("api_company_id") or api_user.get("company_id"),
+        "api_user_id": api_user.get("api_user_id"),
+        "api_sync_status": "synced",
+        "auth_source": "api",
+        "password": hash_password(password),
+        "created_at": now,
+        "updated_at": now,
+    }
+    users.append(user)
+    save_users(users)
+
+
+def _remote_user_field(payload, *keys):
+    current = payload or {}
+
+    if isinstance(current, dict) and isinstance(current.get("user"), dict):
+        current = current["user"]
+
+    for key in keys:
+        if isinstance(current, dict) and current.get(key):
+            return current.get(key)
+
+    return None
+
+
+def sync_pending_api_users(create_remote_user, status_callback=None):
+    users = load_users()
+    synced = 0
+
+    for user in users:
+        if user.get("api_sync_status") not in API_SYNC_PENDING_STATUSES:
+            continue
+
+        password = user.get("api_sync_password")
+
+        if not password:
+            user["api_sync_status"] = "failed"
+            user["api_sync_error"] = "Senha temporaria de sincronizacao ausente."
+            continue
+
+        user["api_sync_status"] = "syncing"
+        user["api_sync_error"] = ""
+        save_users(users)
+
+        if status_callback:
+            status_callback("syncing", user)
+
+        try:
+            payload = create_remote_user(public_user(user), password)
+            api_user_id = _remote_user_field(payload, "id", "userId")
+            api_company_id = _remote_user_field(payload, "companyId", "company_id")
+
+            if not api_user_id:
+                raise ValueError("API nao retornou o ID do usuario.")
+
+            user["api_user_id"] = api_user_id
+            user["api_company_id"] = api_company_id or user.get("company_id", DEFAULT_COMPANY_ID)
+            user["company_id"] = user["api_company_id"]
+            user["api_sync_status"] = "synced"
+            user["api_sync_error"] = ""
+            user["api_synced_at"] = datetime.now().isoformat(timespec="seconds")
+            user.pop("api_sync_password", None)
+            synced += 1
+
+            if status_callback:
+                status_callback("synced", user)
+        except Exception as error:
+            user["api_sync_status"] = "failed"
+            user["api_sync_error"] = str(error)[:180]
+
+            if status_callback:
+                status_callback("failed", user)
+
+    save_users(users)
+    return synced
+
+
+def count_pending_api_users():
+    return sum(
+        1
+        for user in load_users()
+        if user.get("api_sync_status") in API_SYNC_PENDING_STATUSES
+    )
 
 
 def change_user_password(username, old_password, new_password):

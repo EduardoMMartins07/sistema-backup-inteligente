@@ -20,7 +20,8 @@
     {% endif %}
     <form method="post" action="/web/login" class="form-grid">
       <input type="hidden" name="next" value="{{ next }}">
-      {% if setup_required %}
+      <input type="hidden" name="action" value="{{ 'signup' if signup_mode else 'login' }}">
+      {% if setup_required or signup_mode %}
         <label>
           Empresa
           <input name="companyName" type="text" value="Empresa Alpha" required>
@@ -39,9 +40,14 @@
         <input name="password" type="password" autocomplete="current-password" required>
       </label>
       <button class="button primary" type="submit">
-        {{ "Criar admin" if setup_required else "Entrar" }}
+        {{ "Cadastrar empresa" if signup_mode else ("Criar admin" if setup_required else "Entrar") }}
       </button>
     </form>
+    {% if signup_mode %}
+      <p class="muted"><a href="/web/login">Voltar ao login</a></p>
+    {% else %}
+      <p class="muted"><a href="/web/login?signup=1">Cadastrar Empresa</a></p>
+    {% endif %}
   </main>
 </body>
 </html>

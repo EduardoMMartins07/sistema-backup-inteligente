@@ -1,4 +1,5 @@
 import tkinter as tk
+import secrets
 from tkinter import messagebox
 
 from auth.permissions import ROLE_LABELS
@@ -31,6 +32,7 @@ class LoginWindow:
         self.username_var = tk.StringVar(master=self.root)
         self.password_var = tk.StringVar(master=self.root)
         self.name_var = tk.StringVar(master=self.root)
+        self.company_name_var = tk.StringVar(master=self.root, value="Empresa")
         self.confirm_password_var = tk.StringVar(master=self.root)
 
         if users_exist():
@@ -119,6 +121,22 @@ class LoginWindow:
             pady=8
         )
 
+    def create_secondary_button(self, text, command):
+        return tk.Button(
+            self.panel,
+            text=text,
+            command=command,
+            font=("Arial", 10, "bold"),
+            bg=LIGHT_BUTTON,
+            fg=TEXT_COLOR,
+            activebackground=LIGHT_BUTTON,
+            activeforeground=TEXT_COLOR,
+            relief="flat",
+            cursor="hand2",
+            padx=14,
+            pady=7
+        )
+
     def create_footer(self, text):
         tk.Label(
             self.panel,
@@ -145,6 +163,10 @@ class LoginWindow:
         password_entry = self.create_entry(form, self.password_var, 3, show="*")
 
         self.create_primary_button("Entrar", self.submit_login).pack(pady=(10, 0))
+        self.create_secondary_button(
+            "Cadastrar Empresa",
+            self.build_company_registration_form
+        ).pack(pady=(10, 0))
         self.create_footer("O acesso ao sistema depende do perfil de permissao.")
 
         username_entry.focus_set()
@@ -160,14 +182,16 @@ class LoginWindow:
         )
 
         form = self.create_form_frame()
-        self.create_label(form, "Nome", 0)
-        name_entry = self.create_entry(form, self.name_var, 1)
-        self.create_label(form, "Usuario", 2)
-        self.create_entry(form, self.username_var, 3)
-        self.create_label(form, "Senha", 4)
-        self.create_entry(form, self.password_var, 5, show="*")
-        self.create_label(form, "Confirmar senha", 6)
-        self.create_entry(form, self.confirm_password_var, 7, show="*")
+        self.create_label(form, "Empresa", 0)
+        company_entry = self.create_entry(form, self.company_name_var, 1)
+        self.create_label(form, "Nome", 2)
+        self.create_entry(form, self.name_var, 3)
+        self.create_label(form, "Usuario ou email", 4)
+        self.create_entry(form, self.username_var, 5)
+        self.create_label(form, "Senha", 6)
+        self.create_entry(form, self.password_var, 7, show="*")
+        self.create_label(form, "Confirmar senha", 8)
+        self.create_entry(form, self.confirm_password_var, 9, show="*")
 
         self.create_primary_button(
             "Criar administrador",
@@ -175,7 +199,43 @@ class LoginWindow:
         ).pack(pady=(2, 0))
         self.create_footer("O administrador podera cadastrar operadores e visualizadores.")
 
-        name_entry.focus_set()
+        company_entry.focus_set()
+        self.root.bind("<Return>", lambda event: self.submit_initial_admin())
+
+    def build_company_registration_form(self):
+        self.clear_window()
+        self.root.geometry("540x610")
+        self.panel = self.create_shell()
+        self.create_title(
+            "CADASTRAR EMPRESA",
+            "Crie a empresa e o administrador. O cadastro fica local e sincroniza com a API em segundo plano."
+        )
+
+        form = self.create_form_frame()
+        self.create_label(form, "Empresa", 0)
+        company_entry = self.create_entry(form, self.company_name_var, 1)
+        self.create_label(form, "Nome do admin", 2)
+        self.create_entry(form, self.name_var, 3)
+        self.create_label(form, "Email do admin", 4)
+        self.create_entry(form, self.username_var, 5)
+        self.create_label(form, "Senha", 6)
+        self.create_entry(form, self.password_var, 7, show="*")
+        self.create_label(form, "Confirmar senha", 8)
+        self.create_entry(form, self.confirm_password_var, 9, show="*")
+
+        self.create_primary_button(
+            "Cadastrar empresa",
+            self.submit_initial_admin
+        ).pack(pady=(2, 0))
+
+        if users_exist():
+            self.create_secondary_button(
+                "Voltar ao login",
+                self.build_login_form
+            ).pack(pady=(10, 0))
+
+        self.create_footer("Se a API estiver indisponivel, o envio sera tentado novamente depois.")
+        company_entry.focus_set()
         self.root.bind("<Return>", lambda event: self.submit_initial_admin())
 
     def submit_login(self):
@@ -207,17 +267,25 @@ class LoginWindow:
             return
 
         try:
+            company_name = self.company_name_var.get().strip() or "Empresa"
             user = create_user(
                 self.username_var.get(),
                 password,
                 "admin",
-                name=self.name_var.get()
+                name=self.name_var.get(),
+                company_id=f"local_company_{secrets.token_hex(8)}",
+                api_sync_status="pending",
+                api_sync_action="create_company_admin",
+                company_name=company_name
             )
         except ValueError as error:
             messagebox.showwarning("Dados invalidos", str(error), parent=self.root)
             return
 
-        message = f"Usuario administrador criado com perfil {ROLE_LABELS['admin']}."
+        message = (
+            f"Usuario administrador criado com perfil {ROLE_LABELS['admin']}.\n\n"
+            "O cadastro da empresa foi salvo localmente e sera sincronizado com a API em segundo plano."
+        )
 
         if user.get("recovery_key"):
             message += (

@@ -14,9 +14,11 @@ from auth.permissions import can
 from auth.permissions import can_view_backup_entry
 from auth.permissions import get_role_label
 from auth.permissions import get_role_options
+from auth.users import count_pending_api_users
 from auth.users import create_user
 from auth.users import delete_user
 from auth.users import list_public_users
+from auth.users import sync_pending_api_users
 from auth.users import update_user
 from backup.backup_manager import BackupCancelledError
 from backup.backup_manager import build_recovered_file_path
@@ -607,6 +609,8 @@ class BackupGUI:
         self.dashboard_monitored_size_bytes = None
         self.dashboard_event_queue = queue.Queue()
         self.dashboard_poll_scheduled = False
+        self.api_sync_status_text = ""
+        self.api_sync_status_clear_after_id = None
         self.logout_requested = False
         self.is_closing = False
         self.pending_backup_name = ""
@@ -623,8 +627,10 @@ class BackupGUI:
 
         self.configure_window_icon()
         self.configure_widget_styles()
+        self.restore_desktop_config_cache_if_needed()
         self.load_directories()
         self.build_layout()
+        self.start_api_user_sync_background()
         self.root.protocol("WM_DELETE_WINDOW", self.request_close)
         self.root.bind("<Configure>", self.on_root_resize, add="+")
         self.root.after_idle(self.update_responsive_fonts)
@@ -1578,6 +1584,9 @@ class BackupGUI:
                     self.dashboard_monitored_size_job_key = None
                     self.dashboard_monitored_size_bytes = total_size
                     should_refresh_dashboard = True
+            elif event_type == "api_sync_status":
+                _, message, clear_after = event
+                self.set_api_sync_status(message, clear_after=clear_after)
 
         if should_refresh_dashboard and self.current_view == "home":
             try:
@@ -2577,6 +2586,11 @@ class BackupGUI:
             pass
 
     def build_footer_text(self):
+        api_sync_status_text = getattr(self, "api_sync_status_text", "")
+
+        if api_sync_status_text:
+            return api_sync_status_text
+
         latest_backup = self.get_latest_history_entry()
         backup_destination = self.get_current_user_backup_destination()
 
@@ -2594,6 +2608,189 @@ class BackupGUI:
     def refresh_footer(self):
         self.footer_label.config(text=self.build_footer_text())
 
+    def set_api_sync_status(self, message, clear_after=None):
+        self.api_sync_status_text = message or ""
+
+        if hasattr(self, "footer_label"):
+            self.refresh_footer()
+
+        if not clear_after:
+            return
+
+        def clear_message():
+            if self.api_sync_status_text == message:
+                self.api_sync_status_text = ""
+                self.refresh_footer()
+
+        try:
+            self.root.after(int(clear_after * 1000), clear_message)
+        except tk.TclError:
+            pass
+
+    def enqueue_api_sync_status(self, message, clear_after=None):
+        self.dashboard_event_queue.put(("api_sync_status", message, clear_after))
+        self.schedule_dashboard_event_poll()
+
+    def start_api_user_sync_background(self):
+        pending_count = count_pending_api_users()
+
+        if not pending_count:
+            return
+
+        try:
+            from auth import api_client
+        except Exception:
+            return
+
+        if not api_client.is_configured():
+            self.set_api_sync_status(
+                "API indisponivel: cadastro salvo localmente e sera reenviado.",
+                clear_after=7,
+            )
+            return
+
+        token = self.current_user.get("auth_token")
+        self.set_api_sync_status(
+            f"Sincronizando {pending_count} cadastro(s) pendente(s) com API..."
+        )
+
+        def create_remote_user(user, password):
+            if user.get("api_sync_action") == "create_company_admin":
+                _desktop_user, payload = api_client.create_company(
+                    user.get("company_name") or "Empresa",
+                    user.get("name") or user.get("username"),
+                    user.get("username"),
+                    password,
+                )
+                return payload.get("user", payload)
+
+            if not token:
+                raise RuntimeError("Token da API ausente para criar usuario remoto.")
+
+            return api_client.create_user(token, user, password)
+
+        def status_callback(status_value, user):
+            if status_value == "syncing":
+                self.enqueue_api_sync_status("Sincronizando cadastro com API...")
+            elif status_value == "synced":
+                self.enqueue_api_sync_status(
+                    "Cadastro sincronizado com sucesso.",
+                    clear_after=6,
+                )
+            elif status_value == "failed":
+                error = user.get("api_sync_error") or "API indisponivel"
+                self.enqueue_api_sync_status(
+                    f"Falha ao sincronizar cadastro: {error}",
+                    clear_after=8,
+                )
+
+        def worker():
+            try:
+                synced = sync_pending_api_users(
+                    create_remote_user,
+                    status_callback=status_callback,
+                )
+            except Exception as error:
+                self.enqueue_api_sync_status(
+                    f"Falha ao sincronizar cadastro: {str(error)[:120]}",
+                    clear_after=8,
+                )
+                return
+
+            if synced:
+                self.enqueue_api_sync_status(
+                    "Cadastro sincronizado com sucesso.",
+                    clear_after=6,
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.schedule_dashboard_event_poll()
+
+    def _local_config_cache_is_missing(self):
+        if not os.path.exists(CONFIG_PATH):
+            return True
+
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as file:
+                data = json.load(file)
+        except (OSError, json.JSONDecodeError):
+            return True
+
+        return not isinstance(data, dict) or not data.get("directories")
+
+    def _local_history_cache_is_missing(self):
+        if not os.path.exists(HISTORY_PATH):
+            return True
+
+        try:
+            with open(HISTORY_PATH, "r", encoding="utf-8") as file:
+                data = json.load(file)
+        except (OSError, json.JSONDecodeError):
+            return True
+
+        return not isinstance(data, list) or not data
+
+    def restore_desktop_config_cache_if_needed(self):
+        token = self.current_user.get("auth_token")
+
+        if not token:
+            return
+
+        if not (self._local_config_cache_is_missing() or self._local_history_cache_is_missing()):
+            return
+
+        try:
+            from auth import api_client
+
+            if not api_client.is_configured():
+                return
+
+            payload = api_client.get_desktop_config(token)
+        except Exception:
+            return
+
+        config = payload.get("config") if isinstance(payload, dict) else None
+        history = payload.get("history") if isinstance(payload, dict) else None
+
+        os.makedirs("config", exist_ok=True)
+
+        if isinstance(config, dict) and self._local_config_cache_is_missing():
+            config.setdefault(
+                "priority_backup_policy_enabled",
+                DEFAULT_PRIORITY_BACKUP_POLICY_ENABLED,
+            )
+            with open(CONFIG_PATH, "w", encoding="utf-8") as file:
+                json.dump(config, file, indent=4, ensure_ascii=False)
+
+        if isinstance(history, list) and self._local_history_cache_is_missing():
+            with open(HISTORY_PATH, "w", encoding="utf-8") as file:
+                json.dump(history[-50:], file, indent=4, ensure_ascii=False)
+
+    def sync_desktop_config_cache_background(self):
+        token = self.current_user.get("auth_token")
+
+        if not token:
+            return
+
+        try:
+            from auth import api_client
+
+            if not api_client.is_configured():
+                return
+        except Exception:
+            return
+
+        config = self.load_config()
+        history = self.load_history()
+
+        def worker():
+            try:
+                api_client.save_desktop_config(token, config, history[-50:])
+            except Exception:
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def refresh_dashboard_if_home(self):
         if self.current_view == "home":
             self.render_dashboard()
@@ -2608,6 +2805,7 @@ class BackupGUI:
         data["directories"] = self.directories
         data["backup_destination"] = self.backup_destination
         self.save_config(data)
+        self.sync_desktop_config_cache_background()
         self.dashboard_monitored_size_bytes = None
         self.refresh_footer()
         self.refresh_dashboard_if_home()
@@ -4187,6 +4385,8 @@ class BackupGUI:
 
         with open(HISTORY_PATH, "w", encoding="utf-8") as file:
             json.dump(history[-50:], file, indent=4, ensure_ascii=False)
+
+        self.sync_desktop_config_cache_background()
 
     def load_history(self):
         if not os.path.exists(HISTORY_PATH):
@@ -7347,7 +7547,7 @@ class BackupGUI:
         )
         content_box.grid(row=0, column=0, sticky="nsew")
 
-        columns = ("username", "name", "role")
+        columns = ("username", "name", "role", "api_sync_status")
         tree_frame = tk.Frame(content_box, bg=PANEL_COLOR)
         tree_frame.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0, 16))
         tree = self.create_scrollable_tree(tree_frame, columns, height=10)
@@ -7358,7 +7558,8 @@ class BackupGUI:
         headings = {
             "username": "Usuario",
             "name": "Nome",
-            "role": "Perfil"
+            "role": "Perfil",
+            "api_sync_status": "API"
         }
 
         self.configure_tree_columns(
@@ -7378,6 +7579,7 @@ class BackupGUI:
                     "anchor": "w",
                 },
                 "role": {"width": 150, "minwidth": 130, "weight": 1},
+                "api_sync_status": {"width": 130, "minwidth": 110, "weight": 1},
             }
         )
 
@@ -7445,7 +7647,8 @@ class BackupGUI:
                     values=(
                         user.get("username", ""),
                         user.get("name", ""),
-                        get_role_label(user.get("role"))
+                        get_role_label(user.get("role")),
+                        user.get("api_sync_status", "local")
                     )
                 )
 
@@ -7527,7 +7730,15 @@ class BackupGUI:
                         username,
                         password_var.get(),
                         role_var.get(),
-                        name=name_var.get()
+                        name=name_var.get(),
+                        company_id=self.current_user.get("company_id", "default"),
+                        api_sync_status="pending"
+                        if (
+                            self.current_user.get("auth_token")
+                            or os.environ.get("API_BASE_URL")
+                            or os.environ.get("API_URL")
+                        )
+                        else "local"
                     )
 
                     if created_user.get("recovery_key"):
@@ -7546,6 +7757,7 @@ class BackupGUI:
 
             refresh_users()
             clear_form()
+            self.start_api_user_sync_background()
 
         def remove_user():
             selected = tree.selection()
