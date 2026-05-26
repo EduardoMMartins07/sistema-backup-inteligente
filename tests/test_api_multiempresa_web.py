@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -401,6 +402,106 @@ class ApiMultiempresaWebTests(unittest.TestCase):
         users = self.client.get("/web/users")
         self.assertEqual(200, users.status_code)
         self.assertIn("admin.web@example.com", users.text)
+
+    def test_web_sidebar_shows_company_name_instead_of_company_id(self):
+        response = self.client.post(
+            "/web/login",
+            data={
+                "companyName": "Empresa Alpha",
+                "name": "Admin Alpha",
+                "email": "admin.web@example.com",
+                "password": "senha-admin",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(303, response.status_code, response.text)
+
+        db = connect(os.environ["SMARTBACKUP_API_DB_PATH"])
+
+        try:
+            company_id = db.execute("SELECT id FROM companies").fetchone()["id"]
+        finally:
+            db.close()
+
+        dashboard = self.client.get("/web/dashboard")
+        self.assertEqual(200, dashboard.status_code)
+        self.assertIn("Empresa Alpha", dashboard.text)
+        self.assertNotIn(f"<small>{company_id}</small>", dashboard.text)
+
+    def test_web_backup_detail_lists_snapshot_file_names(self):
+        _, admin_headers = self.setup_first_admin()
+        _, _, _, backup = self.create_operator_with_backup(admin_headers)
+
+        login = self.client.post(
+            "/web/login",
+            data={"email": "admin.alpha@example.com", "password": "senha-admin"},
+            follow_redirects=False,
+        )
+        self.assertEqual(303, login.status_code, login.text)
+
+        snapshot_path = self.root / "snapshot_2026-05-25_21-55-15.json"
+        snapshot_path.write_text(
+            json.dumps({
+                "files": [
+                    {
+                        "archive_name": "docs/Artigo.pdf",
+                        "file_name": "Artigo.pdf",
+                        "size": 2048,
+                        "status": "stored_new_object",
+                    },
+                    {
+                        "archive_name": "db/api.sqlite3",
+                        "name": "api.sqlite3",
+                        "size_bytes": 4096,
+                        "status": "referenced_existing_object",
+                    },
+                ]
+            }),
+            encoding="utf-8",
+        )
+
+        db = connect(os.environ["SMARTBACKUP_API_DB_PATH"])
+
+        try:
+            db.execute(
+                """
+                UPDATE backups
+                SET local_path = ?, metadata_json = ?
+                WHERE id = ?
+                """,
+                (
+                    str(snapshot_path),
+                    json.dumps({"snapshotPath": str(snapshot_path)}),
+                    backup["id"],
+                ),
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        detail = self.client.get(f"/web/backups/{backup['id']}")
+        self.assertEqual(200, detail.status_code, detail.text)
+        self.assertIn("Arquivos do backup", detail.text)
+        self.assertIn("Artigo.pdf", detail.text)
+        self.assertIn("docs/Artigo.pdf", detail.text)
+        self.assertIn("api.sqlite3", detail.text)
+        self.assertNotIn("<h2>Metadados</h2>", detail.text)
+
+    def test_web_backup_detail_handles_missing_snapshot_file_list(self):
+        _, admin_headers = self.setup_first_admin()
+        _, _, _, backup = self.create_operator_with_backup(admin_headers)
+
+        login = self.client.post(
+            "/web/login",
+            data={"email": "admin.alpha@example.com", "password": "senha-admin"},
+            follow_redirects=False,
+        )
+        self.assertEqual(303, login.status_code, login.text)
+
+        detail = self.client.get(f"/web/backups/{backup['id']}")
+        self.assertEqual(200, detail.status_code, detail.text)
+        self.assertIn("Arquivos do backup", detail.text)
+        self.assertIn("Nenhum arquivo encontrado no snapshot local.", detail.text)
 
 
 if __name__ == "__main__":

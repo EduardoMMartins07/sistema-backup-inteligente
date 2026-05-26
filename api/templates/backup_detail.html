@@ -21,9 +21,30 @@
   </article>
   <article class="panel">
     <div class="section-title">
-      <h2>Metadados</h2>
+      <h2>Arquivos do backup</h2>
+      <span class="pill">{{ backup.snapshot_files | length }} arquivos</span>
     </div>
-    <pre class="code">{{ backup.metadata | tojson(indent=2) }}</pre>
+    {% if backup.snapshot_files %}
+      <div class="snapshot-file-list">
+        {% for file in backup.snapshot_files %}
+          <article class="snapshot-file">
+            <div>
+              <strong>{{ file.name }}</strong>
+              <span class="mono path">{{ file.archive_name }}</span>
+            </div>
+            <div class="snapshot-file-meta">
+              <span>{{ file.size_bytes | bytes }}</span>
+              <span>{{ file.status }}</span>
+            </div>
+          </article>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="empty-state compact">
+        <strong>Nenhum arquivo encontrado no snapshot local.</strong>
+        <p>O backup continua registrado, mas a lista depende do JSON local do snapshot.</p>
+      </div>
+    {% endif %}
   </article>
 </section>
 

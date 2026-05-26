@@ -246,6 +246,10 @@ def require_web_admin(request: Request, db: Connection):
     if not current_user:
         return None, web_redirect_to_login(request)
 
+    company = get_company_by_id(db, current_user["company_id"])
+    if company:
+        current_user["company_name"] = company.get("name") or current_user["company_id"]
+
     if current_user["role"] != "ADMIN_EMPRESA":
         return current_user, web_forbidden(request, current_user)
 

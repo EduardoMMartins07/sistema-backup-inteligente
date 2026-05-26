@@ -13,7 +13,7 @@
         <span class="brand-mark">SB</span>
         <span>
           <strong>Smart Backup</strong>
-          <small>{{ current_user.company_id if current_user else "" }}</small>
+          <small>{% if current_user %}{{ current_user.company_name or current_user.company_id }}{% endif %}</small>
         </span>
       </a>
       <nav class="nav">

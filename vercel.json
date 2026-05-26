@@ -1,0 +1,17 @@
+{
+  "buildCommand": null,
+  "outputDirectory": null,
+  "installCommand": "pip install -r requirements-vercel.txt",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/api/index"
+    }
+  ],
+  "functions": {
+    "api/index.py": {
+      "memory": 512,
+      "maxDuration": 30
+    }
+  }
+}

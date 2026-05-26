@@ -536,7 +536,85 @@ def get_backup_detail(db, current_user, backup_id):
     backup = get_backup_for_user_action(db, current_user, backup_id)
     backup["metadata"] = json_loads(backup.pop("metadata_json", "{}"))
     backup["snapshots"] = list_snapshots(db, current_user, backup_id=backup_id)
+    backup["snapshot_files"] = list_backup_snapshot_files(backup)
     return backup
+
+
+def snapshot_file_candidates(backup):
+    metadata = backup.get("metadata") if isinstance(backup.get("metadata"), dict) else {}
+
+    for path_value in (
+        backup.get("local_path"),
+        metadata.get("snapshotPath"),
+        metadata.get("backupPath"),
+    ):
+        if path_value:
+            yield Path(path_value)
+
+
+def list_backup_snapshot_files(backup):
+    for snapshot_path in snapshot_file_candidates(backup):
+        try:
+            if not snapshot_path.exists() or not snapshot_path.is_file():
+                continue
+
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+
+        files = snapshot.get("files") if isinstance(snapshot, dict) else None
+
+        if not isinstance(files, list):
+            continue
+
+        return [
+            format_snapshot_file_for_web(file_data)
+            for file_data in files
+            if isinstance(file_data, dict)
+        ]
+
+    return []
+
+
+def format_snapshot_file_for_web(file_data):
+    archive_name = str(
+        file_data.get("archive_name")
+        or file_data.get("path")
+        or file_data.get("object_path")
+        or ""
+    ).replace("\\", "/")
+    file_name = (
+        file_data.get("file_name")
+        or file_data.get("name")
+        or os.path.basename(archive_name)
+        or "-"
+    )
+
+    return {
+        "name": file_name,
+        "archive_name": archive_name or "-",
+        "size_bytes": parse_snapshot_file_size(file_data),
+        "status": snapshot_file_status_label(file_data.get("status")),
+    }
+
+
+def parse_snapshot_file_size(file_data):
+    try:
+        return int(file_data.get("size_bytes") or file_data.get("size") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def snapshot_file_status_label(status_value):
+    labels = {
+        "stored_new_object": "Novo objeto",
+        "referenced_existing_object": "Objeto existente",
+        "skipped_unchanged": "Sem alteracao",
+        "skipped_not_eligible": "Nao elegivel",
+        "error": "Erro",
+    }
+    normalized = str(status_value or "").strip()
+    return labels.get(normalized, normalized or "-")
 
 
 def save_backup_upload(db, current_user, backup_id, upload_file):
