@@ -4,7 +4,7 @@ import sqlite3
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from api.config import get_settings
 
@@ -160,6 +160,9 @@ def _force_ipv4_url(database_url):
     if not hostname:
         return database_url
 
+    if hostname.endswith(".neon.tech"):
+        return _with_neon_endpoint_option(database_url, parsed)
+
     try:
         # Tenta resolver IPv4; se falhar, mantem a URL original
         addrs = socket.getaddrinfo(hostname, parsed.port or 5432, socket.AF_INET)
@@ -173,6 +176,21 @@ def _force_ipv4_url(database_url):
         return database_url
 
     return database_url.replace(hostname, ipv4, 1)
+
+
+def _with_neon_endpoint_option(database_url, parsed):
+    query = parse_qsl(parsed.query, keep_blank_values=True)
+
+    if any(key == "options" and "endpoint=" in value for key, value in query):
+        return database_url
+
+    endpoint_id = (parsed.hostname or "").split(".", 1)[0]
+
+    if not endpoint_id:
+        return database_url
+
+    query.append(("options", f"endpoint={endpoint_id}"))
+    return urlunparse(parsed._replace(query=urlencode(query)))
 
 
 class PostgresConnection:
