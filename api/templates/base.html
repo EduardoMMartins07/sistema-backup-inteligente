@@ -9,7 +9,7 @@
 <body>
   <div class="shell">
     <aside class="sidebar">
-      <a class="brand" href="/web/dashboard">
+      <a class="brand" href="{{ '/web/dashboard' if current_user and current_user.role == 'ADMIN_EMPRESA' else '/web/my-backups' }}">
         <span class="brand-mark">SB</span>
         <span>
           <strong>Smart Backup</strong>
@@ -17,12 +17,16 @@
         </span>
       </a>
       <nav class="nav">
-        <a href="/web/dashboard" class="{{ 'active' if request.url.path == '/web/dashboard' else '' }}">Dashboard</a>
-        <a href="/web/users" class="{{ 'active' if request.url.path == '/web/users' else '' }}">Usuarios</a>
-        <a href="/web/devices" class="{{ 'active' if request.url.path == '/web/devices' else '' }}">Dispositivos</a>
-        <a href="/web/backups" class="{{ 'active' if request.url.path.startswith('/web/backups') else '' }}">Backups</a>
-        <a href="/web/snapshots" class="{{ 'active' if request.url.path == '/web/snapshots' else '' }}">Snapshots</a>
-        <a href="/web/audit-logs" class="{{ 'active' if request.url.path == '/web/audit-logs' else '' }}">Auditoria</a>
+        {% if current_user and current_user.role == "ADMIN_EMPRESA" %}
+          <a href="/web/dashboard" class="{{ 'active' if request.url.path == '/web/dashboard' else '' }}">Dashboard</a>
+          <a href="/web/users" class="{{ 'active' if request.url.path == '/web/users' else '' }}">Usuarios</a>
+          <a href="/web/devices" class="{{ 'active' if request.url.path == '/web/devices' else '' }}">Dispositivos</a>
+          <a href="/web/backups" class="{{ 'active' if request.url.path.startswith('/web/backups') else '' }}">Backups</a>
+          <a href="/web/snapshots" class="{{ 'active' if request.url.path == '/web/snapshots' else '' }}">Snapshots</a>
+          <a href="/web/audit-logs" class="{{ 'active' if request.url.path == '/web/audit-logs' else '' }}">Auditoria</a>
+        {% else %}
+          <a href="/web/my-backups" class="{{ 'active' if request.url.path == '/web/my-backups' else '' }}">Meus backups</a>
+        {% endif %}
       </nav>
     </aside>
     <div class="content">

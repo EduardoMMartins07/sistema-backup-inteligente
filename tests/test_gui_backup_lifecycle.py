@@ -190,6 +190,87 @@ class GuiBackupLifecycleTests(unittest.TestCase):
             gui_module._background_gui = original_gui
             gui_module._background_root = original_root
 
+    def test_restore_groups_consecutive_scheduled_verifications_without_changes(self):
+        gui = self.make_gui()
+        entries = [
+            (
+                2,
+                {
+                    "timestamp": "26/05/2026 22:52:14",
+                    "backup_name": "verificacao agendada",
+                    "trigger": "politica_prioridade",
+                    "user": "sistema",
+                    "company_id": "default",
+                    "scanner_executed": True,
+                    "backup_result": "no_changes",
+                    "file_changes": [],
+                },
+            ),
+            (
+                1,
+                {
+                    "timestamp": "26/05/2026 22:51:14",
+                    "backup_name": "verificacao agendada",
+                    "trigger": "politica_prioridade",
+                    "user": "sistema",
+                    "company_id": "default",
+                    "scanner_executed": True,
+                    "backup_result": "no_changes",
+                    "file_changes": [],
+                },
+            ),
+            (
+                0,
+                {
+                    "timestamp": "26/05/2026 22:50:14",
+                    "backup_name": "verificacao agendada",
+                    "trigger": "politica_prioridade",
+                    "user": "sistema",
+                    "company_id": "default",
+                    "scanner_executed": True,
+                    "backup_result": "no_changes",
+                    "file_changes": [],
+                },
+            ),
+        ]
+
+        grouped = gui.group_restore_history_entries(entries)
+
+        self.assertEqual(1, len(grouped))
+        self.assertEqual(2, grouped[0][0])
+        self.assertEqual(3, grouped[0][1]["restore_group_count"])
+        self.assertEqual("26/05/2026 22:52:14", grouped[0][1]["restore_group_last_timestamp"])
+        self.assertEqual("26/05/2026 22:50:14", grouped[0][1]["restore_group_first_timestamp"])
+
+    def test_restore_does_not_group_entries_with_recoverable_changes(self):
+        gui = self.make_gui()
+        changed_entry = {
+            "timestamp": "26/05/2026 22:52:14",
+            "backup_name": "verificacao agendada",
+            "trigger": "politica_prioridade",
+            "user": "sistema",
+            "company_id": "default",
+            "scanner_executed": True,
+            "backup_result": "completed",
+            "file_changes": [{"action": "alterado", "name": "A.txt"}],
+        }
+        empty_entry = {
+            "timestamp": "26/05/2026 22:51:14",
+            "backup_name": "verificacao agendada",
+            "trigger": "politica_prioridade",
+            "user": "sistema",
+            "company_id": "default",
+            "scanner_executed": True,
+            "backup_result": "no_changes",
+            "file_changes": [],
+        }
+
+        grouped = gui.group_restore_history_entries([(1, changed_entry), (0, empty_entry)])
+
+        self.assertEqual(2, len(grouped))
+        self.assertNotIn("restore_group_count", grouped[0][1])
+        self.assertNotIn("restore_group_count", grouped[1][1])
+
 
 if __name__ == "__main__":
     unittest.main()

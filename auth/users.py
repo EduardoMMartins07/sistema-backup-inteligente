@@ -645,6 +645,7 @@ def delete_user(username):
 
 def list_api_company_users(current_user=None):
     token = (current_user or {}).get("auth_token")
+    company_id = (current_user or {}).get("company_id")
 
     if not token:
         return []
@@ -673,9 +674,48 @@ def list_api_company_users(current_user=None):
         from auth import api_client
 
         if not api_client.is_configured():
-            return []
+            return list_local_api_company_users(company_id)
 
-        return api_client.list_company_users(token)
+        users = api_client.list_company_users(token)
+
+        if users:
+            return users
+
+        return list_local_api_company_users(company_id)
+    except Exception:
+        return list_local_api_company_users(company_id)
+
+
+def list_local_api_company_users(company_id):
+    if not company_id:
+        return []
+
+    try:
+        from api.database import connect, rows_to_dicts
+
+        connection = connect()
+
+        try:
+            rows = connection.execute(
+                """
+                SELECT id, company_id, name, email, role, status, created_at, updated_at
+                FROM users
+                WHERE company_id = ?
+                ORDER BY status ASC, LOWER(name) ASC
+                """,
+                (company_id,),
+            ).fetchall()
+            users = []
+
+            for user in rows_to_dicts(rows):
+                public_data = public_api_user(user)
+
+                if public_data:
+                    users.append(public_data)
+
+            return users
+        finally:
+            connection.close()
     except Exception:
         return []
 

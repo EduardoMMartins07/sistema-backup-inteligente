@@ -24,6 +24,7 @@ from scheduler.scheduler import start_scheduler
 from tray.tray_icon import start_tray
 from interface.gui import start_gui
 from interface.login import login_user
+from auth.local_context import set_current_user
 from auth.permissions import can
 from auth.users import users_exist
 from scanner.scanner import run_scanner
@@ -107,6 +108,7 @@ def run_tray_backup_request():
         print("Acesso negado para executar scanner manual.")
         return
 
+    set_current_user(user)
     print(f"Executando scanner manual por {user.get('username')}...")
     from scanner.scanner import run_classification_background
     run_scanner(classify_files=False, should_cancel=SHUTDOWN_EVENT.is_set)

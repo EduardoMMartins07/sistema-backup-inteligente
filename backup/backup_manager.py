@@ -13,6 +13,7 @@ from datetime import datetime
 from datetime import timedelta
 import zstandard as zstd
 from security import crypto_service
+from utils import user_data_paths
 from utils.file_hash import calculate_file_hash
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -22,6 +23,10 @@ DEFAULT_BACKUP_DIR = os.path.join(PROJECT_ROOT, "backups")
 HISTORY_PATH = os.path.join(PROJECT_ROOT, "config", "backup_history.json")
 SCHEDULE_PATH = os.path.join(PROJECT_ROOT, "config", "backup_schedule.json")
 PRIORITY_STATE_PATH = os.path.join(PROJECT_ROOT, "config", "priority_backup_state.json")
+DEFAULT_CONFIG_PATH = CONFIG_PATH
+DEFAULT_HISTORY_PATH = HISTORY_PATH
+DEFAULT_SCHEDULE_PATH = SCHEDULE_PATH
+DEFAULT_PRIORITY_STATE_PATH = PRIORITY_STATE_PATH
 ZIP_COMPRESSION_METHOD = zipfile.ZIP_LZMA
 OBJECT_COMPRESSION_LEVEL = 9
 RECOVERABLE_ACTIONS = {"alterado", "excluido"}
@@ -149,6 +154,42 @@ def save_json_atomic(path, data):
     os.replace(temporary_path, path)
 
 
+def resolve_user_scoped_path(configured_path, default_path, filename):
+    if os.path.abspath(configured_path) != os.path.abspath(default_path):
+        return configured_path
+
+    scoped_path = user_data_paths.get_current_user_file_path(filename)
+    return scoped_path or configured_path
+
+
+def get_config_path():
+    return resolve_user_scoped_path(CONFIG_PATH, DEFAULT_CONFIG_PATH, "config.json")
+
+
+def get_history_path():
+    return resolve_user_scoped_path(
+        HISTORY_PATH,
+        DEFAULT_HISTORY_PATH,
+        "backup_history.json",
+    )
+
+
+def get_schedule_path():
+    return resolve_user_scoped_path(
+        SCHEDULE_PATH,
+        DEFAULT_SCHEDULE_PATH,
+        "backup_schedule.json",
+    )
+
+
+def get_priority_state_path():
+    return resolve_user_scoped_path(
+        PRIORITY_STATE_PATH,
+        DEFAULT_PRIORITY_STATE_PATH,
+        "backup_state.json",
+    )
+
+
 def load_backup_env_file(path=ENV_PATH):
     global _BACKUP_ENV_FILE_LOADED
 
@@ -176,11 +217,11 @@ def load_backup_env_file(path=ENV_PATH):
 
 
 def load_config():
-    return load_json(CONFIG_PATH, {})
+    return load_json(get_config_path(), {})
 
 
 def save_config(data):
-    save_json(CONFIG_PATH, data)
+    save_json(get_config_path(), data)
 
 
 def get_monitored_directories(config=None):
@@ -402,11 +443,11 @@ def normalize_priority(priority):
 
 
 def load_priority_state():
-    return load_json(PRIORITY_STATE_PATH, {})
+    return load_json(get_priority_state_path(), {})
 
 
 def save_priority_state(state):
-    save_json(PRIORITY_STATE_PATH, state)
+    save_json(get_priority_state_path(), state)
 
 
 def parse_iso_datetime(value):
@@ -2243,24 +2284,51 @@ def create_encrypted_snapshot_archive(
 
 
 def load_history():
-    return load_json(HISTORY_PATH, [])
+    return load_json(get_history_path(), [])
 
 
 def append_history(entry):
     with _HISTORY_LOCK:
         history = load_history()
-        history.append(entry)
-        save_json(HISTORY_PATH, history[-50:])
         sync_local_history_entry_to_api(entry)
+        history.append(entry)
+        save_json(get_history_path(), history[-50:])
 
 
 def sync_local_history_entry_to_api(entry):
+    if not isinstance(entry, dict):
+        return False
+
+    entry.setdefault("sync_status", "pending")
+    entry.setdefault("sync_error", "")
+
+    try:
+        from auth import api_client
+        from auth.local_context import get_current_user
+
+        current_user = get_current_user() or {}
+        token = current_user.get("auth_token")
+
+        if token and api_client.is_configured():
+            api_client.register_backup_metadata(token, entry)
+            entry["sync_status"] = "synced"
+            entry["sync_error"] = ""
+            return True
+    except Exception as error:
+        entry["sync_status"] = "pending"
+        entry["sync_error"] = str(error)[:180]
+
     try:
         from api.local_history_sync import sync_history_entry
 
-        sync_history_entry(entry)
+        if sync_history_entry(entry):
+            entry["sync_status"] = "synced"
+            entry["sync_error"] = ""
+            return True
     except Exception:
         pass
+
+    return False
 
 
 def sync_history_entry_to_cloud(history_entry, progress_callback=None):
@@ -2391,8 +2459,8 @@ def update_history_entry_cloud_result(snapshot_path, result):
             break
 
         if updated:
-            save_json(HISTORY_PATH, history[-50:])
             sync_local_history_entry_to_api(entry)
+            save_json(get_history_path(), history[-50:])
 
         return updated
 
@@ -3074,11 +3142,11 @@ def run_priority_backup_job(
 
 
 def load_schedule():
-    return load_json(SCHEDULE_PATH, {})
+    return load_json(get_schedule_path(), {})
 
 
 def save_schedule(schedule):
-    save_json(SCHEDULE_PATH, schedule)
+    save_json(get_schedule_path(), schedule)
 
 
 def get_schedule_run_context(schedule=None):

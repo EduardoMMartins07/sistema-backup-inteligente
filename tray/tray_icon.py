@@ -3,10 +3,13 @@ from pystray import MenuItem as item
 from PIL import Image, ImageDraw
 import os
 import json
+from utils import user_data_paths
 
 ICON_PATH = os.path.join("assets", "nuvem.png")
 CONFIG_PATH = os.path.join("config", "config.json")
 HISTORY_PATH = os.path.join("config", "backup_history.json")
+DEFAULT_CONFIG_PATH = CONFIG_PATH
+DEFAULT_HISTORY_PATH = HISTORY_PATH
 MAX_TRAY_TITLE_LENGTH = 120
 MAX_MENU_PATH_LENGTH = 48
 _on_open_gui = None
@@ -53,13 +56,31 @@ def load_json(path, default):
     return data if isinstance(data, type(default)) else default
 
 
+def resolve_user_scoped_path(configured_path, default_path, filename):
+    if os.path.abspath(configured_path) != os.path.abspath(default_path):
+        return configured_path
+
+    scoped_path = user_data_paths.get_current_user_file_path(filename)
+    return scoped_path or configured_path
+
+
 def get_backup_destination():
-    config = load_json(CONFIG_PATH, {})
+    config = load_json(
+        resolve_user_scoped_path(CONFIG_PATH, DEFAULT_CONFIG_PATH, "config.json"),
+        {},
+    )
     return config.get("backup_destination", "backups")
 
 
 def get_latest_backup_timestamp():
-    history = load_json(HISTORY_PATH, [])
+    history = load_json(
+        resolve_user_scoped_path(
+            HISTORY_PATH,
+            DEFAULT_HISTORY_PATH,
+            "backup_history.json",
+        ),
+        [],
+    )
 
     if not history:
         return "Nenhum backup"

@@ -10,9 +10,11 @@ from backup.backup_manager import BackupCancelledError
 from backup.backup_manager import is_path_ignored
 from backup.backup_manager import is_temp_or_locked_file
 from ml.llm_classifier import classify_file_importance
+from utils import user_data_paths
 from utils.file_hash import calculate_file_hash
 
 CONFIG_PATH = "config/config.json"
+DEFAULT_CONFIG_PATH = CONFIG_PATH
 DATASET_PATH = "dataset/files_dataset.csv"
 ACTIVITY_PATH = "config/file_activity.json"
 
@@ -131,7 +133,11 @@ def save_json(path, data):
 
 
 def load_config():
-    return load_json(CONFIG_PATH, {})
+    if os.path.abspath(CONFIG_PATH) != os.path.abspath(DEFAULT_CONFIG_PATH):
+        return load_json(CONFIG_PATH, {})
+
+    scoped_path = user_data_paths.get_current_user_file_path("config.json")
+    return load_json(scoped_path or CONFIG_PATH, {})
 
 
 def load_directories(config=None):

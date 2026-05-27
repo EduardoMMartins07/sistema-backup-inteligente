@@ -314,7 +314,7 @@ class ApiMultiempresaWebTests(unittest.TestCase):
         )
         self.assertEqual(404, beta_detail_from_alpha_operator.status_code)
 
-    def test_viewer_cannot_mutate_and_web_blocks_non_admin(self):
+    def test_viewer_cannot_mutate_and_web_redirects_to_personal_backups(self):
         _, admin_headers = self.setup_first_admin()
         viewer = self.client.post(
             "/admin/users",
@@ -341,8 +341,9 @@ class ApiMultiempresaWebTests(unittest.TestCase):
             data={"email": "viewer@example.com", "password": "senha-viewer"},
             follow_redirects=False,
         )
-        self.assertEqual(400, web_response.status_code)
-        self.assertNotIn("smartbackup_token", web_response.headers.get("set-cookie", ""))
+        self.assertEqual(303, web_response.status_code)
+        self.assertEqual("/web/my-backups", web_response.headers["location"])
+        self.assertIn("smartbackup_token", web_response.headers.get("set-cookie", ""))
 
     def test_device_folder_mismatch_is_rejected(self):
         _, admin_headers = self.setup_first_admin()

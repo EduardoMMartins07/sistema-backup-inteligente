@@ -4,25 +4,27 @@
   <div class="section-title">
     <h2>Filtros</h2>
   </div>
-  <form class="filters" method="get" action="/web/backups">
-    <select name="userId">
-      <option value="">Todos usuarios</option>
-      {% for user in users %}
-        <option value="{{ user.id }}" {{ "selected" if filters.userId == user.id else "" }}>{{ user.name }}</option>
-      {% endfor %}
-    </select>
-    <select name="deviceId">
-      <option value="">Todos dispositivos</option>
-      {% for device in devices %}
-        <option value="{{ device.id }}" {{ "selected" if filters.deviceId == device.id else "" }}>{{ device.name }}</option>
-      {% endfor %}
-    </select>
-    <select name="folderId">
-      <option value="">Todas pastas</option>
-      {% for folder in folders %}
-        <option value="{{ folder.id }}" {{ "selected" if filters.folderId == folder.id else "" }}>{{ folder.path }}</option>
-      {% endfor %}
-    </select>
+  <form class="filters" method="get" action="{{ '/web/my-backups' if personal_view else '/web/backups' }}">
+    {% if not personal_view %}
+      <select name="userId">
+        <option value="">Todos usuarios</option>
+        {% for user in users %}
+          <option value="{{ user.id }}" {{ "selected" if filters.userId == user.id else "" }}>{{ user.name }}</option>
+        {% endfor %}
+      </select>
+      <select name="deviceId">
+        <option value="">Todos dispositivos</option>
+        {% for device in devices %}
+          <option value="{{ device.id }}" {{ "selected" if filters.deviceId == device.id else "" }}>{{ device.name }}</option>
+        {% endfor %}
+      </select>
+      <select name="folderId">
+        <option value="">Todas pastas</option>
+        {% for folder in folders %}
+          <option value="{{ folder.id }}" {{ "selected" if filters.folderId == folder.id else "" }}>{{ folder.path }}</option>
+        {% endfor %}
+      </select>
+    {% endif %}
     <select name="status">
       <option value="">Status</option>
       {% for status_value in ["PENDING", "RUNNING", "SUCCESS", "FAILED", "CANCELED"] %}
@@ -44,7 +46,7 @@
     <input type="date" name="startDate" value="{{ filters.startDate or '' }}">
     <input type="date" name="endDate" value="{{ filters.endDate or '' }}">
     <button class="button primary" type="submit">Filtrar</button>
-    <a class="button ghost" href="/web/backups">Limpar</a>
+    <a class="button ghost" href="{{ '/web/my-backups' if personal_view else '/web/backups' }}">Limpar</a>
   </form>
 </section>
 
@@ -86,4 +88,3 @@
   </div>
 </section>
 {% endblock %}
-

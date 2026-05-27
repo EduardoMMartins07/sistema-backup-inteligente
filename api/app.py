@@ -17,6 +17,7 @@ from api.logging_config import configure_logging, get_logger
 from api.schemas import (
     BackupCreatePayload,
     BackupFinishPayload,
+    BackupMetadataPayload,
     CompanyCreatePayload,
     DeviceRegisterPayload,
     DesktopConfigPayload,
@@ -33,6 +34,7 @@ from api.services import (
     admin_dashboard,
     authenticate_user,
     create_backup,
+    create_backup_from_metadata,
     create_company_with_admin,
     create_first_admin,
     create_monitored_folder,
@@ -261,6 +263,19 @@ def require_web_admin(request: Request, db: Connection):
     return current_user, None
 
 
+def require_web_user(request: Request, db: Connection):
+    current_user = web_user(request, db)
+
+    if not current_user:
+        return None, web_redirect_to_login(request)
+
+    company = get_company_by_id(db, current_user["company_id"])
+    if company:
+        current_user["company_name"] = company.get("name") or current_user["company_id"]
+
+    return current_user, None
+
+
 def create_app():
     @asynccontextmanager
     async def lifespan(_app):
@@ -459,6 +474,17 @@ def create_app():
     ):
         return {"users": [public_user(user) for user in list_company_users(db, current_user["company_id"])]}
 
+    @app.get("/api/companies/{company_id}/users")
+    def company_users_api(
+        company_id: str,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA"])),
+        db: Connection = Depends(get_db),
+    ):
+        if company_id != current_user["company_id"]:
+            return JSONResponse({"detail": "Empresa nao autorizada."}, status_code=403)
+
+        return {"users": [public_user(user) for user in list_company_users(db, company_id)]}
+
     @app.post("/admin/users")
     def admin_create_user_api(
         payload: UserCreatePayload,
@@ -611,6 +637,15 @@ def create_app():
         )
         return {"backup": api_backup(backup)}
 
+    @app.post("/api/backups")
+    def create_backup_metadata_api(
+        payload: BackupMetadataPayload,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA", "OPERADOR"])),
+        db: Connection = Depends(get_db),
+    ):
+        backup = create_backup_from_metadata(db, current_user, payload)
+        return {"backup": api_backup(backup)}
+
     @app.get("/backups")
     def list_backups_api(
         userId: str | None = None,
@@ -626,6 +661,55 @@ def create_app():
     ):
         filters = filters_from_query(userId, deviceId, folderId, status, type, priority, startDate, endDate)
         backups = list_backups(db, current_user, filters=filters)
+        return {"backups": [api_backup(backup) for backup in backups]}
+
+    @app.get("/api/companies/{company_id}/backups")
+    def company_backups_api(
+        company_id: str,
+        userId: str | None = None,
+        deviceId: str | None = None,
+        folderId: str | None = None,
+        status: str | None = None,
+        type: str | None = None,
+        priority: str | None = None,
+        startDate: str | None = None,
+        endDate: str | None = None,
+        page: int | None = None,
+        limit: int | None = None,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA"])),
+        db: Connection = Depends(get_db),
+    ):
+        if company_id != current_user["company_id"]:
+            return JSONResponse({"detail": "Empresa nao autorizada."}, status_code=403)
+
+        filters = filters_from_query(userId, deviceId, folderId, status, type, priority, startDate, endDate)
+        backups = list_backups(db, current_user, filters=filters, limit=limit or 200)
+        return {"backups": [api_backup(backup) for backup in backups], "page": page or 1}
+
+    @app.get("/api/me/backups")
+    def my_backups_api(
+        deviceId: str | None = None,
+        folderId: str | None = None,
+        status: str | None = None,
+        type: str | None = None,
+        priority: str | None = None,
+        startDate: str | None = None,
+        endDate: str | None = None,
+        limit: int | None = None,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA", "OPERADOR", "VIEWER"])),
+        db: Connection = Depends(get_db),
+    ):
+        filters = filters_from_query(
+            current_user["id"],
+            deviceId,
+            folderId,
+            status,
+            type,
+            priority,
+            startDate,
+            endDate,
+        )
+        backups = list_backups(db, current_user, filters=filters, limit=limit or 200)
         return {"backups": [api_backup(backup) for backup in backups]}
 
     @app.post("/backups/presigned-url")
@@ -702,6 +786,17 @@ def create_app():
         serialized["snapshots"] = [api_snapshot(snapshot) for snapshot in backup["snapshots"]]
         return {"backup": serialized}
 
+    @app.get("/api/backups/{backup_id}")
+    def api_backup_detail_alias(
+        backup_id: str,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA", "OPERADOR", "VIEWER"])),
+        db: Connection = Depends(get_db),
+    ):
+        backup = get_backup_detail(db, current_user, backup_id)
+        serialized = api_backup(backup)
+        serialized["snapshots"] = [api_snapshot(snapshot) for snapshot in backup["snapshots"]]
+        return {"backup": serialized}
+
     @app.post("/snapshots")
     def create_snapshot_api(
         payload: SnapshotPayload,
@@ -728,8 +823,9 @@ def create_app():
     ):
         current_user = web_user(request, db)
 
-        if current_user and current_user["role"] == "ADMIN_EMPRESA":
-            return RedirectResponse(next or "/web/dashboard", status_code=303)
+        if current_user:
+            target = "/web/dashboard" if current_user["role"] == "ADMIN_EMPRESA" else "/web/my-backups"
+            return RedirectResponse(next or target, status_code=303)
 
         signup_mode = str(signup or "").lower() in {"1", "true", "yes", "sim"}
         return templates.TemplateResponse(
@@ -788,9 +884,6 @@ def create_app():
                     record_failed_login(request, email)
                     raise ValueError("Email ou senha invalidos.")
 
-                if user["role"] != "ADMIN_EMPRESA":
-                    raise ValueError("Apenas ADMIN_EMPRESA acessa o painel web.")
-
                 db.commit()
                 clear_login_attempts(request, email)
         except Exception as error:
@@ -807,7 +900,12 @@ def create_app():
                 status_code=400,
             )
 
-        response = RedirectResponse(next or "/web/dashboard", status_code=303)
+        target = next or "/web/dashboard"
+
+        if user["role"] != "ADMIN_EMPRESA" and target == "/web/dashboard":
+            target = "/web/my-backups"
+
+        response = RedirectResponse(target, status_code=303)
         response.set_cookie(
             COOKIE_NAME,
             create_access_token(user),
@@ -962,6 +1060,47 @@ def create_app():
                 "devices": list_devices(db, current_user),
                 "folders": list_company_folders(db, current_user),
                 "filters": filters,
+                "personal_view": False,
+            },
+        )
+
+    @app.get("/web/my-backups", response_class=HTMLResponse)
+    def web_my_backups(
+        request: Request,
+        status: str | None = None,
+        type: str | None = None,
+        priority: str | None = None,
+        startDate: str | None = None,
+        endDate: str | None = None,
+        db: Connection = Depends(get_db),
+    ):
+        current_user, response = require_web_user(request, db)
+
+        if response:
+            return response
+
+        filters = filters_from_query(
+            current_user["id"],
+            None,
+            None,
+            status,
+            type,
+            priority,
+            startDate,
+            endDate,
+        )
+        return templates.TemplateResponse(
+            request,
+            "backups.html",
+            {
+                "title": "Meus Backups",
+                "current_user": current_user,
+                "backups": list_backups(db, current_user, filters=filters),
+                "users": [],
+                "devices": [],
+                "folders": [],
+                "filters": filters,
+                "personal_view": True,
             },
         )
 

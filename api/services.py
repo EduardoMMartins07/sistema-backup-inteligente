@@ -1,5 +1,6 @@
 import json
 import os
+import platform
 import shutil
 from pathlib import Path
 
@@ -454,6 +455,263 @@ def build_storage_key(company_id, user_id, device_id, folder_id, backup_id, file
     return "/".join(str(part).strip("/").replace("\\", "_") for part in parts if part)
 
 
+def normalize_backup_status(value):
+    normalized = str(value or "RUNNING").strip().upper()
+    aliases = {
+        "COMPLETED": "SUCCESS",
+        "CONCLUIDO": "SUCCESS",
+        "CANCELLED": "CANCELED",
+        "CANCELADO": "CANCELED",
+        "FALHOU": "FAILED",
+        "SUCESSO": "SUCCESS",
+    }
+    normalized = aliases.get(normalized, normalized)
+
+    if normalized not in BACKUP_STATUS:
+        raise HTTPException(status_code=400, detail="Status de backup invalido.")
+
+    return normalized
+
+
+def normalize_backup_type(value):
+    normalized = str(value or "INCREMENTAL").strip().upper()
+    aliases = {
+        "FULL_BACKUP": "FULL",
+        "COMPLETO": "FULL",
+        "INCREMENTAL_BACKUP": "INCREMENTAL",
+    }
+    normalized = aliases.get(normalized, normalized)
+
+    if normalized not in BACKUP_TYPES:
+        raise HTTPException(status_code=400, detail="Tipo de backup invalido.")
+
+    return normalized
+
+
+def normalize_backup_priority(value):
+    normalized = str(value or "NORMAL").strip().upper()
+    aliases = {
+        "BAIXA": "LOW",
+        "MEDIA": "MEDIUM",
+        "ALTA": "HIGH",
+        "MIXED": "NORMAL",
+        "MISTA": "NORMAL",
+    }
+    normalized = aliases.get(normalized, normalized)
+
+    if normalized not in BACKUP_PRIORITIES:
+        normalized = "NORMAL"
+
+    return normalized
+
+
+def payload_value(payload, *names, default=None):
+    for name in names:
+        value = getattr(payload, name, None)
+
+        if value is not None and value != "":
+            return value
+
+    return default
+
+
+def ensure_metadata_device(db, current_user):
+    now = utc_now()
+    identifier = f"desktop-metadata-{current_user['id']}"
+    row = db.execute(
+        """
+        SELECT *
+        FROM devices
+        WHERE company_id = ? AND user_id = ? AND identifier = ?
+        """,
+        (current_user["company_id"], current_user["id"], identifier),
+    ).fetchone()
+
+    if row:
+        db.execute(
+            "UPDATE devices SET last_seen_at = ?, updated_at = ? WHERE id = ?",
+            (now, now, row["id"]),
+        )
+        return row_to_dict(row)
+
+    device = {
+        "id": new_id("device"),
+        "company_id": current_user["company_id"],
+        "user_id": current_user["id"],
+        "name": "Desktop local",
+        "hostname": platform.node() or "localhost",
+        "identifier": identifier,
+        "created_at": now,
+        "updated_at": now,
+        "last_seen_at": now,
+    }
+    db.execute(
+        """
+        INSERT INTO devices (
+            id, company_id, user_id, name, hostname, identifier,
+            created_at, updated_at, last_seen_at
+        )
+        VALUES (
+            :id, :company_id, :user_id, :name, :hostname, :identifier,
+            :created_at, :updated_at, :last_seen_at
+        )
+        """,
+        device,
+    )
+    return device
+
+
+def ensure_metadata_folder(db, current_user, device, payload):
+    now = utc_now()
+    path = str(
+        payload_value(
+            payload,
+            "local_path",
+            "localPath",
+            "remote_path",
+            "remotePath",
+            default="Desktop local",
+        )
+        or "Desktop local"
+    )
+    row = db.execute(
+        """
+        SELECT *
+        FROM monitored_folders
+        WHERE company_id = ? AND user_id = ? AND device_id = ? AND path = ?
+        """,
+        (current_user["company_id"], current_user["id"], device["id"], path),
+    ).fetchone()
+
+    if row:
+        db.execute(
+            "UPDATE monitored_folders SET updated_at = ? WHERE id = ?",
+            (now, row["id"]),
+        )
+        return row_to_dict(row)
+
+    folder = {
+        "id": new_id("folder"),
+        "company_id": current_user["company_id"],
+        "user_id": current_user["id"],
+        "device_id": device["id"],
+        "path": path,
+        "alias": "Backup local desktop",
+        "active": 1,
+        "created_at": now,
+        "updated_at": now,
+    }
+    db.execute(
+        """
+        INSERT INTO monitored_folders (
+            id, company_id, user_id, device_id, path, alias, active, created_at, updated_at
+        )
+        VALUES (
+            :id, :company_id, :user_id, :device_id, :path, :alias, :active,
+            :created_at, :updated_at
+        )
+        """,
+        folder,
+    )
+    return folder
+
+
+def create_backup_from_metadata(db, current_user, payload):
+    company_id = payload_value(payload, "company_id", "companyId")
+
+    if company_id and company_id != current_user["company_id"]:
+        raise HTTPException(status_code=403, detail="Empresa do backup nao confere com o token.")
+
+    user_id = payload_value(payload, "user_id", "userId")
+
+    if user_id and user_id not in {current_user["id"], current_user.get("email")}:
+        raise HTTPException(status_code=403, detail="Usuario do backup nao confere com o token.")
+
+    device = ensure_metadata_device(db, current_user)
+    folder = ensure_metadata_folder(db, current_user, device, payload)
+    backup_id = str(payload_value(payload, "backup_id", "backupId", default="")).strip() or new_id("backup")
+    backup_type = normalize_backup_type(payload_value(payload, "backup_type", "backupType", "type"))
+    status_value = normalize_backup_status(payload_value(payload, "status", default="RUNNING"))
+    priority = normalize_backup_priority(payload_value(payload, "priority"))
+    created_at = payload_value(payload, "created_at", "createdAt", "started_at", "startedAt", default=utc_now())
+    finished_at = payload_value(payload, "finished_at", "finishedAt")
+    size_bytes = int(payload_value(payload, "total_size_bytes", "totalSizeBytes", "sizeBytes", default=0) or 0)
+    file_count = int(payload_value(payload, "file_count", "fileCount", default=0) or 0)
+    remote_path = str(payload_value(payload, "remote_path", "remotePath", default="") or "")
+    storage_target = str(payload_value(payload, "storage_target", "storageTarget", default="local") or "local")
+    metadata = payload.metadata if isinstance(payload.metadata, dict) else {}
+    metadata.update({
+        "externalBackupId": backup_id,
+        "storageTarget": storage_target,
+        "remotePath": remote_path,
+        "items": payload.items or [],
+        "userName": payload_value(payload, "user_name", "userName", default=current_user.get("name")),
+    })
+    backup = {
+        "id": backup_id,
+        "company_id": current_user["company_id"],
+        "user_id": current_user["id"],
+        "device_id": device["id"],
+        "folder_id": folder["id"],
+        "name": str(payload_value(payload, "backup_name", "backupName", "name", default=backup_id) or backup_id),
+        "type": backup_type,
+        "status": status_value,
+        "priority": priority,
+        "size_bytes": size_bytes,
+        "file_count": file_count,
+        "s3_key": remote_path or build_storage_key(
+            current_user["company_id"],
+            current_user["id"],
+            device["id"],
+            folder["id"],
+            backup_id,
+        ),
+        "checksum": "",
+        "error_message": "",
+        "metadata_json": json_dumps(metadata),
+        "local_path": str(payload_value(payload, "local_path", "localPath", default="") or ""),
+        "started_at": created_at,
+        "finished_at": finished_at,
+        "created_at": created_at,
+        "updated_at": utc_now(),
+    }
+    db.execute(
+        """
+        INSERT INTO backups (
+            id, company_id, user_id, device_id, folder_id, name, type, status,
+            priority, size_bytes, file_count, s3_key, checksum, error_message,
+            metadata_json, local_path, started_at, finished_at, created_at, updated_at
+        )
+        VALUES (
+            :id, :company_id, :user_id, :device_id, :folder_id, :name, :type, :status,
+            :priority, :size_bytes, :file_count, :s3_key, :checksum, :error_message,
+            :metadata_json, :local_path, :started_at, :finished_at, :created_at, :updated_at
+        )
+        ON CONFLICT(id) DO UPDATE SET
+            status = excluded.status,
+            priority = excluded.priority,
+            size_bytes = excluded.size_bytes,
+            file_count = excluded.file_count,
+            s3_key = excluded.s3_key,
+            metadata_json = excluded.metadata_json,
+            local_path = excluded.local_path,
+            finished_at = excluded.finished_at,
+            updated_at = excluded.updated_at
+        """,
+        backup,
+    )
+    audit_log(
+        db,
+        current_user["company_id"],
+        current_user["id"],
+        "BACKUP_METADATA_SYNCED",
+        backup["name"],
+        {"backupId": backup_id, "storageTarget": storage_target},
+    )
+    db.commit()
+    return get_backup_for_user_action(db, current_user, backup_id)
+
+
 def create_backup(db, current_user, payload):
     device = get_device_for_user_action(db, current_user, payload.deviceId)
     folder = get_folder_for_backup(db, current_user, payload.folderId, device["id"])
@@ -536,8 +794,8 @@ def get_backup_for_user_action(db, current_user, backup_id, mutate=False):
     ).fetchone()
     backup = require_found(row_to_dict(row), "Backup nao encontrado.")
 
-    if current_user["role"] == "OPERADOR" and backup["user_id"] != current_user["id"]:
-        raise HTTPException(status_code=403, detail="Backup nao pertence ao operador.")
+    if current_user["role"] != "ADMIN_EMPRESA" and backup["user_id"] != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Backup nao pertence ao usuario.")
 
     if current_user["role"] == "VIEWER" and mutate:
         raise HTTPException(status_code=403, detail="Visualizador nao pode alterar backups.")
@@ -569,6 +827,16 @@ def snapshot_file_candidates(backup):
 
 
 def list_backup_snapshot_files(backup):
+    metadata = backup.get("metadata") if isinstance(backup.get("metadata"), dict) else {}
+    metadata_items = metadata.get("items") or metadata.get("snapshotFiles")
+
+    if isinstance(metadata_items, list) and metadata_items:
+        return [
+            format_snapshot_file_for_web(file_data)
+            for file_data in metadata_items
+            if isinstance(file_data, dict)
+        ]
+
     for snapshot_path in snapshot_file_candidates(backup):
         try:
             if not snapshot_path.exists() or not snapshot_path.is_file():
@@ -758,7 +1026,7 @@ def list_backups(db, current_user, filters=None, limit=200):
     where = ["b.company_id = ?"]
     params = [current_user["company_id"]]
 
-    if current_user["role"] == "OPERADOR":
+    if current_user["role"] != "ADMIN_EMPRESA":
         where.append("b.user_id = ?")
         params.append(current_user["id"])
 
@@ -838,7 +1106,7 @@ def list_devices(db, current_user):
                 """
                 SELECT * FROM monitored_folders
                 WHERE company_id = ? AND device_id = ?
-                ORDER BY path COLLATE NOCASE
+                ORDER BY LOWER(path)
                 """,
                 (current_user["company_id"], device["id"]),
             ).fetchall()
@@ -1055,13 +1323,15 @@ def list_snapshots(db, current_user, backup_id=None):
     where = ["s.company_id = ?"]
     params = [current_user["company_id"]]
 
-    if current_user["role"] == "OPERADOR":
+    if current_user["role"] != "ADMIN_EMPRESA":
         where.append("s.user_id = ?")
         params.append(current_user["id"])
 
     if backup_id:
         where.append("s.backup_id = ?")
         params.append(backup_id)
+
+    where.append("(s.id NOT LIKE 'snapshot_local_%' OR b.type = 'SNAPSHOT')")
 
     rows = db.execute(
         f"""

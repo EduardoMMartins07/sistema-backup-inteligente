@@ -226,6 +226,20 @@ def _backup_type(entry):
     return "INCREMENTAL"
 
 
+def _snapshot_items_from_history(entry):
+    file_snapshot = entry.get("file_snapshot")
+
+    if isinstance(file_snapshot, dict) and file_snapshot:
+        return [
+            dict(file_data, archive_name=archive_name)
+            for archive_name, file_data in file_snapshot.items()
+            if isinstance(file_data, dict)
+        ]
+
+    changes = entry.get("file_changes")
+    return changes if isinstance(changes, list) else []
+
+
 def _backup_name(entry):
     return (
         entry.get("backup_name")
@@ -279,6 +293,7 @@ def sync_history_entry(entry):
             "cloudStoragePrefix": entry.get("cloud_storage_prefix"),
             "trigger": entry.get("trigger"),
             "storageMode": entry.get("storage_mode"),
+            "items": _snapshot_items_from_history(entry),
         }
         payload = {
             "id": backup_id,
@@ -330,7 +345,7 @@ def sync_history_entry(entry):
 
         snapshot_path = entry.get("snapshot_path") or entry.get("backup_path")
 
-        if snapshot_path:
+        if snapshot_path and payload["type"] == "SNAPSHOT":
             snapshot_id_for_api = _safe_id(snapshot_id, "snapshot_local")
             db.execute(
                 """

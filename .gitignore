@@ -2,10 +2,13 @@
 .env
 
 # Configuracoes e dados locais
+app_data/
 config/config.json
 config/users.json
 config/backup_history.json
 config/backup_schedule.json
+config/monitored_folders.json
+config/backup_state.json
 config/cloud_settings.json
 config/cloud_secret.key
 config/api.sqlite3

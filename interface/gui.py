@@ -14,6 +14,8 @@ from auth.permissions import can
 from auth.permissions import can_view_backup_entry
 from auth.permissions import get_role_label
 from auth.permissions import get_role_options
+from auth.local_context import clear_current_user
+from auth.local_context import set_current_user
 from auth.users import count_pending_api_users
 from auth.users import create_user
 from auth.users import delete_user
@@ -37,11 +39,15 @@ from backup.backup_manager import run_backup_job
 from cloud import aws_s3_service
 from scanner.scanner import CLASSIFICATION_STATUS
 from scanner.scanner import get_classification_status
+from utils import user_data_paths
 
 CONFIG_PATH = "config/config.json"
 BACKUP_DIR = "backups"
 HISTORY_PATH = "config/backup_history.json"
 SCHEDULE_PATH = "config/backup_schedule.json"
+DEFAULT_CONFIG_PATH = CONFIG_PATH
+DEFAULT_HISTORY_PATH = HISTORY_PATH
+DEFAULT_SCHEDULE_PATH = SCHEDULE_PATH
 ICON_PATH = os.path.join("assets", "nuvem.png")
 DEFAULT_PRIORITY_BACKUP_POLICY_ENABLED = True
 
@@ -98,6 +104,34 @@ def normalize_file_archive_key(archive_name):
 
 def get_history_backup_label(entry):
     return entry.get("backup_name", "") or entry.get("backup_file", "-")
+
+
+def resolve_user_scoped_path(configured_path, default_path, filename):
+    if os.path.abspath(configured_path) != os.path.abspath(default_path):
+        return configured_path
+
+    scoped_path = user_data_paths.get_current_user_file_path(filename)
+    return scoped_path or configured_path
+
+
+def get_config_path():
+    return resolve_user_scoped_path(CONFIG_PATH, DEFAULT_CONFIG_PATH, "config.json")
+
+
+def get_history_path():
+    return resolve_user_scoped_path(
+        HISTORY_PATH,
+        DEFAULT_HISTORY_PATH,
+        "backup_history.json",
+    )
+
+
+def get_schedule_path():
+    return resolve_user_scoped_path(
+        SCHEDULE_PATH,
+        DEFAULT_SCHEDULE_PATH,
+        "backup_schedule.json",
+    )
 
 
 def is_scanner_history_entry(entry):
@@ -1030,6 +1064,29 @@ class BackupGUI:
             self.users_button.pack(fill="x", pady=(0, 8))
             self.apply_button_feedback(self.users_button)
 
+        if self.current_user.get("auth_token"):
+            self.api_backups_button = tk.Button(
+                self.sidebar_footer_frame,
+                text="Backups da API",
+                command=self.open_api_backups_panel,
+                font=BUTTON_FONT,
+                bg=MUTED_PANEL_COLOR,
+                fg="white",
+                activebackground=MUTED_PANEL_COLOR,
+                activeforeground="white",
+                relief="flat",
+                bd=0,
+                highlightthickness=1,
+                highlightbackground="#101722",
+                highlightcolor="#101722",
+                cursor="hand2",
+                padx=10,
+                pady=6
+            )
+            self.register_responsive_font(self.api_backups_button, BUTTON_FONT, min_size=8)
+            self.api_backups_button.pack(fill="x", pady=(0, 8))
+            self.apply_button_feedback(self.api_backups_button)
+
         logout_button = tk.Button(
             self.sidebar_footer_frame,
             text="Sair da conta",
@@ -1530,9 +1587,10 @@ class BackupGUI:
         if not updated:
             return
 
-        os.makedirs("config", exist_ok=True)
+        history_path = get_history_path()
+        os.makedirs(os.path.dirname(history_path), exist_ok=True)
 
-        with open(HISTORY_PATH, "w", encoding="utf-8") as file:
+        with open(history_path, "w", encoding="utf-8") as file:
             json.dump(history[-50:], file, indent=4, ensure_ascii=False)
 
     def can_schedule_ui_callback(self):
@@ -2248,9 +2306,10 @@ class BackupGUI:
                 "last_error": ""
             }
 
-            os.makedirs("config", exist_ok=True)
+            schedule_path = get_schedule_path()
+            os.makedirs(os.path.dirname(schedule_path), exist_ok=True)
 
-            with open(SCHEDULE_PATH, "w", encoding="utf-8") as file:
+            with open(schedule_path, "w", encoding="utf-8") as file:
                 json.dump(payload, file, indent=4, ensure_ascii=False)
 
             config_payload = self.load_config()
@@ -2707,11 +2766,13 @@ class BackupGUI:
         self.schedule_dashboard_event_poll()
 
     def _local_config_cache_is_missing(self):
-        if not os.path.exists(CONFIG_PATH):
+        config_path = get_config_path()
+
+        if not os.path.exists(config_path):
             return True
 
         try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as file:
+            with open(config_path, "r", encoding="utf-8") as file:
                 data = json.load(file)
         except (OSError, json.JSONDecodeError):
             return True
@@ -2719,11 +2780,13 @@ class BackupGUI:
         return not isinstance(data, dict) or not data.get("directories")
 
     def _local_history_cache_is_missing(self):
-        if not os.path.exists(HISTORY_PATH):
+        history_path = get_history_path()
+
+        if not os.path.exists(history_path):
             return True
 
         try:
-            with open(HISTORY_PATH, "r", encoding="utf-8") as file:
+            with open(history_path, "r", encoding="utf-8") as file:
                 data = json.load(file)
         except (OSError, json.JSONDecodeError):
             return True
@@ -2752,18 +2815,23 @@ class BackupGUI:
         config = payload.get("config") if isinstance(payload, dict) else None
         history = payload.get("history") if isinstance(payload, dict) else None
 
-        os.makedirs("config", exist_ok=True)
+        config_path = get_config_path()
+        history_path = get_history_path()
 
         if isinstance(config, dict) and self._local_config_cache_is_missing():
             config.setdefault(
                 "priority_backup_policy_enabled",
                 DEFAULT_PRIORITY_BACKUP_POLICY_ENABLED,
             )
-            with open(CONFIG_PATH, "w", encoding="utf-8") as file:
+            os.makedirs(os.path.dirname(config_path), exist_ok=True)
+
+            with open(config_path, "w", encoding="utf-8") as file:
                 json.dump(config, file, indent=4, ensure_ascii=False)
 
         if isinstance(history, list) and self._local_history_cache_is_missing():
-            with open(HISTORY_PATH, "w", encoding="utf-8") as file:
+            os.makedirs(os.path.dirname(history_path), exist_ok=True)
+
+            with open(history_path, "w", encoding="utf-8") as file:
                 json.dump(history[-50:], file, indent=4, ensure_ascii=False)
 
     def sync_desktop_config_cache_background(self):
@@ -3033,12 +3101,14 @@ class BackupGUI:
             )
 
     def load_config(self):
-        if not os.path.exists(CONFIG_PATH):
+        config_path = get_config_path()
+
+        if not os.path.exists(config_path):
             return {
                 "priority_backup_policy_enabled": DEFAULT_PRIORITY_BACKUP_POLICY_ENABLED
             }
 
-        with open(CONFIG_PATH, "r", encoding="utf-8") as file:
+        with open(config_path, "r", encoding="utf-8") as file:
             try:
                 data = json.load(file)
             except json.JSONDecodeError:
@@ -3058,13 +3128,14 @@ class BackupGUI:
         }
 
     def save_config(self, data):
-        os.makedirs("config", exist_ok=True)
+        config_path = get_config_path()
+        os.makedirs(os.path.dirname(config_path), exist_ok=True)
         data.setdefault(
             "priority_backup_policy_enabled",
             DEFAULT_PRIORITY_BACKUP_POLICY_ENABLED
         )
 
-        with open(CONFIG_PATH, "w", encoding="utf-8") as file:
+        with open(config_path, "w", encoding="utf-8") as file:
             json.dump(data, file, indent=4, ensure_ascii=False)
 
     def get_backup_destination(self):
@@ -4379,20 +4450,30 @@ class BackupGUI:
 
     def append_history(self, entry):
         history = self.load_history()
+        try:
+            from backup.backup_manager import sync_local_history_entry_to_api
+
+            sync_local_history_entry_to_api(entry)
+        except Exception:
+            entry.setdefault("sync_status", "pending")
+
         history.append(entry)
 
-        os.makedirs("config", exist_ok=True)
+        history_path = get_history_path()
+        os.makedirs(os.path.dirname(history_path), exist_ok=True)
 
-        with open(HISTORY_PATH, "w", encoding="utf-8") as file:
+        with open(history_path, "w", encoding="utf-8") as file:
             json.dump(history[-50:], file, indent=4, ensure_ascii=False)
 
         self.sync_desktop_config_cache_background()
 
     def load_history(self):
-        if not os.path.exists(HISTORY_PATH):
+        history_path = get_history_path()
+
+        if not os.path.exists(history_path):
             return []
 
-        with open(HISTORY_PATH, "r", encoding="utf-8") as file:
+        with open(history_path, "r", encoding="utf-8") as file:
             try:
                 data = json.load(file)
             except json.JSONDecodeError:
@@ -4555,9 +4636,10 @@ class BackupGUI:
                 "last_error": ""
             }
 
-            os.makedirs("config", exist_ok=True)
+            schedule_path = get_schedule_path()
+            os.makedirs(os.path.dirname(schedule_path), exist_ok=True)
 
-            with open(SCHEDULE_PATH, "w", encoding="utf-8") as file:
+            with open(schedule_path, "w", encoding="utf-8") as file:
                 json.dump(payload, file, indent=4, ensure_ascii=False)
 
             config_payload = self.load_config()
@@ -4602,10 +4684,12 @@ class BackupGUI:
         return f"Status: {status_text}"
 
     def load_schedule(self):
-        if not os.path.exists(SCHEDULE_PATH):
+        schedule_path = get_schedule_path()
+
+        if not os.path.exists(schedule_path):
             return {}
 
-        with open(SCHEDULE_PATH, "r", encoding="utf-8") as file:
+        with open(schedule_path, "r", encoding="utf-8") as file:
             try:
                 data = json.load(file)
             except json.JSONDecodeError:
@@ -4911,6 +4995,89 @@ class BackupGUI:
             )
         ]
 
+    def is_groupable_scheduled_verification_entry(self, entry):
+        if not isinstance(entry, dict):
+            return False
+
+        if self.get_recoverable_changes(entry):
+            return False
+
+        trigger = entry.get("trigger")
+        name = str(entry.get("backup_name") or entry.get("backup_file") or "").lower()
+
+        return (
+            trigger in {"agendado", "politica_prioridade"}
+            and (
+                "verificacao agendada" in name
+                or (
+                    entry.get("scanner_executed")
+                    and entry.get("backup_result") in {"no_changes", "deletions_detected"}
+                )
+            )
+        )
+
+    def get_restore_group_date(self, entry):
+        timestamp = str(entry.get("timestamp") or entry.get("started_at") or "")
+
+        if "/" in timestamp:
+            return timestamp.split()[0]
+
+        if "T" in timestamp:
+            return timestamp.split("T", 1)[0]
+
+        return timestamp[:10]
+
+    def get_restore_group_key(self, entry):
+        return (
+            self.get_restore_group_date(entry),
+            entry.get("company_id", "default"),
+            entry.get("user", "sistema"),
+            entry.get("trigger", ""),
+            entry.get("backup_name", "") or entry.get("backup_file", ""),
+        )
+
+    def group_restore_history_entries(self, indexed_history):
+        grouped = []
+        active_group = None
+
+        def flush_group():
+            nonlocal active_group
+
+            if not active_group:
+                return
+
+            if len(active_group["items"]) == 1:
+                grouped.append(active_group["items"][0])
+            else:
+                latest_index, latest_entry = active_group["items"][0]
+                display_entry = dict(latest_entry)
+                display_entry["restore_group_count"] = len(active_group["items"])
+                display_entry["restore_group_first_timestamp"] = active_group["items"][-1][1].get("timestamp", "")
+                display_entry["restore_group_last_timestamp"] = latest_entry.get("timestamp", "")
+                grouped.append((latest_index, display_entry))
+
+            active_group = None
+
+        for item in indexed_history:
+            _, entry = item
+
+            if not self.is_groupable_scheduled_verification_entry(entry):
+                flush_group()
+                grouped.append(item)
+                continue
+
+            key = self.get_restore_group_key(entry)
+
+            if active_group and active_group["key"] == key:
+                active_group["items"].append(item)
+                continue
+
+            flush_group()
+            active_group = {"key": key, "items": [item]}
+
+        flush_group()
+        return grouped
+
     def count_changes_by_action(self, entry, action):
         return sum(
             1
@@ -5164,7 +5331,7 @@ class BackupGUI:
             )
             return
 
-        indexed_history = list(reversed(history))
+        indexed_history = self.group_restore_history_entries(list(reversed(history)))
         current_recoverable_changes = []
         restore_filters = {
             "name": "",
@@ -5636,6 +5803,12 @@ class BackupGUI:
 
                 changed_count = self.count_changes_by_action(entry, "alterado")
                 deleted_count = self.count_changes_by_action(entry, "excluido")
+                backup_name = entry.get("backup_name", "") or entry.get("backup_file", "-")
+                group_count = entry.get("restore_group_count")
+
+                if group_count:
+                    backup_name = f"{backup_name} ({group_count} verificacoes)"
+
                 backup_tree.insert(
                     "",
                     tk.END,
@@ -5643,7 +5816,7 @@ class BackupGUI:
                     values=(
                         entry.get("timestamp", "-"),
                         entry.get("user", "sistema"),
-                        entry.get("backup_name", "") or entry.get("backup_file", "-"),
+                        backup_name,
                         entry.get("trigger", "-"),
                         changed_count,
                         deleted_count
@@ -7634,12 +7807,19 @@ class BackupGUI:
 
         buttons = tk.Frame(content_box, bg=PANEL_COLOR)
         buttons.grid(row=1, column=1, sticky="s")
+        users_status_var = tk.StringVar(value="")
 
         def refresh_users():
+            users_status_var.set("")
             for item in tree.get_children():
                 tree.delete(item)
 
-            for user in list_public_users(current_user=self.current_user):
+            users = list_public_users(current_user=self.current_user)
+
+            if self.current_user.get("auth_token") and not users:
+                users_status_var.set("Nao foi possivel sincronizar usuarios da empresa.")
+
+            for user in users:
                 tree.insert(
                     "",
                     tk.END,
@@ -7795,17 +7975,238 @@ class BackupGUI:
 
         tree.bind("<<TreeviewSelect>>", fill_form)
 
+        tk.Label(
+            buttons,
+            textvariable=users_status_var,
+            bg=PANEL_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Arial", 9),
+            wraplength=240,
+            justify="center"
+        ).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         self.create_dialog_button(buttons, "Salvar", save_user).grid(
-            row=0, column=0, padx=4, pady=4
+            row=1, column=0, padx=4, pady=4
         )
         self.create_dialog_button(buttons, "Limpar", clear_form).grid(
-            row=0, column=1, padx=4, pady=4
+            row=1, column=1, padx=4, pady=4
+        )
+        self.create_dialog_button(buttons, "Atualizar", refresh_users).grid(
+            row=2, column=0, columnspan=2, padx=4, pady=4, sticky="ew"
         )
         self.create_dialog_button(buttons, "Remover", remove_user).grid(
-            row=1, column=0, columnspan=2, padx=4, pady=4, sticky="ew"
+            row=3, column=0, columnspan=2, padx=4, pady=4, sticky="ew"
         )
 
         refresh_users()
+
+    def open_api_backups_panel(self):
+        token = self.current_user.get("auth_token")
+
+        if not token:
+            messagebox.showwarning(
+                "API indisponivel",
+                "Entre com uma conta sincronizada para consultar backups da API.",
+                parent=self.root,
+            )
+            return
+
+        _panel, content = self.create_content_shell(
+            "Backups da API",
+            subtitle="Consulte backups sincronizados respeitando o perfil da conta atual."
+        )
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(1, weight=1)
+
+        filters_frame = tk.Frame(content, bg=PANEL_COLOR, padx=14, pady=12)
+        filters_frame.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        filters_frame.columnconfigure(4, weight=1)
+
+        status_var = tk.StringVar(value="")
+        type_var = tk.StringVar(value="")
+        user_var = tk.StringVar(value="")
+        message_var = tk.StringVar(value="")
+        users_lookup = {}
+
+        tk.Label(filters_frame, text="Usuario", bg=PANEL_COLOR, fg=SUBTLE_TEXT).grid(row=0, column=0, sticky="w")
+        user_combo = ttk.Combobox(filters_frame, textvariable=user_var, state="readonly", width=24)
+        user_combo.grid(row=1, column=0, padx=(0, 8), sticky="ew")
+
+        tk.Label(filters_frame, text="Status", bg=PANEL_COLOR, fg=SUBTLE_TEXT).grid(row=0, column=1, sticky="w")
+        status_combo = ttk.Combobox(
+            filters_frame,
+            textvariable=status_var,
+            values=("", "PENDING", "RUNNING", "SUCCESS", "FAILED", "CANCELED"),
+            state="readonly",
+            width=14,
+        )
+        status_combo.grid(row=1, column=1, padx=(0, 8), sticky="ew")
+
+        tk.Label(filters_frame, text="Tipo", bg=PANEL_COLOR, fg=SUBTLE_TEXT).grid(row=0, column=2, sticky="w")
+        type_combo = ttk.Combobox(
+            filters_frame,
+            textvariable=type_var,
+            values=("", "FULL", "INCREMENTAL", "SNAPSHOT"),
+            state="readonly",
+            width=14,
+        )
+        type_combo.grid(row=1, column=2, padx=(0, 8), sticky="ew")
+
+        table_box = tk.Frame(content, bg=PANEL_COLOR, padx=14, pady=14)
+        table_box.grid(row=1, column=0, sticky="nsew")
+        table_box.columnconfigure(0, weight=1)
+        table_box.rowconfigure(0, weight=1)
+        columns = ("name", "user", "type", "status", "priority", "files", "size", "created")
+        tree = self.create_scrollable_tree(table_box, columns, height=14)
+        self.configure_tree_columns(
+            tree,
+            {
+                "name": "Backup",
+                "user": "Usuario",
+                "type": "Tipo",
+                "status": "Status",
+                "priority": "Prioridade",
+                "files": "Arquivos",
+                "size": "Tamanho",
+                "created": "Data",
+            },
+            {
+                "name": {"width": 220, "minwidth": 160, "weight": 3, "anchor": "w"},
+                "user": {"width": 180, "minwidth": 140, "weight": 2, "anchor": "w"},
+                "type": {"width": 110, "minwidth": 90, "weight": 1},
+                "status": {"width": 110, "minwidth": 90, "weight": 1},
+                "priority": {"width": 110, "minwidth": 90, "weight": 1},
+                "files": {"width": 80, "minwidth": 70, "weight": 1},
+                "size": {"width": 110, "minwidth": 90, "weight": 1},
+                "created": {"width": 180, "minwidth": 140, "weight": 2},
+            },
+        )
+
+        def load_users_for_filter():
+            if self.current_user.get("role") != "admin":
+                user_combo["values"] = ("",)
+                user_combo.configure(state="disabled")
+                return
+
+            try:
+                from auth import api_client
+
+                users = api_client.list_company_users_for_company(
+                    token,
+                    self.current_user.get("company_id"),
+                )
+            except Exception:
+                users = []
+
+            users_lookup.clear()
+            labels = [""]
+
+            for user in users:
+                label = user.get("name") or user.get("username")
+                users_lookup[label] = user.get("api_user_id")
+                labels.append(label)
+
+            user_combo["values"] = tuple(labels)
+
+        def refresh_backups():
+            for item in tree.get_children():
+                tree.delete(item)
+
+            filters = {}
+
+            if status_var.get():
+                filters["status"] = status_var.get()
+
+            if type_var.get():
+                filters["type"] = type_var.get()
+
+            if user_var.get() and users_lookup.get(user_var.get()):
+                filters["userId"] = users_lookup[user_var.get()]
+
+            try:
+                from auth import api_client
+
+                if self.current_user.get("role") == "admin":
+                    backups = api_client.list_company_backups(
+                        token,
+                        self.current_user.get("company_id"),
+                        filters=filters,
+                    )
+                else:
+                    backups = api_client.list_my_backups(token, filters=filters)
+            except Exception as error:
+                message_var.set(f"Nao foi possivel sincronizar backups: {str(error)[:120]}")
+                return
+
+            message_var.set("")
+
+            for backup in backups:
+                tree.insert(
+                    "",
+                    tk.END,
+                    iid=backup.get("id"),
+                    values=(
+                        backup.get("name", ""),
+                        backup.get("userName") or backup.get("userId", ""),
+                        backup.get("type", ""),
+                        backup.get("status", ""),
+                        backup.get("priority", ""),
+                        backup.get("fileCount", 0),
+                        format_size_bytes_human(backup.get("sizeBytes", 0)),
+                        backup.get("createdAt", ""),
+                    ),
+                )
+
+            if not backups:
+                message_var.set("Nenhum backup encontrado para os filtros atuais.")
+
+        self.create_dialog_button(filters_frame, "Atualizar", refresh_backups).grid(
+            row=1,
+            column=3,
+            padx=(0, 8),
+            sticky="ew",
+        )
+        self.create_dialog_button(filters_frame, "Sincronizar pendentes", self.retry_pending_backup_sync).grid(
+            row=1,
+            column=4,
+            sticky="w",
+        )
+        tk.Label(
+            content,
+            textvariable=message_var,
+            bg=BG_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Arial", 10),
+            anchor="w",
+        ).grid(row=2, column=0, sticky="ew", pady=(10, 0))
+
+        load_users_for_filter()
+        refresh_backups()
+
+    def retry_pending_backup_sync(self):
+        history = self.load_history()
+        updated = False
+
+        try:
+            from backup.backup_manager import sync_local_history_entry_to_api
+
+            for entry in history:
+                if entry.get("sync_status") not in {"pending", "failed"}:
+                    continue
+
+                updated = sync_local_history_entry_to_api(entry) or updated
+        except Exception:
+            updated = False
+
+        if updated:
+            history_path = get_history_path()
+            os.makedirs(os.path.dirname(history_path), exist_ok=True)
+
+            with open(history_path, "w", encoding="utf-8") as file:
+                json.dump(history[-50:], file, indent=4, ensure_ascii=False)
+
+            self.set_api_sync_status("Pendencias de backup sincronizadas.", clear_after=6)
+        else:
+            self.set_api_sync_status("Nenhuma pendencia de backup foi sincronizada.", clear_after=6)
 
 
 def root_exists(root):
@@ -7876,6 +8277,7 @@ def start_gui(current_user=None):
                 pass
             return
 
+        set_current_user(current_user)
         clear_root_widgets(root)
         gui = BackupGUI(root, current_user)
         _background_gui = gui
@@ -7906,4 +8308,5 @@ def start_gui(current_user=None):
 
         clear_root_widgets(root)
         _background_gui = None
+        clear_current_user()
         current_user = None

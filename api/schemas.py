@@ -61,6 +61,44 @@ class BackupCreatePayload(BaseModel):
     companyId: str | None = None
 
 
+class BackupMetadataPayload(BaseModel):
+    backup_id: str | None = None
+    backupId: str | None = None
+    company_id: str | None = None
+    companyId: str | None = None
+    user_id: str | None = None
+    userId: str | None = None
+    user_name: str | None = None
+    userName: str | None = None
+    backup_name: str | None = None
+    backupName: str | None = None
+    name: str | None = None
+    backup_type: str | None = None
+    backupType: str | None = None
+    type: str | None = None
+    priority: str | None = None
+    status: str | None = None
+    created_at: str | None = None
+    createdAt: str | None = None
+    started_at: str | None = None
+    startedAt: str | None = None
+    finished_at: str | None = None
+    finishedAt: str | None = None
+    file_count: int | None = None
+    fileCount: int | None = None
+    total_size_bytes: int | None = None
+    totalSizeBytes: int | None = None
+    sizeBytes: int | None = None
+    storage_target: str | None = None
+    storageTarget: str | None = None
+    remote_path: str | None = None
+    remotePath: str | None = None
+    local_path: str | None = None
+    localPath: str | None = None
+    items: list[dict[str, Any]] | None = None
+    metadata: dict[str, Any] | None = None
+
+
 class BackupFinishPayload(BaseModel):
     status: str
     finishedAt: str | None = None

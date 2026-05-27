@@ -436,13 +436,15 @@ Comando para iniciar:
 python -m api
 ```
 
-No primeiro acesso a `http://127.0.0.1:8000/web/login`, o sistema mostra a criacao do admin inicial. Depois disso, apenas usuarios com papel `ADMIN_EMPRESA` acessam o painel web. O cookie de sessao usa JWT `HttpOnly` e `SameSite=Lax`; as rotas JSON tambem aceitam `Authorization: Bearer <token>`.
+No primeiro acesso a `http://127.0.0.1:8000/web/login`, o sistema mostra a criacao do admin inicial. Depois disso, usuarios com papel `ADMIN_EMPRESA` acessam o painel administrativo e usuarios comuns acessam `/web/my-backups` para ver apenas os proprios backups. O cookie de sessao usa JWT `HttpOnly` e `SameSite=Lax`; as rotas JSON tambem aceitam `Authorization: Bearer <token>`.
 
 Usuarios criados no painel web tambem podem entrar na aplicacao desktop usando o email como campo **Usuario** e a mesma senha. O login desktop consulta primeiro `config/users.json`; se nao encontrar o usuario local, ele valida a conta ativa no banco SQLite da API e mapeia os papeis `ADMIN_EMPRESA`, `OPERADOR` e `VIEWER` para `admin`, `operator` e `viewer`.
 
-Quando um usuario da API executa backup pelo desktop, os metadados da execucao sao sincronizados automaticamente para o SQLite da API. Assim, o painel web passa a listar o backup sem receber os arquivos diretamente. A sincronizacao depende de o usuario do desktop ter sido criado no painel web e estar entrando com o email cadastrado.
+Cada usuario autenticado no desktop recebe um ambiente local isolado em `app_data/companies/company_<company_id>/users/user_<user_id>/`, com `config.json`, `backup_history.json`, `monitored_folders.json`, `backup_state.json`, `backup_schedule.json` e `logs/`. No primeiro uso, arquivos globais antigos em `config/` sao copiados para esse escopo e preservados em `app_data/migration_backup/`; os originais nao sao apagados automaticamente.
 
-Se o backup local tiver sido sincronizado com a AWS S3 (`cloud_sync_status = sincronizado` no historico), a tela **Baixar backups** pode recuperar os objetos faltantes da nuvem antes de gerar o ZIP exportado. O arquivo `config/backup_history.json` e as credenciais/configuracoes da nuvem precisam continuar disponiveis.
+Quando um usuario da API executa backup pelo desktop, os metadados da execucao sao sincronizados automaticamente para o SQLite da API. O historico local usa `sync_status = synced`, `pending` ou `failed`, separado de `cloud_sync_status`; se a API estiver offline, o backup local continua valido e a pendencia pode ser reenviada depois.
+
+Se o backup local tiver sido sincronizado com a AWS S3 (`cloud_sync_status = sincronizado` no historico), a tela **Baixar backups** pode recuperar os objetos faltantes da nuvem antes de gerar o ZIP exportado. O historico e as configuracoes usados nessa rotina ficam no escopo local do usuario autenticado.
 
 Endpoints principais:
 
@@ -454,6 +456,11 @@ POST /setup/first-admin
 POST /auth/login
 POST /auth/logout
 GET  /auth/me
+GET  /api/companies/{companyId}/users
+GET  /api/companies/{companyId}/backups
+GET  /api/me/backups
+POST /api/backups
+GET  /api/backups/{backupId}
 POST /devices/register
 POST /monitored-folders
 POST /backups

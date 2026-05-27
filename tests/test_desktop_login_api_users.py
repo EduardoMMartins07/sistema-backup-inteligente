@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -18,6 +19,8 @@ class DesktopLoginApiUsersTests(unittest.TestCase):
         self.original_database_url = os.environ.get("DATABASE_URL")
         self.original_db_path = os.environ.get("SMARTBACKUP_API_DB_PATH")
         self.original_jwt_secret = os.environ.get("SMARTBACKUP_JWT_SECRET")
+        self.original_api_base_url = os.environ.get("API_BASE_URL")
+        self.original_api_url = os.environ.get("API_URL")
         desktop_users.USERS_PATH = str(self.root / "users.json")
         os.environ["SMARTBACKUP_API_DB_PATH"] = str(self.root / "api.sqlite3")
         os.environ["DATABASE_URL"] = f"sqlite:///{self.root / 'api.sqlite3'}"
@@ -41,6 +44,16 @@ class DesktopLoginApiUsersTests(unittest.TestCase):
             os.environ.pop("SMARTBACKUP_JWT_SECRET", None)
         else:
             os.environ["SMARTBACKUP_JWT_SECRET"] = self.original_jwt_secret
+
+        if self.original_api_base_url is None:
+            os.environ.pop("API_BASE_URL", None)
+        else:
+            os.environ["API_BASE_URL"] = self.original_api_base_url
+
+        if self.original_api_url is None:
+            os.environ.pop("API_URL", None)
+        else:
+            os.environ["API_URL"] = self.original_api_url
 
         self.temp.cleanup()
 
@@ -74,6 +87,40 @@ class DesktopLoginApiUsersTests(unittest.TestCase):
         self.assertEqual(company["id"], session["company_id"])
         self.assertEqual("api", session["auth_source"])
         self.assertTrue(session.get("auth_token"))
+
+    def test_desktop_admin_lists_local_api_company_users_without_http_base_url(self):
+        os.environ.pop("API_BASE_URL", None)
+        os.environ.pop("API_URL", None)
+        db = connect(os.environ["SMARTBACKUP_API_DB_PATH"])
+
+        try:
+            company = create_company(db, "Empresa Alpha")
+            admin = create_user(
+                db,
+                company["id"],
+                "Djogo",
+                "djogo@gmail.com",
+                "senha-admin",
+                "ADMIN_EMPRESA",
+            )
+            create_user(
+                db,
+                company["id"],
+                "Dudu",
+                "dudu@gmail.com",
+                "senha-dudu",
+                "OPERADOR",
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        session = desktop_users.public_api_user(admin)
+        users = desktop_users.list_public_users(current_user=session)
+        usernames = [user["username"] for user in users]
+
+        self.assertEqual(["djogo@gmail.com", "dudu@gmail.com"], usernames)
+        self.assertEqual(["admin", "operator"], [user["role"] for user in users])
 
     def test_local_history_entry_syncs_to_api_backup_dashboard_data(self):
         db = connect(os.environ["SMARTBACKUP_API_DB_PATH"])
@@ -110,6 +157,14 @@ class DesktopLoginApiUsersTests(unittest.TestCase):
             "company_id": company["id"],
             "cloud_sync_status": "sincronizado",
             "cloud_snapshot_key": "backups/company/user/device/folder/backup/snapshot.json",
+            "file_snapshot": {
+                "docs/A.txt": {
+                    "name": "A.txt",
+                    "archive_name": "docs/A.txt",
+                    "size_bytes": 128,
+                    "status": "stored_new_object",
+                }
+            },
         }
 
         self.assertTrue(sync_history_entry(entry))
@@ -126,12 +181,14 @@ class DesktopLoginApiUsersTests(unittest.TestCase):
             self.assertEqual("SUCCESS", backup["status"])
             self.assertEqual(12, backup["file_count"])
             self.assertEqual("backups/company/user/device/folder/backup/snapshot.json", backup["s3_key"])
+            metadata = json.loads(backup["metadata_json"])
+            self.assertEqual("A.txt", metadata["items"][0]["name"])
 
             snapshot_count = db.execute(
                 "SELECT COUNT(*) AS total FROM snapshots WHERE backup_id = ?",
                 (backup["id"],),
             ).fetchone()["total"]
-            self.assertEqual(1, snapshot_count)
+            self.assertEqual(0, snapshot_count)
         finally:
             db.close()
 
