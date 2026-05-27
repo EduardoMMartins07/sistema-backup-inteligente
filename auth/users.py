@@ -24,6 +24,7 @@ DESKTOP_TO_API_ROLES = {
 }
 API_SYNC_PENDING_STATUSES = {"pending", "failed"}
 API_LOGIN_CLIENT = None
+API_LIST_USERS_CLIENT = None
 
 
 def load_users():
@@ -264,8 +265,16 @@ def public_api_user(user):
 
     if not role:
         return None
+    auth_token = ""
 
-    return {
+    try:
+        from api.security import create_access_token
+
+        auth_token = create_access_token(user)
+    except Exception:
+        auth_token = ""
+
+    public_data = {
         "username": user.get("email"),
         "name": user.get("name") or user.get("email"),
         "role": role,
@@ -276,6 +285,11 @@ def public_api_user(user):
         "api_sync_status": "synced",
         "auth_source": "api",
     }
+
+    if auth_token:
+        public_data["auth_token"] = auth_token
+
+    return public_data
 
 
 def validate_user_payload(username, password, role):
@@ -629,5 +643,61 @@ def delete_user(username):
     save_users(remaining_users)
 
 
-def list_public_users():
-    return [public_user(user) for user in load_users()]
+def list_api_company_users(current_user=None):
+    token = (current_user or {}).get("auth_token")
+
+    if not token:
+        return []
+
+    try:
+        if API_LIST_USERS_CLIENT is not None:
+            return [
+                public_api_user(
+                    {
+                        "id": user.get("id") or user.get("userId"),
+                        "email": user.get("email") or user.get("username"),
+                        "name": user.get("name"),
+                        "role": user.get("role"),
+                        "company_id": (
+                            user.get("companyId")
+                            or user.get("company_id")
+                            or (current_user or {}).get("company_id")
+                        ),
+                        "created_at": user.get("createdAt") or user.get("created_at"),
+                    }
+                )
+                for user in API_LIST_USERS_CLIENT(token)
+                if isinstance(user, dict)
+            ]
+
+        from auth import api_client
+
+        if not api_client.is_configured():
+            return []
+
+        return api_client.list_company_users(token)
+    except Exception:
+        return []
+
+
+def list_public_users(current_user=None):
+    users_by_username = {}
+
+    for user in list_api_company_users(current_user):
+        if user and user.get("username"):
+            users_by_username[user["username"]] = user
+
+    current_company_id = (current_user or {}).get("company_id")
+
+    for user in load_users():
+        if current_company_id and user.get("company_id", DEFAULT_COMPANY_ID) != current_company_id:
+            continue
+
+        public_data = public_user(user)
+
+        if not public_data or not public_data.get("username"):
+            continue
+
+        users_by_username.setdefault(public_data["username"], public_data)
+
+    return list(users_by_username.values())

@@ -25,6 +25,7 @@ class Task08DesktopApiSyncTests(unittest.TestCase):
             "SMARTBACKUP_JWT_SECRET": os.environ.get("SMARTBACKUP_JWT_SECRET"),
             "JWT_SECRET": os.environ.get("JWT_SECRET"),
             "API_BASE_URL": os.environ.get("API_BASE_URL"),
+            "API_URL": os.environ.get("API_URL"),
         }
         self.original_users_path = desktop_users.USERS_PATH
         desktop_users.USERS_PATH = str(self.root / "users.json")
@@ -33,6 +34,7 @@ class Task08DesktopApiSyncTests(unittest.TestCase):
         os.environ["SMARTBACKUP_JWT_SECRET"] = "test-secret"
         os.environ["JWT_SECRET"] = "test-secret"
         os.environ.pop("API_BASE_URL", None)
+        os.environ.pop("API_URL", None)
         init_db(os.environ["SMARTBACKUP_API_DB_PATH"])
         self.client = TestClient(create_app())
 
@@ -182,6 +184,74 @@ class Task08DesktopApiSyncTests(unittest.TestCase):
         self.assertEqual("api", session["auth_source"])
         self.assertEqual("token-api", session["auth_token"])
         self.assertEqual("company_api_123", session["company_id"])
+
+    def test_api_client_loads_env_file_before_checking_configuration(self):
+        from auth import api_client
+        from unittest.mock import patch
+
+        os.environ.pop("API_BASE_URL", None)
+        os.environ.pop("API_URL", None)
+
+        def load_env():
+            os.environ["API_BASE_URL"] = "https://api.example.test"
+
+        with patch("api.config.load_env_file", side_effect=load_env):
+            self.assertEqual(
+                "https://api.example.test",
+                api_client.get_api_base_url(),
+            )
+
+    def test_desktop_user_list_merges_api_company_users_with_local_cache(self):
+        desktop_users.create_user(
+            "admin.local@example.com",
+            "senha-local",
+            "admin",
+            name="Admin Local",
+            company_id="company_api_123",
+            api_sync_status="local",
+        )
+        current_user = {
+            "auth_token": "token-api",
+            "company_id": "company_api_123",
+        }
+
+        def fake_remote_users(token):
+            self.assertEqual("token-api", token)
+            return [
+                {
+                    "id": "user_api_1",
+                    "email": "admin.web@example.com",
+                    "name": "Admin Web",
+                    "role": "ADMIN_EMPRESA",
+                    "companyId": "company_api_123",
+                },
+                {
+                    "id": "user_api_2",
+                    "email": "operador.web@example.com",
+                    "name": "Operador Web",
+                    "role": "OPERADOR",
+                    "companyId": "company_api_123",
+                },
+            ]
+
+        desktop_users.API_LIST_USERS_CLIENT = fake_remote_users
+
+        try:
+            users = desktop_users.list_public_users(current_user=current_user)
+        finally:
+            desktop_users.API_LIST_USERS_CLIENT = None
+
+        usernames = [user["username"] for user in users]
+        self.assertEqual(
+            [
+                "admin.web@example.com",
+                "operador.web@example.com",
+                "admin.local@example.com",
+            ],
+            usernames,
+        )
+        self.assertEqual("synced", users[0]["api_sync_status"])
+        self.assertEqual("admin", users[0]["role"])
 
     def test_footer_prefers_api_sync_status_text(self):
         from interface.gui import BackupGUI

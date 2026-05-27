@@ -7639,7 +7639,7 @@ class BackupGUI:
             for item in tree.get_children():
                 tree.delete(item)
 
-            for user in list_public_users():
+            for user in list_public_users(current_user=self.current_user):
                 tree.insert(
                     "",
                     tk.END,
@@ -7671,7 +7671,7 @@ class BackupGUI:
             user = next(
                 (
                     current_user
-                    for current_user in list_public_users()
+                    for current_user in list_public_users(current_user=self.current_user)
                     if current_user.get("username") == username
                 ),
                 None
@@ -7691,7 +7691,7 @@ class BackupGUI:
             name_key = " ".join(name_var.get().strip().lower().split())
             selected = tree.selection()
             selected_username = selected[0] if selected else None
-            users = list_public_users()
+            users = list_public_users(current_user=self.current_user)
             existing_usernames = {
                 user["username"]
                 for user in users

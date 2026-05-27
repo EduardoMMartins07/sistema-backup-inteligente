@@ -16,6 +16,13 @@ DESKTOP_TO_API_ROLES = {
 
 
 def get_api_base_url():
+    try:
+        from api.config import load_env_file
+
+        load_env_file()
+    except Exception:
+        pass
+
     base_url = os.environ.get("API_BASE_URL") or os.environ.get("API_URL")
     return str(base_url or "").strip().rstrip("/")
 
@@ -116,6 +123,16 @@ def create_user(token, user, password):
         token=token,
     )
     return payload.get("user", payload)
+
+
+def list_company_users(token):
+    payload = _get_json("/admin/users", token)
+    users = payload.get("users", []) if isinstance(payload, dict) else []
+    return [
+        desktop_user_from_api({"user": user})
+        for user in users
+        if isinstance(user, dict)
+    ]
 
 
 def get_desktop_config(token, device_id=None):

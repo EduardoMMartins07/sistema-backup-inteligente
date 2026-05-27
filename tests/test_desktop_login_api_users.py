@@ -73,6 +73,7 @@ class DesktopLoginApiUsersTests(unittest.TestCase):
         self.assertEqual("operator", session["role"])
         self.assertEqual(company["id"], session["company_id"])
         self.assertEqual("api", session["auth_source"])
+        self.assertTrue(session.get("auth_token"))
 
     def test_local_history_entry_syncs_to_api_backup_dashboard_data(self):
         db = connect(os.environ["SMARTBACKUP_API_DB_PATH"])
