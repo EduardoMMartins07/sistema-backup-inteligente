@@ -177,6 +177,7 @@ class DesktopLoginApiUsersTests(unittest.TestCase):
                 (company["id"],),
             ).fetchone()
             self.assertIsNotNone(backup)
+            self.assertNotIn("snapshot", backup["id"])
             self.assertEqual("Backup pelo desktop", backup["name"])
             self.assertEqual("SUCCESS", backup["status"])
             self.assertEqual(12, backup["file_count"])

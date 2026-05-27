@@ -104,12 +104,44 @@ def _snapshot_items_from_history(entry):
     return changes if isinstance(changes, list) else []
 
 
+def _total_size_from_history(entry, items):
+    try:
+        compacted_size = entry.get("compacted_size_bytes")
+
+        if compacted_size not in (None, ""):
+            return int(compacted_size)
+    except (TypeError, ValueError):
+        pass
+
+    total = 0
+
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+
+        try:
+            total += int(item.get("size_bytes") or item.get("size") or 0)
+        except (TypeError, ValueError):
+            continue
+
+    return total
+
+
 def backup_metadata_from_history(entry):
-    backup_id = entry.get("backup_id") or entry.get("snapshot_id")
+    backup_id = entry.get("backup_id")
 
     if not backup_id:
-        backup_path = entry.get("snapshot_path") or entry.get("backup_path") or ""
-        backup_id = os.path.splitext(os.path.basename(backup_path))[0]
+        snapshot_id = str(entry.get("snapshot_id") or "").strip()
+
+        if snapshot_id.startswith("snapshot_"):
+            backup_id = f"backup_{snapshot_id[len('snapshot_'):]}"
+        elif snapshot_id:
+            backup_id = f"backup_{snapshot_id}"
+        else:
+            backup_path = entry.get("snapshot_path") or entry.get("backup_path") or ""
+            backup_id = f"backup_{os.path.splitext(os.path.basename(backup_path))[0]}"
+
+    items = _snapshot_items_from_history(entry)
 
     return {
         "backup_id": backup_id,
@@ -129,11 +161,11 @@ def backup_metadata_from_history(entry):
         "started_at": entry.get("started_at"),
         "finished_at": entry.get("finished_at"),
         "file_count": entry.get("total_files") or 0,
-        "total_size_bytes": entry.get("compacted_size_bytes") or 0,
+        "total_size_bytes": _total_size_from_history(entry, items),
         "storage_target": entry.get("cloud_provider") or entry.get("storage_mode") or "local",
         "remote_path": entry.get("cloud_snapshot_key") or entry.get("backup_path") or "",
         "local_path": entry.get("snapshot_path") or entry.get("backup_path") or "",
-        "items": _snapshot_items_from_history(entry),
+        "items": items,
         "metadata": {
             "source": "desktop_history",
             "cloudSyncStatus": entry.get("cloud_sync_status"),

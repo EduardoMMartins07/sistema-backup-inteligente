@@ -278,6 +278,45 @@ class Task09ApiBackupMetadataTests(unittest.TestCase):
         admin_only = self.client.get("/web/users")
         self.assertEqual(403, admin_only.status_code)
 
+    def test_metadata_backup_uses_item_sizes_when_total_size_is_missing(self):
+        alpha, alpha_admin_headers = self.signup(
+            "Empresa Alpha",
+            "Admin Alpha",
+            "admin.alpha@example.com",
+        )
+        _, operator_headers = self.create_operator(
+            alpha_admin_headers,
+            "operador.alpha@example.com",
+        )
+
+        created = self.client.post(
+            "/api/backups",
+            headers=operator_headers,
+            json={
+                "backup_id": "backup_size_from_items",
+                "company_id": alpha["company"]["id"],
+                "backup_name": "Backup com tamanho pelos arquivos",
+                "status": "success",
+                "items": [
+                    {"name": "A.txt", "archive_name": "A.txt", "size_bytes": 100},
+                    {"name": "B.txt", "archive_name": "B.txt", "size": 50},
+                ],
+            },
+        )
+        self.assertEqual(200, created.status_code, created.text)
+        self.assertEqual(150, created.json()["backup"]["sizeBytes"])
+
+        login = self.client.post(
+            "/web/login",
+            data={"email": "admin.alpha@example.com", "password": "senha-admin"},
+            follow_redirects=False,
+        )
+        self.assertEqual(303, login.status_code, login.text)
+
+        page = self.client.get("/web/snapshots")
+        self.assertEqual(200, page.status_code, page.text)
+        self.assertIn("Nenhum snapshot registrado.", page.text)
+
 
 if __name__ == "__main__":
     unittest.main()

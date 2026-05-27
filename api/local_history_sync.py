@@ -240,6 +240,48 @@ def _snapshot_items_from_history(entry):
     return changes if isinstance(changes, list) else []
 
 
+def _backup_id_from_history(entry):
+    backup_id = str(entry.get("backup_id") or "").strip()
+
+    if backup_id:
+        return backup_id
+
+    snapshot_id = str(entry.get("snapshot_id") or "").strip()
+
+    if snapshot_id.startswith("snapshot_"):
+        return f"backup_{snapshot_id[len('snapshot_'):]}"
+
+    if snapshot_id:
+        return f"backup_{snapshot_id}"
+
+    backup_path = entry.get("snapshot_path") or entry.get("backup_path") or ""
+    stem = os.path.splitext(os.path.basename(backup_path))[0]
+    return f"backup_{stem}" if stem else ""
+
+
+def _total_size_from_entry(entry, items):
+    try:
+        compacted_size = entry.get("compacted_size_bytes")
+
+        if compacted_size not in (None, ""):
+            return int(compacted_size)
+    except (TypeError, ValueError):
+        pass
+
+    total = 0
+
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+
+        try:
+            total += int(item.get("size_bytes") or item.get("size") or 0)
+        except (TypeError, ValueError):
+            continue
+
+    return total
+
+
 def _backup_name(entry):
     return (
         entry.get("backup_name")
@@ -270,7 +312,8 @@ def sync_history_entry(entry):
 
         device = _ensure_local_device(db, user)
         folder = _ensure_local_folder(db, user, device, entry)
-        backup_id = _safe_id(snapshot_id, "backup_local")
+        raw_backup_id = _backup_id_from_history(entry)
+        backup_id = _safe_id(raw_backup_id, "backup_local")
         now = utc_now()
         created_at = entry.get("started_at") or now
         finished_at = entry.get("finished_at")
@@ -285,6 +328,7 @@ def sync_history_entry(entry):
                 os.path.basename(entry.get("snapshot_path") or "snapshot.json"),
             )
         )
+        items = _snapshot_items_from_history(entry)
         metadata = {
             "source": "desktop_history",
             "snapshotPath": entry.get("snapshot_path"),
@@ -293,7 +337,7 @@ def sync_history_entry(entry):
             "cloudStoragePrefix": entry.get("cloud_storage_prefix"),
             "trigger": entry.get("trigger"),
             "storageMode": entry.get("storage_mode"),
-            "items": _snapshot_items_from_history(entry),
+            "items": items,
         }
         payload = {
             "id": backup_id,
@@ -305,7 +349,7 @@ def sync_history_entry(entry):
             "type": _backup_type(entry),
             "status": _backup_status(entry),
             "priority": "NORMAL",
-            "size_bytes": int(entry.get("compacted_size_bytes") or 0),
+            "size_bytes": _total_size_from_entry(entry, items),
             "file_count": int(entry.get("total_files") or 0),
             "s3_key": s3_key,
             "checksum": "",

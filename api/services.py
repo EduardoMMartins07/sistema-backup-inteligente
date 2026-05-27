@@ -515,6 +515,21 @@ def payload_value(payload, *names, default=None):
     return default
 
 
+def total_size_from_items(items):
+    total = 0
+
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+
+        try:
+            total += int(item.get("size_bytes") or item.get("size") or 0)
+        except (TypeError, ValueError):
+            continue
+
+    return total
+
+
 def ensure_metadata_device(db, current_user):
     now = utc_now()
     identifier = f"desktop-metadata-{current_user['id']}"
@@ -635,16 +650,21 @@ def create_backup_from_metadata(db, current_user, payload):
     priority = normalize_backup_priority(payload_value(payload, "priority"))
     created_at = payload_value(payload, "created_at", "createdAt", "started_at", "startedAt", default=utc_now())
     finished_at = payload_value(payload, "finished_at", "finishedAt")
-    size_bytes = int(payload_value(payload, "total_size_bytes", "totalSizeBytes", "sizeBytes", default=0) or 0)
     file_count = int(payload_value(payload, "file_count", "fileCount", default=0) or 0)
     remote_path = str(payload_value(payload, "remote_path", "remotePath", default="") or "")
     storage_target = str(payload_value(payload, "storage_target", "storageTarget", default="local") or "local")
     metadata = payload.metadata if isinstance(payload.metadata, dict) else {}
+    items = payload.items or []
+    size_bytes = int(payload_value(payload, "total_size_bytes", "totalSizeBytes", "sizeBytes", default=0) or 0)
+
+    if size_bytes <= 0:
+        size_bytes = total_size_from_items(items)
+
     metadata.update({
         "externalBackupId": backup_id,
         "storageTarget": storage_target,
         "remotePath": remote_path,
-        "items": payload.items or [],
+        "items": items,
         "userName": payload_value(payload, "user_name", "userName", default=current_user.get("name")),
     })
     backup = {
@@ -1331,11 +1351,9 @@ def list_snapshots(db, current_user, backup_id=None):
         where.append("s.backup_id = ?")
         params.append(backup_id)
 
-    where.append("(s.id NOT LIKE 'snapshot_local_%' OR b.type = 'SNAPSHOT')")
-
     rows = db.execute(
         f"""
-        SELECT s.*, b.name AS backup_name, u.name AS user_name, d.name AS device_name
+        SELECT s.*, b.name AS backup_name, b.type AS backup_type, u.name AS user_name, d.name AS device_name
         FROM snapshots s
         JOIN backups b ON b.id = s.backup_id
         JOIN users u ON u.id = s.user_id
@@ -1345,7 +1363,16 @@ def list_snapshots(db, current_user, backup_id=None):
         """,
         params,
     ).fetchall()
-    return rows_to_dicts(rows)
+    snapshots = rows_to_dicts(rows)
+
+    return [
+        snapshot
+        for snapshot in snapshots
+        if not (
+            str(snapshot.get("id", "")).startswith("snapshot_local_")
+            and snapshot.get("backup_type") != "SNAPSHOT"
+        )
+    ]
 
 
 def list_audit_logs(db, current_user, filters=None, limit=200):

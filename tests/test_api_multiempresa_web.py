@@ -502,7 +502,7 @@ class ApiMultiempresaWebTests(unittest.TestCase):
         detail = self.client.get(f"/web/backups/{backup['id']}")
         self.assertEqual(200, detail.status_code, detail.text)
         self.assertIn("Arquivos do backup", detail.text)
-        self.assertIn("Nenhum arquivo encontrado no snapshot local.", detail.text)
+        self.assertIn("Nenhum arquivo encontrado nos metadados do backup.", detail.text)
 
 
 if __name__ == "__main__":

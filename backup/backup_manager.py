@@ -1076,6 +1076,38 @@ def save_incremental_index(backup_destination, index):
     save_json_atomic(paths["index"], normalize_incremental_index(index))
 
 
+def build_history_backup_id(snapshot_id):
+    snapshot_id = str(snapshot_id or "").strip()
+
+    if snapshot_id.startswith("snapshot_"):
+        return f"backup_{snapshot_id[len('snapshot_'):]}"
+
+    return f"backup_{snapshot_id}" if snapshot_id else ""
+
+
+def calculate_incremental_result_size_bytes(incremental_result):
+    try:
+        compacted_size = incremental_result.get("compacted_size_bytes")
+
+        if compacted_size not in (None, ""):
+            return int(compacted_size)
+    except (TypeError, ValueError):
+        pass
+
+    total = 0
+
+    for file_data in incremental_result.get("files", []) or []:
+        if not isinstance(file_data, dict):
+            continue
+
+        try:
+            total += int(file_data.get("size") or file_data.get("size_bytes") or 0)
+        except (TypeError, ValueError):
+            continue
+
+    return total
+
+
 def is_first_incremental_backup(backup_destination):
     index = load_incremental_index(backup_destination)
     return not index.get("files") and not index.get("objects")
@@ -2793,6 +2825,7 @@ def run_backup_job(
             progress_callback(95, "Pacote criptografado gerado.")
 
     history_entry = {
+        "backup_id": build_history_backup_id(incremental_result["snapshot_id"]),
         "timestamp": completed_at.strftime("%d/%m/%Y %H:%M:%S"),
         "started_at": started_at.isoformat(timespec="seconds"),
         "finished_at": completed_at.isoformat(timespec="seconds"),
@@ -2825,7 +2858,10 @@ def run_backup_job(
             crypto_service.ENCRYPTION_ALGORITHM if incremental_result.get("encryption") else ""
         ),
         "backup_encryption": encrypted_archive,
-        "compacted_size_bytes": encrypted_archive.get("compacted_size_bytes"),
+        "compacted_size_bytes": encrypted_archive.get(
+            "compacted_size_bytes",
+            calculate_incremental_result_size_bytes(incremental_result),
+        ),
         "file_changes": file_changes,
         "file_snapshot": current_snapshot,
         "status_counts": incremental_result["status_counts"],
@@ -3075,6 +3111,7 @@ def run_priority_backup_job(
             progress_callback(95, "Pacote criptografado por prioridade gerado.")
 
     history_entry = {
+        "backup_id": build_history_backup_id(incremental_result["snapshot_id"]),
         "timestamp": completed_at.strftime("%d/%m/%Y %H:%M:%S"),
         "started_at": started_at.isoformat(timespec="seconds"),
         "finished_at": completed_at.isoformat(timespec="seconds"),
@@ -3107,7 +3144,10 @@ def run_priority_backup_job(
             crypto_service.ENCRYPTION_ALGORITHM if incremental_result.get("encryption") else ""
         ),
         "backup_encryption": encrypted_archive,
-        "compacted_size_bytes": encrypted_archive.get("compacted_size_bytes"),
+        "compacted_size_bytes": encrypted_archive.get(
+            "compacted_size_bytes",
+            calculate_incremental_result_size_bytes(incremental_result),
+        ),
         "file_changes": file_changes,
         "file_snapshot": current_snapshot,
         "status_counts": incremental_result["status_counts"],
