@@ -164,6 +164,17 @@ def api_device(device):
     }
 
 
+def normalize_s3_download_key(value):
+    key = str(value or "").strip()
+
+    if key.startswith("s3://"):
+        without_scheme = key[len("s3://"):]
+        parts = without_scheme.split("/", 1)
+        return parts[1] if len(parts) == 2 else ""
+
+    return key
+
+
 def build_auth_response(user):
     return {
         "token": create_access_token(user),
@@ -796,6 +807,35 @@ def create_app():
         serialized = api_backup(backup)
         serialized["snapshots"] = [api_snapshot(snapshot) for snapshot in backup["snapshots"]]
         return {"backup": serialized}
+
+    @app.get("/api/backups/{backup_id}/download")
+    def api_backup_download_alias(
+        backup_id: str,
+        current_user=Depends(require_roles(["ADMIN_EMPRESA", "OPERADOR", "VIEWER"])),
+        db: Connection = Depends(get_db),
+    ):
+        backup = get_backup_for_user_action(db, current_user, backup_id)
+        s3_key = normalize_s3_download_key(backup.get("s3_key"))
+
+        if not s3_key:
+            return JSONResponse(
+                {"detail": "Backup sem objeto remoto registrado."},
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            download = S3StorageService().create_presigned_download_url(s3_key)
+        except StorageConfigurationError as error:
+            return JSONResponse(
+                {"detail": str(error)},
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        return {
+            "backupId": backup["id"],
+            "s3Key": s3_key,
+            "download": download,
+        }
 
     @app.post("/snapshots")
     def create_snapshot_api(

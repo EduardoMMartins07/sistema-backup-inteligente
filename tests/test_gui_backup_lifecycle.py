@@ -271,6 +271,68 @@ class GuiBackupLifecycleTests(unittest.TestCase):
         self.assertNotIn("restore_group_count", grouped[0][1])
         self.assertNotIn("restore_group_count", grouped[1][1])
 
+    def test_download_entries_prefer_api_backups_for_logged_user(self):
+        gui = self.make_gui()
+        gui.current_user = {
+            "username": "dudu@gmail.com",
+            "role": "operator",
+            "auth_token": "token-api",
+        }
+        gui.get_visible_history = Mock(return_value=[{
+            "backup_name": "verificacao agendada",
+            "timestamp": "26/05/2026 22:58:36",
+        }])
+
+        with patch("auth.api_client.list_my_backups", return_value=[{
+            "id": "backup_api_001",
+            "name": "Initial",
+            "type": "INCREMENTAL",
+            "userName": "Dudu",
+            "fileCount": 16,
+            "sizeBytes": 1024,
+            "s3Key": "backups/company/user/backup.zip",
+            "createdAt": "2026-05-26T23:43:03",
+        }]):
+            entries, message = gui.get_download_entries()
+
+        self.assertIn("API", message)
+        self.assertEqual(1, len(entries))
+        self.assertEqual("api", entries[0]["download_source"])
+        self.assertEqual("Initial", entries[0]["backup_name"])
+        self.assertEqual(16, entries[0]["total_files"])
+
+    def test_download_entry_files_load_api_backup_metadata(self):
+        gui = self.make_gui()
+        gui.current_user = {
+            "username": "dudu@gmail.com",
+            "role": "operator",
+            "auth_token": "token-api",
+        }
+        entry = {
+            "download_source": "api",
+            "api_backup_id": "backup_api_001",
+            "api_backup": {"id": "backup_api_001", "metadata": {}},
+        }
+
+        with patch("auth.api_client.get_backup_detail", return_value={
+            "backup": {
+                "metadata": {
+                    "items": [
+                        {
+                            "name": "A.txt",
+                            "archive_name": "docs/A.txt",
+                            "size_bytes": 128,
+                        }
+                    ]
+                }
+            }
+        }):
+            files = gui.get_download_entry_files(entry)
+
+        self.assertEqual("A.txt", files[0]["name"])
+        self.assertEqual("docs/A.txt", files[0]["archive_name"])
+        self.assertEqual("docs/A.txt", entry["api_detail_backup"]["metadata"]["items"][0]["archive_name"])
+
 
 if __name__ == "__main__":
     unittest.main()

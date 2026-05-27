@@ -1,11 +1,13 @@
 import csv
 import json
 import os
+import platform
 import queue
 import re
 import shutil
 import tempfile
 import threading
+import uuid
 from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -48,6 +50,7 @@ SCHEDULE_PATH = "config/backup_schedule.json"
 DEFAULT_CONFIG_PATH = CONFIG_PATH
 DEFAULT_HISTORY_PATH = HISTORY_PATH
 DEFAULT_SCHEDULE_PATH = SCHEDULE_PATH
+DESKTOP_DEVICE_CONTEXT_PATH = os.path.join("config", "desktop_device_context.json")
 ICON_PATH = os.path.join("assets", "nuvem.png")
 DEFAULT_PRIORITY_BACKUP_POLICY_ENABLED = True
 
@@ -114,6 +117,37 @@ def resolve_user_scoped_path(configured_path, default_path, filename):
     return scoped_path or configured_path
 
 
+def get_desktop_device_id():
+    try:
+        if os.path.exists(DESKTOP_DEVICE_CONTEXT_PATH):
+            with open(DESKTOP_DEVICE_CONTEXT_PATH, "r", encoding="utf-8") as file:
+                data = json.load(file)
+
+            device_id = str(data.get("device_id") or "").strip()
+
+            if device_id:
+                return device_id
+    except (OSError, json.JSONDecodeError, AttributeError):
+        pass
+
+    hostname = platform.node() or "desktop"
+    device_id = f"desktop-{uuid.uuid4().hex}"
+    payload = {
+        "device_id": device_id,
+        "hostname": hostname,
+    }
+
+    try:
+        os.makedirs(os.path.dirname(DESKTOP_DEVICE_CONTEXT_PATH), exist_ok=True)
+
+        with open(DESKTOP_DEVICE_CONTEXT_PATH, "w", encoding="utf-8") as file:
+            json.dump(payload, file, indent=4, ensure_ascii=False)
+    except OSError:
+        pass
+
+    return device_id
+
+
 def get_config_path():
     return resolve_user_scoped_path(CONFIG_PATH, DEFAULT_CONFIG_PATH, "config.json")
 
@@ -178,6 +212,12 @@ def split_history_entries_for_tree(indexed_entries):
 
 def get_file_extension(file_name):
     return os.path.splitext(str(file_name or ""))[1].lstrip(".").lower()
+
+
+def sanitize_download_filename(name, fallback="backup"):
+    sanitized = re.sub(r'[<>:"/\\|?*]+', "_", str(name or "").strip())
+    sanitized = re.sub(r"\s+", " ", sanitized).strip(". ")
+    return sanitized or fallback
 
 
 def format_size_kb_to_mb(size_kb):
@@ -2808,7 +2848,10 @@ class BackupGUI:
             if not api_client.is_configured():
                 return
 
-            payload = api_client.get_desktop_config(token)
+            payload = api_client.get_desktop_config(
+                token,
+                device_id=get_desktop_device_id(),
+            )
         except Exception:
             return
 
@@ -2853,7 +2896,12 @@ class BackupGUI:
 
         def worker():
             try:
-                api_client.save_desktop_config(token, config, history[-50:])
+                api_client.save_desktop_config(
+                    token,
+                    config,
+                    history[-50:],
+                    device_id=get_desktop_device_id(),
+                )
             except Exception:
                 pass
 
@@ -7406,6 +7454,207 @@ class BackupGUI:
 
         return None
 
+    def api_backup_to_download_entry(self, backup):
+        created_at = backup.get("createdAt") or backup.get("startedAt") or ""
+        backup_type = str(backup.get("type") or "").upper()
+        backup_name = backup.get("name") or backup.get("id") or "Backup da API"
+
+        return {
+            "download_source": "api",
+            "api_backup": backup,
+            "api_backup_id": backup.get("id"),
+            "timestamp": created_at,
+            "user": backup.get("userName") or backup.get("userId") or "",
+            "backup_name": backup_name,
+            "trigger": backup_type or "-",
+            "total_files": backup.get("fileCount", 0),
+            "partial_backup": backup_type == "SNAPSHOT",
+            "remote_path": backup.get("s3Key") or "",
+            "size_bytes": backup.get("sizeBytes", 0),
+            "status": backup.get("status", ""),
+        }
+
+    def load_api_download_entries(self):
+        token = self.current_user.get("auth_token")
+
+        if not token:
+            return [], "Entre com uma conta sincronizada para consultar backups da API."
+
+        from auth import api_client
+
+        if self.current_user.get("role") == "admin":
+            backups = api_client.list_company_backups(
+                token,
+                self.current_user.get("company_id"),
+            )
+        else:
+            backups = api_client.list_my_backups(token)
+
+        return [
+            self.api_backup_to_download_entry(backup)
+            for backup in backups
+            if isinstance(backup, dict)
+        ], "Mostrando backups sincronizados da API."
+
+    def get_download_entries(self):
+        if self.current_user.get("auth_token"):
+            try:
+                return self.load_api_download_entries()
+            except Exception as error:
+                fallback = [
+                    dict(entry, download_source="local")
+                    for entry in reversed(self.get_visible_history())
+                ]
+                return (
+                    fallback,
+                    "Nao foi possivel consultar a API; mostrando historico local. "
+                    f"Erro: {str(error)[:120]}",
+                )
+
+        return (
+            [
+                dict(entry, download_source="local")
+                for entry in reversed(self.get_visible_history())
+            ],
+            "Mostrando historico local deste computador.",
+        )
+
+    def get_latest_download_full_entry(self, entries):
+        for entry in entries:
+            if not entry.get("partial_backup"):
+                return entry
+
+        return None
+
+    def get_api_backup_items(self, backup):
+        metadata = backup.get("metadata") if isinstance(backup, dict) else {}
+
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        items = metadata.get("items") or metadata.get("snapshotFiles")
+        return items if isinstance(items, list) else []
+
+    def get_download_entry_files(self, entry):
+        if not isinstance(entry, dict):
+            return []
+
+        if entry.get("download_source") == "api":
+            backup = entry.get("api_detail_backup") or entry.get("api_backup") or {}
+            items = self.get_api_backup_items(backup)
+
+            if not items:
+                token = self.current_user.get("auth_token")
+                backup_id = entry.get("api_backup_id")
+
+                if token and backup_id:
+                    from auth import api_client
+
+                    detail = api_client.get_backup_detail(token, backup_id)
+                    backup = detail.get("backup", {}) if isinstance(detail, dict) else {}
+                    entry["api_detail_backup"] = backup
+                    items = self.get_api_backup_items(backup)
+
+            return [
+                dict(item)
+                for item in items
+                if isinstance(item, dict)
+            ]
+
+        snapshot = entry.get("file_snapshot", {})
+
+        if not isinstance(snapshot, dict):
+            return []
+
+        return [
+            dict(file_data, archive_name=archive_name)
+            for archive_name, file_data in snapshot.items()
+            if isinstance(file_data, dict)
+        ]
+
+    def choose_api_backup_export_destination(self, entry):
+        backup = entry.get("api_backup") or {}
+        remote_path = str(entry.get("remote_path") or backup.get("s3Key") or "")
+        extension = os.path.splitext(remote_path)[1].lower() or ".zip"
+
+        if extension not in {".zip", ".enc", ".json"}:
+            extension = ".zip"
+
+        initial_name = sanitize_download_filename(
+            entry.get("backup_name") or entry.get("api_backup_id"),
+            fallback="backup_api",
+        )
+
+        if not initial_name.lower().endswith(extension):
+            initial_name = f"{initial_name}{extension}"
+
+        filetypes = [
+            ("Backup remoto", f"*{extension}"),
+            ("Todos os arquivos", "*.*"),
+        ]
+
+        return filedialog.asksaveasfilename(
+            title="Salvar backup da API",
+            defaultextension=extension,
+            initialfile=initial_name,
+            filetypes=filetypes,
+        )
+
+    def export_api_backup_entry(self, entry):
+        token = self.current_user.get("auth_token")
+        backup_id = entry.get("api_backup_id")
+
+        if not token or not backup_id:
+            messagebox.showwarning(
+                "Backup indisponivel",
+                "Este backup nao possui identificador da API para download.",
+                parent=self.root,
+            )
+            return False
+
+        destination = self.choose_api_backup_export_destination(entry)
+
+        if not destination:
+            return False
+
+        self.open_download_progress_window()
+
+        def run_export():
+            try:
+                from auth import api_client
+
+                def on_progress(processed, total):
+                    percent = 35 if total <= 0 else int((processed / total) * 100)
+                    self.enqueue_download_progress(
+                        percent,
+                        f"Baixando backup remoto: {format_size_bytes_human(processed)}"
+                    )
+
+                api_client.download_backup_file(
+                    token,
+                    backup_id,
+                    destination,
+                    progress_callback=on_progress,
+                )
+                self.download_queue.put((
+                    "success",
+                    "Backup remoto baixado.\n\n"
+                    f"Arquivo salvo em:\n{destination}"
+                ))
+            except Exception as error:
+                self.download_queue.put(("error", str(error)))
+
+        worker = threading.Thread(target=run_export, daemon=True)
+        worker.start()
+        self.root.after(120, self.process_download_events)
+        return True
+
+    def export_download_entry(self, entry, title_suffix="do backup selecionado"):
+        if entry.get("download_source") == "api":
+            return self.export_api_backup_entry(entry)
+
+        return self.export_history_entry(entry, title_suffix)
+
     def choose_backup_export_destination(self, backup_path, export_mode_label):
         extension = os.path.splitext(backup_path)[1].lower()
         filetypes = [("Arquivo ZIP", "*.zip"), ("Todos os arquivos", "*.*")]
@@ -7502,13 +7751,13 @@ class BackupGUI:
         if not self.require_permission("download_backup"):
             return
 
-        history = self.get_visible_history()
-        latest_entry = self.get_latest_visible_history_entry()
-        latest_full_entry = self.get_latest_visible_full_backup_entry()
+        download_entries, download_message = self.get_download_entries()
+        latest_entry = download_entries[0] if download_entries else None
+        latest_full_entry = self.get_latest_download_full_entry(download_entries)
 
         _panel, shell_content = self.create_content_shell(
             "Baixar Backups",
-            subtitle="Exporte o ultimo backup, um backup completo de recuperacao ou um backup especifico."
+            subtitle="Exporte backups sincronizados da conta atual ou, sem API, o historico local."
         )
         scroll_content = ScrollableFrame(shell_content, bg=HOME_PANEL_COLOR)
         scroll_content.grid(row=0, column=0, sticky="nsew")
@@ -7581,17 +7830,17 @@ class BackupGUI:
         download_cards.append(add_download_option(
             0,
             "Ultimo backup",
-            "Exporta exatamente o backup mais recente visivel no historico, mesmo se ele for parcial por prioridade.",
+            "Exporta o backup mais recente visivel para a conta atual, priorizando dados sincronizados da API.",
             "Baixar ultimo",
-            lambda: self.export_history_entry(latest_entry, "do ultimo backup"),
+            lambda: self.export_download_entry(latest_entry, "do ultimo backup"),
             enabled=latest_entry is not None
         ))
         download_cards.append(add_download_option(
             1,
             "Backup completo",
-            "Exporta o backup completo mais recente para recuperacao de todos os arquivos, ignorando snapshots parciais.",
+            "Exporta o backup completo mais recente para recuperacao, ignorando snapshots parciais quando existirem.",
             "Baixar completo",
-            lambda: self.export_history_entry(latest_full_entry, "do backup completo"),
+            lambda: self.export_download_entry(latest_full_entry, "do backup completo"),
             enabled=latest_full_entry is not None
         ))
         download_cards.append(add_download_option(
@@ -7600,7 +7849,7 @@ class BackupGUI:
             "Selecione qualquer backup da lista abaixo para exportar exatamente a execucao desejada.",
             "Baixar selecionado",
             lambda: export_selected_backup(),
-            enabled=bool(history)
+            enabled=bool(download_entries)
         ))
 
         table_box = tk.Frame(
@@ -7613,17 +7862,18 @@ class BackupGUI:
         )
         table_box.grid(row=1, column=0, sticky="nsew")
         table_box.columnconfigure(0, weight=1)
-        table_box.rowconfigure(1, weight=1)
+        table_box.rowconfigure(1, weight=2)
+        table_box.rowconfigure(3, weight=1)
 
         tk.Label(
             table_box,
-            text="Escolher backup especifico",
+            text=f"Escolher backup especifico - {download_message}",
             bg=PANEL_COLOR,
             fg=SUBTLE_TEXT,
             font=("Arial", 10, "bold")
         ).grid(row=0, column=0, sticky="w", pady=(0, 8))
 
-        columns = ("timestamp", "user", "backup_name", "trigger", "total", "kind")
+        columns = ("timestamp", "user", "backup_name", "trigger", "total", "kind", "source")
         table_frame = tk.Frame(table_box, bg=PANEL_COLOR)
         table_frame.grid(row=1, column=0, sticky="nsew")
         history_tree = self.create_scrollable_tree(table_frame, columns, height=12)
@@ -7636,6 +7886,7 @@ class BackupGUI:
                 "trigger": "Tipo",
                 "total": "Arquivos",
                 "kind": "Escopo",
+                "source": "Origem",
             },
             {
                 "timestamp": {"width": 150, "minwidth": 130, "weight": 2},
@@ -7644,10 +7895,11 @@ class BackupGUI:
                 "trigger": {"width": 100, "minwidth": 85, "weight": 1},
                 "total": {"width": 90, "minwidth": 75, "weight": 1},
                 "kind": {"width": 110, "minwidth": 95, "weight": 1},
+                "source": {"width": 80, "minwidth": 70, "weight": 1},
             }
         )
 
-        indexed_history = list(reversed(history))
+        indexed_history = download_entries
 
         for index, entry in enumerate(indexed_history):
             history_tree.insert(
@@ -7661,11 +7913,9 @@ class BackupGUI:
                     entry.get("trigger", "-"),
                     entry.get("total_files", 0),
                     "Parcial" if entry.get("partial_backup") else "Completo",
+                    "API" if entry.get("download_source") == "api" else "Local",
                 )
             )
-
-        if history_tree.get_children():
-            history_tree.selection_set(history_tree.get_children()[0])
 
         def get_selected_history_entry():
             selected = history_tree.selection()
@@ -7674,6 +7924,91 @@ class BackupGUI:
                 return None
 
             return indexed_history[int(selected[0])]
+
+        tk.Label(
+            table_box,
+            text="Arquivos do backup selecionado",
+            bg=PANEL_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Arial", 10, "bold")
+        ).grid(row=2, column=0, sticky="w", pady=(12, 8))
+
+        files_columns = ("name", "archive_name", "source_path", "size", "modified")
+        files_frame = tk.Frame(table_box, bg=PANEL_COLOR)
+        files_frame.grid(row=3, column=0, sticky="nsew")
+        files_tree = self.create_scrollable_tree(files_frame, files_columns, height=6)
+        self.configure_tree_columns(
+            files_tree,
+            {
+                "name": "Arquivo",
+                "archive_name": "Caminho no backup",
+                "source_path": "Local original",
+                "size": "Tamanho",
+                "modified": "Modificado em",
+            },
+            {
+                "name": {"width": 180, "minwidth": 140, "weight": 2, "anchor": "w"},
+                "archive_name": {"width": 260, "minwidth": 180, "weight": 3, "anchor": "w"},
+                "source_path": {"width": 320, "minwidth": 200, "weight": 3, "anchor": "w"},
+                "size": {"width": 100, "minwidth": 80, "weight": 1},
+                "modified": {"width": 150, "minwidth": 120, "weight": 1},
+            }
+        )
+
+        files_message_var = tk.StringVar(value="")
+        tk.Label(
+            table_box,
+            textvariable=files_message_var,
+            bg=PANEL_COLOR,
+            fg=SUBTLE_TEXT,
+            font=("Arial", 9),
+            anchor="w",
+        ).grid(row=4, column=0, sticky="ew", pady=(6, 0))
+
+        def refresh_selected_files(_event=None):
+            for item in files_tree.get_children():
+                files_tree.delete(item)
+
+            selected_entry = get_selected_history_entry()
+
+            if not selected_entry:
+                files_message_var.set("Selecione um backup para ver os arquivos.")
+                return
+
+            try:
+                files = self.get_download_entry_files(selected_entry)
+            except Exception as error:
+                files_message_var.set(
+                    f"Nao foi possivel carregar arquivos do backup: {str(error)[:120]}"
+                )
+                return
+
+            for index, file_data in enumerate(files):
+                archive_name = (
+                    file_data.get("archive_name")
+                    or file_data.get("path")
+                    or file_data.get("object_path")
+                    or ""
+                )
+                files_tree.insert(
+                    "",
+                    tk.END,
+                    iid=str(index),
+                    values=(
+                        file_data.get("name") or file_data.get("file_name") or os.path.basename(archive_name) or "-",
+                        archive_name or "-",
+                        file_data.get("source_path") or file_data.get("original_path") or "-",
+                        format_size_bytes_human(file_data.get("size_bytes") or file_data.get("size") or 0),
+                        file_data.get("modified_at") or "-",
+                    )
+                )
+
+            if files:
+                files_message_var.set(f"{len(files)} arquivo(s) encontrado(s) nos metadados.")
+            else:
+                files_message_var.set(
+                    "Nenhum arquivo detalhado foi sincronizado para este backup."
+                )
 
         def export_selected_backup():
             selected_entry = get_selected_history_entry()
@@ -7686,10 +8021,16 @@ class BackupGUI:
                 )
                 return
 
-            self.export_history_entry(selected_entry, "do backup selecionado")
+            self.export_download_entry(selected_entry, "do backup selecionado")
+
+        history_tree.bind("<<TreeviewSelect>>", refresh_selected_files)
+
+        if history_tree.get_children():
+            history_tree.selection_set(history_tree.get_children()[0])
+            refresh_selected_files()
 
         button_bar = tk.Frame(table_box, bg=PANEL_COLOR)
-        button_bar.grid(row=2, column=0, sticky="e", pady=(10, 0))
+        button_bar.grid(row=5, column=0, sticky="e", pady=(10, 0))
         button_bar.columnconfigure(0, weight=1)
 
         selected_download_button = self.create_dialog_button(
@@ -7697,6 +8038,8 @@ class BackupGUI:
             "Baixar backup selecionado",
             export_selected_backup
         )
+        if not download_entries:
+            selected_download_button.config(state=tk.DISABLED, cursor="arrow")
         selected_download_button.grid(row=0, column=0, sticky="ew")
 
     def open_user_manager(self):

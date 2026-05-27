@@ -30,7 +30,12 @@ def set_current_user(user):
         return None
 
     company_id, user_id = user_data_paths.get_scope_from_user(_CURRENT_USER)
-    user_data_paths.ensure_user_environment(company_id, user_id)
+    migrate_legacy = _CURRENT_USER.get("auth_source") != "api"
+    user_data_paths.ensure_user_environment(
+        company_id,
+        user_id,
+        migrate_legacy=migrate_legacy,
+    )
     save_session_context(_CURRENT_USER)
     return _CURRENT_USER
 

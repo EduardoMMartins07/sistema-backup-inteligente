@@ -275,6 +275,43 @@ def get_backup_detail(token, backup_id):
     return _get_json(f"/api/backups/{backup_id}", token)
 
 
+def get_backup_download_url(token, backup_id):
+    return _get_json(f"/api/backups/{backup_id}/download", token)
+
+
+def download_backup_file(token, backup_id, destination, progress_callback=None):
+    payload = get_backup_download_url(token, backup_id)
+    download = payload.get("download", {}) if isinstance(payload, dict) else {}
+    url = download.get("url")
+
+    if not url:
+        raise ValueError("A API nao retornou uma URL de download para este backup.")
+
+    with httpx.stream("GET", url, timeout=60) as response:
+        response.raise_for_status()
+        total = int(response.headers.get("content-length") or 0)
+        processed = 0
+
+        os.makedirs(os.path.dirname(os.path.abspath(destination)), exist_ok=True)
+
+        with open(destination, "wb") as file:
+            for chunk in response.iter_bytes(chunk_size=1024 * 256):
+                if not chunk:
+                    continue
+
+                file.write(chunk)
+                processed += len(chunk)
+
+                if progress_callback:
+                    progress_callback(processed, total)
+
+    return {
+        "backupId": payload.get("backupId"),
+        "s3Key": payload.get("s3Key"),
+        "destination": destination,
+    }
+
+
 def get_desktop_config(token, device_id=None):
     params = {"deviceId": device_id} if device_id else None
     return _get_json("/api/config/desktop", token, params=params)

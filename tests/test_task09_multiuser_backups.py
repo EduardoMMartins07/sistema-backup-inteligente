@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import auth.local_context as local_context
 import backup.backup_manager as backup_manager
@@ -26,11 +27,34 @@ class Task09LocalUserDataTests(unittest.TestCase):
             "APP_DATA_DIR": user_data_paths.APP_DATA_DIR,
             "COMPANIES_DIR": user_data_paths.COMPANIES_DIR,
             "MIGRATION_BACKUP_DIR": user_data_paths.MIGRATION_BACKUP_DIR,
+            "LEGACY_CONFIG_DIR": user_data_paths.LEGACY_CONFIG_DIR,
+            "LEGACY_CONFIG_PATH": user_data_paths.LEGACY_CONFIG_PATH,
+            "LEGACY_HISTORY_PATH": user_data_paths.LEGACY_HISTORY_PATH,
+            "LEGACY_SCHEDULE_PATH": user_data_paths.LEGACY_SCHEDULE_PATH,
+            "LEGACY_PRIORITY_STATE_PATH": user_data_paths.LEGACY_PRIORITY_STATE_PATH,
+            "LEGACY_MONITORED_FOLDERS_PATH": user_data_paths.LEGACY_MONITORED_FOLDERS_PATH,
+            "LEGACY_BACKUP_STATE_PATH": user_data_paths.LEGACY_BACKUP_STATE_PATH,
+            "LEGACY_TO_USER_FILES": user_data_paths.LEGACY_TO_USER_FILES,
             "SESSION_CONTEXT_PATH": local_context.SESSION_CONTEXT_PATH,
         }
         user_data_paths.APP_DATA_DIR = str(self.root / "app_data")
         user_data_paths.COMPANIES_DIR = str(self.root / "app_data" / "companies")
         user_data_paths.MIGRATION_BACKUP_DIR = str(self.root / "app_data" / "migration_backup")
+        user_data_paths.LEGACY_CONFIG_DIR = str(self.root / "config")
+        user_data_paths.LEGACY_CONFIG_PATH = str(self.root / "config" / "config.json")
+        user_data_paths.LEGACY_HISTORY_PATH = str(self.root / "config" / "backup_history.json")
+        user_data_paths.LEGACY_SCHEDULE_PATH = str(self.root / "config" / "backup_schedule.json")
+        user_data_paths.LEGACY_PRIORITY_STATE_PATH = str(self.root / "config" / "priority_backup_state.json")
+        user_data_paths.LEGACY_MONITORED_FOLDERS_PATH = str(self.root / "config" / "monitored_folders.json")
+        user_data_paths.LEGACY_BACKUP_STATE_PATH = str(self.root / "config" / "backup_state.json")
+        user_data_paths.LEGACY_TO_USER_FILES = {
+            user_data_paths.LEGACY_CONFIG_PATH: "config.json",
+            user_data_paths.LEGACY_HISTORY_PATH: "backup_history.json",
+            user_data_paths.LEGACY_MONITORED_FOLDERS_PATH: "monitored_folders.json",
+            user_data_paths.LEGACY_BACKUP_STATE_PATH: "backup_state.json",
+            user_data_paths.LEGACY_PRIORITY_STATE_PATH: "backup_state.json",
+            user_data_paths.LEGACY_SCHEDULE_PATH: "backup_schedule.json",
+        }
         local_context.SESSION_CONTEXT_PATH = str(self.root / "config" / "desktop_session_context.json")
         local_context.clear_current_user()
 
@@ -77,6 +101,25 @@ class Task09LocalUserDataTests(unittest.TestCase):
 
         local_context.set_current_user(user_a)
         self.assertEqual({"directories": ["C:/Ana"]}, backup_manager.load_config())
+
+    def test_api_user_does_not_inherit_legacy_local_directories(self):
+        os.makedirs(user_data_paths.LEGACY_CONFIG_DIR, exist_ok=True)
+
+        with open(user_data_paths.LEGACY_CONFIG_PATH, "w", encoding="utf-8") as file:
+            json.dump({"directories": ["C:/OutroUsuario"]}, file)
+
+        local_context.set_current_user({
+            "username": "dudu@example.com",
+            "role": "operator",
+            "company_id": "company_a",
+            "api_user_id": "user_dudu",
+            "auth_source": "api",
+        })
+
+        self.assertEqual({}, backup_manager.load_config())
+
+        config_path = Path(user_data_paths.get_user_config_path("company_a", "user_dudu"))
+        self.assertEqual({}, json.loads(config_path.read_text(encoding="utf-8")))
 
 
 class Task09ApiBackupMetadataTests(unittest.TestCase):
@@ -316,6 +359,51 @@ class Task09ApiBackupMetadataTests(unittest.TestCase):
         page = self.client.get("/web/snapshots")
         self.assertEqual(200, page.status_code, page.text)
         self.assertIn("Nenhum snapshot registrado.", page.text)
+
+    def test_backup_download_endpoint_returns_presigned_url_for_scoped_backup(self):
+        alpha, alpha_admin_headers = self.signup(
+            "Empresa Alpha",
+            "Admin Alpha",
+            "admin.alpha@example.com",
+        )
+        _, operator_headers = self.create_operator(
+            alpha_admin_headers,
+            "operador.alpha@example.com",
+        )
+        self.client.post(
+            "/api/backups",
+            headers=operator_headers,
+            json={
+                "backup_id": "backup_download",
+                "company_id": alpha["company"]["id"],
+                "backup_name": "Backup Download",
+                "status": "success",
+                "remote_path": "s3://bucket-test/backups/company/user/backup.zip",
+            },
+        )
+
+        class FakeStorage:
+            def create_presigned_download_url(self, key):
+                return {
+                    "url": f"https://example.test/{key}",
+                    "method": "GET",
+                    "bucket": "bucket-test",
+                    "key": key,
+                    "expiresIn": 300,
+                }
+
+        with patch("api.app.S3StorageService", return_value=FakeStorage()):
+            response = self.client.get(
+                "/api/backups/backup_download/download",
+                headers=operator_headers,
+            )
+
+        self.assertEqual(200, response.status_code, response.text)
+        self.assertEqual("backups/company/user/backup.zip", response.json()["s3Key"])
+        self.assertEqual(
+            "https://example.test/backups/company/user/backup.zip",
+            response.json()["download"]["url"],
+        )
 
 
 if __name__ == "__main__":
