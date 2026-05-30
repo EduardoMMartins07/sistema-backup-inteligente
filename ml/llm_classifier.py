@@ -2,6 +2,8 @@ import hashlib
 import json
 import os
 import re
+import time
+import threading
 import unicodedata
 import urllib.error
 import urllib.request
@@ -15,6 +17,14 @@ DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_TIMEOUT_SECONDS = 20
 CACHE_LIMIT = 1000
 _ENV_FILE_LOADED = False
+
+# Rate limiting da Gemini API (free tier: 20 RPM)
+GEMINI_RPM_LIMIT = 17                     # margem de seguranca abaixo dos 20
+GEMINI_MIN_INTERVAL_SECONDS = 60.0 / GEMINI_RPM_LIMIT  # ~3.5s entre chamadas
+GEMINI_MAX_RETRIES = 5                    # tentativas com backoff exponencial
+GEMINI_BATCH_SIZE = 50                    # arquivos por lote na classificacao
+_last_api_call: float = 0.0               # timestamp da ultima chamada
+_rate_lock = threading.Lock()             # lock para thread safety
 
 PRIORITY_LOW = "baixa"
 PRIORITY_MEDIUM = "media"
@@ -605,7 +615,18 @@ def parse_json_text(text):
     return json.loads(text)
 
 
+def _rate_limited_sleep():
+    """Garante intervalo minimo entre chamadas a API gratuita (17 RPM)."""
+    global _last_api_call
+    with _rate_lock:
+        elapsed = time.monotonic() - _last_api_call
+        if elapsed < GEMINI_MIN_INTERVAL_SECONDS:
+            time.sleep(GEMINI_MIN_INTERVAL_SECONDS - elapsed)
+        _last_api_call = time.monotonic()
+
+
 def request_gemini_classification(file_data, rule_result, config=None):
+    """Classifica um arquivo via Gemini API com retry e backoff exponencial."""
     config = config or {}
     api_key = get_api_key()
 
@@ -620,51 +641,49 @@ def request_gemini_classification(file_data, rule_result, config=None):
         f"{model}:generateContent"
     )
     payload = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [
-                    {
-                        "text": prompt
-                    }
-                ]
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0.1,
-            "responseMimeType": "application/json"
-        }
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"}
     }
-    request = urllib.request.Request(
-        endpoint,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "x-goog-api-key": api_key,
-        },
-        method="POST"
-    )
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
 
-    try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            response_data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Gemini API retornou HTTP {error.code}: {detail}") from error
-    except urllib.error.URLError as error:
-        raise RuntimeError(f"Falha de conexao com Gemini API: {error.reason}") from error
+    last_error = None
 
-    try:
-        text = response_data["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError, TypeError) as error:
-        raise RuntimeError("Resposta da Gemini API sem texto classificavel.") from error
+    for attempt in range(GEMINI_MAX_RETRIES):
+        _rate_limited_sleep()
 
-    result = parse_json_text(text)
+        try:
+            request = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                response_data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")
+            last_error = RuntimeError(f"Gemini API retornou HTTP {error.code}: {detail}")
+            if error.code in (429, 503):
+                wait = (2 ** attempt) + 1
+                time.sleep(wait)
+                continue
+            raise last_error from error
+        except urllib.error.URLError as error:
+            last_error = RuntimeError(f"Falha de conexao com Gemini API: {error.reason}")
+            if attempt < GEMINI_MAX_RETRIES - 1:
+                time.sleep(2 ** attempt)
+                continue
+            raise last_error from error
 
-    if not isinstance(result, dict):
-        raise RuntimeError("Resposta da Gemini API nao retornou objeto JSON.")
+        try:
+            text = response_data["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError, TypeError) as error:
+            raise RuntimeError("Resposta da Gemini API sem texto classificavel.") from error
 
-    return result
+        result = parse_json_text(text)
+
+        if not isinstance(result, dict):
+            raise RuntimeError("Resposta da Gemini API nao retornou objeto JSON.")
+
+        return result
+
+    raise last_error or RuntimeError("Gemini API: todas as tentativas falharam.")
 
 
 def normalize_llm_result(raw_result):
@@ -820,3 +839,237 @@ def classify_file_importance(file_data, config=None):
         save_json(CACHE_PATH, trim_cache(cache))
 
     return final_result
+
+
+# ─── Batch classification ────────────────────────────────────────
+
+def build_batch_prompt(files_data, rule_results):
+    """Constroi prompt para classificacao de multiplos arquivos em lote."""
+    metadata_list = []
+    for i, (file_data, rule_result) in enumerate(zip(files_data, rule_results)):
+        metadata_list.append({
+            "id": i,
+            "nome": file_data.get("name", ""),
+            "extensao": file_data.get("extension", ""),
+            "tipo": file_data.get("type", ""),
+            "tamanho_kb": safe_float(file_data.get("size_kb")),
+            "dias_desde_modificacao": safe_int(file_data.get("days_since_modified")),
+            "quantidade_modificacoes": safe_int(file_data.get("modified_count")),
+            "quantidade_acessos": safe_int(file_data.get("accessed_count")),
+            "diretorio_contexto": file_data.get("directory_context", ""),
+            "regra_local": rule_result.get("priority", PRIORITY_LOW),
+            "score_local": rule_result.get("priority_score", 0),
+        })
+
+    return (
+        "Classifique a importancia de cada arquivo abaixo para um sistema de backup.\n"
+        "Use somente os metadados. Nao presuma o conteudo real dos arquivos.\n"
+        "Para cada arquivo, avalie: modificacoes, tipo/extensao, acessos, nome, contexto.\n\n"
+        "Politicas: baixa=backup semanal, media=a cada 2 dias, alta=diario+a cada 4h.\n\n"
+        "Responda com JSON neste formato exato:\n"
+        '{"resultados": [{"id": 0, "prioridade": "baixa|media|alta", "pontuacao": 0, '
+        '"confianca": 0.0, "motivos": ["motivo"]}, ...]}\n\n'
+        f"Arquivos ({len(metadata_list)}):\n"
+        f"{json.dumps(metadata_list, ensure_ascii=False, indent=2)}"
+    )
+
+
+
+def build_mega_prompt(files_data):
+    """Prompt com TODOS os metadados em uma unica chamada (ate 1M tokens)."""
+    items = [{
+        "id": i, "nome": fd.get("name",""), "ext": fd.get("extension",""),
+        "tipo": fd.get("type",""), "tam_kb": safe_float(fd.get("size_kb")),
+        "dias_mod": safe_int(fd.get("days_since_modified")),
+        "mods": safe_int(fd.get("modified_count")),
+        "aces": safe_int(fd.get("accessed_count")),
+        "ctx": fd.get("directory_context",""),
+    } for i, fd in enumerate(files_data)]
+    return (
+        "Classifique importancia de backup de cada arquivo. Use apenas metadados.\n"
+        "Regras: baixa=backup semanal, media=a cada 2 dias, alta=diario+a cada 4h.\n"
+        "Responda SOMENTE JSON: {\"resultados\":[{\"id\":0,\"prioridade\":\"baixa|media|alta\","
+        "\"pontuacao\":0,\"confianca\":0.0,\"motivos\":[\"...\"]},...]}\n\n"
+        f"Arquivos({len(items)}):\n{json.dumps(items, ensure_ascii=False)}"
+    )
+
+def classify_all_in_one(files_data, config=None):
+    """Classifica TODOS os arquivos em UMA unica chamada API. Zero erros 429."""
+    config = config or {}
+    if not files_data: return []
+    api_key = get_api_key()
+    if not api_key or not is_llm_enabled(config):
+        return [classify_file_importance(fd, config) for fd in files_data]
+
+    model = get_gemini_model(config)
+    cache = load_json(CACHE_PATH, {}) if is_cache_enabled(config) else {}
+    results = [None] * len(files_data)
+    pend_files, pend_idx = [], []
+
+    for i, fd in enumerate(files_data):
+        ck = build_cache_key(fd, model)
+        ce = cache.get(ck)
+        if ce and isinstance(ce.get("result"), dict):
+            r = dict(ce["result"])
+            r["classification_source"] = "gemini_cache"
+            results[i] = finalize_result(r)
+        else:
+            pend_idx.append(i)
+            pend_files.append(fd)
+
+    if not pend_files: return results
+
+    prompt = build_mega_prompt(pend_files)
+    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"}
+    }
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+    timeout = max(get_timeout_seconds(config), 300)
+
+    _rate_limited_sleep()
+    try:
+        req = urllib.request.Request(endpoint, data=json.dumps(payload).encode(), headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            rd = json.loads(resp.read())
+        text = rd["candidates"][0]["content"]["parts"][0]["text"]
+        api_results = parse_json_text(text).get("resultados", [])
+    except Exception as e:
+        msg = f"Mega batch: {e}"
+        for i in pend_idx:
+            rr = classify_with_rules(files_data[i])
+            rr2 = dict(rr);
+            rr2.update({"classification_source":"rules_fallback","llm_error":msg})
+            results[i] = finalize_result(rr2)
+        return results
+
+    api_by_id = {ar.get("id"): ar for ar in (api_results or []) if isinstance(ar, dict)}
+    for i, idx in enumerate(pend_idx):
+        fd = files_data[idx]
+        rr = classify_with_rules(fd)
+        ar = api_by_id.get(i)
+        if ar:
+            merged = merge_rule_and_llm_results(rr, normalize_llm_result(ar), model)
+            results[idx] = finalize_result(merged)
+        else:
+            rr2 = dict(rr);
+            rr2.update({"classification_source":"rules_fallback","llm_error":"Mega: sem resultado"})
+            results[idx] = finalize_result(rr2)
+
+    if is_cache_enabled(config):
+        for fd, res in zip(files_data, results):
+            cache[build_cache_key(fd, model)] = {"created_at": datetime.now().isoformat(timespec="seconds"), "result": res}
+        save_json(CACHE_PATH, trim_cache(cache))
+    return results
+
+def classify_files_batch(files_data, config=None):
+    """Classifica uma lista de arquivos em lote via Gemini API (economiza chamadas).
+    
+    Retorna lista de resultados no formato padrao (mesmo de classify_file_importance).
+    """
+    config = config or {}
+    api_key = get_api_key()
+
+    if not api_key:
+        # Sem API key: usa regras locais para todos
+        return [classify_file_importance(fd, config) for fd in files_data]
+
+    if not is_llm_enabled(config):
+        return [classify_file_importance(fd, config) for fd in files_data]
+
+    model = get_gemini_model(config)
+    timeout_seconds = get_timeout_seconds(config)
+    results = []
+    cache = load_json(CACHE_PATH, {}) if is_cache_enabled(config) else {}
+
+    # Processa em sub-lotes de GEMINI_BATCH_SIZE
+    for batch_start in range(0, len(files_data), GEMINI_BATCH_SIZE):
+        batch_end = min(batch_start + GEMINI_BATCH_SIZE, len(files_data))
+        batch_files = files_data[batch_start:batch_end]
+        batch_rule_results = [classify_with_rules(fd) for fd in batch_files]
+
+        # Preenche resultados preliminares com regras (fallback padrao)
+        batch_results = []
+        for fd, rr in zip(batch_files, batch_rule_results):
+            cache_key = build_cache_key(fd, model)
+            cached = cache.get(cache_key)
+            if cached and isinstance(cached.get("result"), dict):
+                res = dict(cached["result"])
+                res["classification_source"] = "gemini_cache"
+                batch_results.append(finalize_result(res))
+            else:
+                batch_results.append(None)  # placeholder
+
+        # Monta prompt de lote com arquivos pendentes
+        pending = [(fd, rr) for fd, rr, br in zip(batch_files, batch_rule_results, batch_results) if br is None]
+        if not pending:
+            results.extend(batch_results)
+            continue
+
+        pending_files, pending_rules = zip(*pending)
+        prompt = build_batch_prompt(list(pending_files), list(pending_rules))
+
+        endpoint = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model}:generateContent"
+        )
+        payload = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"}
+        }
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+
+        # Tenta chamada em lote com retry
+        api_results = None
+        for attempt in range(GEMINI_MAX_RETRIES):
+            _rate_limited_sleep()
+            try:
+                request = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
+                with urllib.request.urlopen(request, timeout=max(timeout_seconds, 120)) as response:
+                    response_data = json.loads(response.read().decode("utf-8"))
+                text = response_data["candidates"][0]["content"]["parts"][0]["text"]
+                parsed = parse_json_text(text)
+                api_results = parsed.get("resultados", [])
+                break
+            except Exception:
+                if attempt < GEMINI_MAX_RETRIES - 1:
+                    time.sleep(2 ** attempt)
+                continue
+
+        # Aplica resultados da API aos placeholders
+        api_by_id = {}
+        if api_results:
+            for ar in api_results:
+                if isinstance(ar, dict):
+                    api_by_id[ar.get("id", -1)] = ar
+
+        for i, (br, fd, rr) in enumerate(zip(batch_results, batch_files, batch_rule_results)):
+            if br is not None:  # ja veio do cache
+                continue
+            api_result = api_by_id.get(i)
+            if api_result:
+                llm = normalize_llm_result(api_result)
+                merged = merge_rule_and_llm_results(rr, llm, model)
+                batch_results[i] = finalize_result(merged)
+            else:
+                # Fallback: usa regra local
+                fallback = dict(rr)
+                fallback["classification_source"] = "rules_fallback"
+                fallback["llm_error"] = "Batch: API nao retornou resultado para este arquivo"
+                batch_results[i] = finalize_result(fallback)
+
+        # Atualiza cache
+        if is_cache_enabled(config):
+            for fd, br in zip(batch_files, batch_results):
+                cache_key = build_cache_key(fd, model)
+                cache[cache_key] = {
+                    "created_at": datetime.now().isoformat(timespec="seconds"),
+                    "result": br,
+                }
+            save_json(CACHE_PATH, trim_cache(cache))
+
+        results.extend(batch_results)
+
+    return results
