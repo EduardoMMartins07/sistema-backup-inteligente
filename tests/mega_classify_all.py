@@ -1,4 +1,4 @@
-"""Classifica TODOS os 4048 arquivos em lotes otimizados (60 arq/batch ~3K tokens)."""
+"""Classifica TODOS os arquivos em lotes (200 arq/batch ~10K tokens)."""
 import json, csv, sys, time
 from collections import Counter
 sys.path.insert(0, ".")
@@ -10,9 +10,9 @@ with open("dataset/files_dataset.csv", encoding="utf-8") as f:
     for row in csv.DictReader(f):
         rows.append(row)
 
-BATCH = 60  # ~3K tokens/lote, dentro dos 4K TPM gratuitos
+BATCH = 40  # ~2K tokens/lote, DeepSeek gera JSON valido
 total = len(rows)
-print(f"Classificando {total} arquivos em {total//BATCH + 1} lotes...")
+print(f"Classificando {total} arquivos em {total//BATCH + 1} lotes com DeepSeek (sem delay)...\n")
 t0 = time.monotonic()
 
 all_results = []
@@ -21,8 +21,9 @@ for i in range(0, total, BATCH):
     res = llm.classify_all_in_one(batch)
     all_results.extend(res)
     n = min(i+BATCH, total)
-    gem = sum(1 for r in res if r.get("classification_source") == "gemini_api")
-    print(f"  Lote {i//BATCH + 1}: {n}/{total} ({gem} gemini)")
+    ok = sum(1 for r in res if r.get("classification_source") in ("gemini_api", "gemini_cache"))
+    pct = 100 * n / total
+    print(f"  {n}/{total} ({pct:.0f}%) -- {ok} deepseek", flush=True)
 
 t1 = time.monotonic()
 

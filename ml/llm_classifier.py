@@ -14,15 +14,20 @@ CACHE_PATH = os.path.join(PROJECT_ROOT, "config", "llm_classification_cache.json
 ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
-DEFAULT_TIMEOUT_SECONDS = 20
+DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
+DEFAULT_TIMEOUT_SECONDS = 60
 CACHE_LIMIT = 1000
 _ENV_FILE_LOADED = False
 
-# Rate limiting da Gemini API (free tier: 20 RPM)
-GEMINI_RPM_LIMIT = 17                     # margem de seguranca abaixo dos 20
-GEMINI_MIN_INTERVAL_SECONDS = 60.0 / GEMINI_RPM_LIMIT  # ~3.5s entre chamadas
+# Rate limiting (ajustado conforme provider)
+GEMINI_RPM_LIMIT = 17                     # free tier: 20 RPM
+GEMINI_MIN_INTERVAL_SECONDS = 60.0 / GEMINI_RPM_LIMIT  # ~3.5s (Gemini free)
 GEMINI_MAX_RETRIES = 5                    # tentativas com backoff exponencial
 GEMINI_BATCH_SIZE = 50                    # arquivos por lote na classificacao
+
+# DeepSeek pago: sem limite pratico, sem delay
+DEEPSEEK_RPM_LIMIT = 500
+DEEPSEEK_MIN_INTERVAL_SECONDS = 0.0  # sem delay
 _last_api_call: float = 0.0               # timestamp da ultima chamada
 _rate_lock = threading.Lock()             # lock para thread safety
 
@@ -489,7 +494,21 @@ def classify_with_rules(file_data):
 
 def get_api_key():
     load_local_env_file()
-    return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    return (
+        os.environ.get("DEEPSEEK_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
+        or os.environ.get("GOOGLE_API_KEY")
+    )
+
+
+def get_llm_provider(config=None):
+    load_local_env_file()
+    config = config or {}
+    return (
+        os.environ.get("LLM_PROVIDER", "").lower()
+        or config.get("llm_provider", "").lower()
+        or "gemini"
+    )
 
 
 def get_gemini_model(config=None):
@@ -499,6 +518,16 @@ def get_gemini_model(config=None):
         os.environ.get("GEMINI_MODEL")
         or config.get("gemini_model")
         or DEFAULT_GEMINI_MODEL
+    )
+
+
+def get_deepseek_model(config=None):
+    load_local_env_file()
+    config = config or {}
+    return (
+        os.environ.get("DEEPSEEK_MODEL")
+        or config.get("deepseek_model")
+        or DEFAULT_DEEPSEEK_MODEL
     )
 
 
@@ -615,13 +644,24 @@ def parse_json_text(text):
     return json.loads(text)
 
 
+def _get_rate_interval():
+    """Retorna o intervalo entre chamadas conforme o provider atual."""
+    try:
+        from .llm_classifier import get_llm_provider
+        provider = get_llm_provider()
+    except (ImportError, ValueError):
+        provider = os.environ.get("LLM_PROVIDER", "gemini")
+    return DEEPSEEK_MIN_INTERVAL_SECONDS if provider == "deepseek" else GEMINI_MIN_INTERVAL_SECONDS
+
+
 def _rate_limited_sleep():
-    """Garante intervalo minimo entre chamadas a API gratuita (17 RPM)."""
+    """Garante intervalo minimo entre chamadas conforme provider."""
     global _last_api_call
+    interval = _get_rate_interval()
     with _rate_lock:
         elapsed = time.monotonic() - _last_api_call
-        if elapsed < GEMINI_MIN_INTERVAL_SECONDS:
-            time.sleep(GEMINI_MIN_INTERVAL_SECONDS - elapsed)
+        if elapsed < interval:
+            time.sleep(interval - elapsed)
         _last_api_call = time.monotonic()
 
 
@@ -920,12 +960,26 @@ def classify_all_in_one(files_data, config=None):
     if not pend_files: return results
 
     prompt = build_mega_prompt(pend_files)
-    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    payload = {
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"}
-    }
-    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+    provider = get_llm_provider(config)
+    model = get_gemini_model(config) if provider == "gemini" else get_deepseek_model(config)
+
+    if provider == "deepseek":
+        endpoint = "https://api.deepseek.com/chat/completions"
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1,
+            "response_format": {"type": "json_object"},
+        }
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+    else:
+        endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        payload = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"},
+        }
+        headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+
     timeout = max(get_timeout_seconds(config), 300)
 
     _rate_limited_sleep()
@@ -933,7 +987,10 @@ def classify_all_in_one(files_data, config=None):
         req = urllib.request.Request(endpoint, data=json.dumps(payload).encode(), headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             rd = json.loads(resp.read())
-        text = rd["candidates"][0]["content"]["parts"][0]["text"]
+        if provider == "deepseek":
+            text = rd["choices"][0]["message"]["content"]
+        else:
+            text = rd["candidates"][0]["content"]["parts"][0]["text"]
         api_results = parse_json_text(text).get("resultados", [])
     except Exception as e:
         msg = f"Mega batch: {e}"
