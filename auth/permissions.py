@@ -12,6 +12,8 @@ ROLES = {
         "restore_backup",
     },
     "operator": {
+        "manage_directories",
+        "change_backup_destination",
         "run_backup",
         "schedule_backup",
         "view_files",

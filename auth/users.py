@@ -191,6 +191,16 @@ def authenticate(username, password):
     if not user:
         return authenticate_api_user(normalized_username, password)
 
+    # For accounts already synced with the API, prefer the authoritative API
+    # record before falling back to the desktop cache. This keeps role changes
+    # made on the web from being masked by stale local data.
+    if user.get("api_user_id") or user.get("auth_source") == "api":
+        api_user = authenticate_api_user(normalized_username, password)
+
+        if api_user:
+            cache_api_user(api_user, password)
+            return api_user
+
     if not verify_password(password, user.get("password", {})):
         return None
 

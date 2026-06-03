@@ -122,6 +122,52 @@ class DesktopLoginApiUsersTests(unittest.TestCase):
         self.assertEqual(["djogo@gmail.com", "dudu@gmail.com"], usernames)
         self.assertEqual(["admin", "operator"], [user["role"] for user in users])
 
+    def test_desktop_prefers_api_role_over_stale_cached_role(self):
+        os.environ.pop("API_BASE_URL", None)
+        os.environ.pop("API_URL", None)
+        db = connect(os.environ["SMARTBACKUP_API_DB_PATH"])
+
+        try:
+            company = create_company(db, "Empresa Alpha")
+            user = create_user(
+                db,
+                company["id"],
+                "Dudu",
+                "dudu@gmail.com",
+                "senha-dudu",
+                "ADMIN_EMPRESA",
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        with open(desktop_users.USERS_PATH, "w", encoding="utf-8") as file:
+            json.dump(
+                [
+                    {
+                        "username": "dudu@gmail.com",
+                        "name": "Dudu",
+                        "role": "operator",
+                        "company_id": company["id"],
+                        "password": desktop_users.hash_password("senha-dudu"),
+                        "created_at": "2026-06-01T19:00:00",
+                        "updated_at": "2026-06-01T19:00:00",
+                        "api_user_id": user["id"],
+                        "api_company_id": company["id"],
+                        "api_sync_status": "synced",
+                        "auth_source": "api",
+                    }
+                ],
+                file,
+                indent=4,
+            )
+
+        session = desktop_users.authenticate("dudu@gmail.com", "senha-dudu")
+
+        self.assertIsNotNone(session)
+        self.assertEqual("admin", session["role"])
+        self.assertEqual("api", session["auth_source"])
+
     def test_local_history_entry_syncs_to_api_backup_dashboard_data(self):
         db = connect(os.environ["SMARTBACKUP_API_DB_PATH"])
 

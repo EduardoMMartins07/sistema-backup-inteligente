@@ -1,0 +1,9 @@
+scenario,run,strategy,phase,duration_seconds,source_size_bytes,backup_size_bytes,storage_reduction_percent,total_files,objects_stored,objects_referenced,files_unchanged,files_changed,warnings_count,overhead_percent,cloud_sync_status,cloud_error_message
+small,1,zip_traditional,full_backup,2.894523,1638400,1674916,-2.2288,100,,,,0,0,,,
+small,1,incremental,initial_backup,0.193627,1638400,1348977,17.6650,100,70,30,0,100,0,,,
+small,1,incremental,no_changes_backup,0.091404,1638400,1444512,11.8340,100,0,0,100,0,0,,,
+small,1,incremental,changed_backup,0.127334,1638400,1708168,-4.2583,100,10,0,90,10,0,,,
+small,1,incremental,restore,1.442226,1638400,1638400,0.0000,100,,,,0,0,,,
+small,1,incremental,export_zip,1.427627,1638400,1674925,-2.2293,100,,,,0,0,,,
+small,1,incremental_encrypted,initial_backup,0.173721,1638400,1582378,3.4193,100,76,24,0,100,0,-10.2806,,
+small,1,cloud_s3,upload_failure,0.547110,1638400,1708168,-4.2583,,,,,0,0,,falhou,AccessDenied

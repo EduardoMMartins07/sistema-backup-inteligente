@@ -1,0 +1,307 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{setspace}
+
+\onehalfspacing
+\setlength\LTleft{0pt}
+\setlength\LTright{0pt}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\title{Sistema de Backup Incremental}
+\author{
+Diogo Soneghete de Almeida \and Eduardo Mois\'es Martins\\
+Universidade Vila Velha (UVV) -- ES -- Brasil\\
+{\small\texttt{\{diogo.almeida, eduardo.moises\}@uvvnet.com.br}}
+}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Este artigo apresenta um sistema de backup hibrido e incremental com deduplicacao por hash, snapshots restauraveis, armazenamento local com sincronizacao em nuvem e priorizacao de arquivos por metadados. A classificacao combina regras locais com a Gemini API, usando o modelo \texttt{gemini-2.5-flash} por meio do endpoint \texttt{generateContent} e retorno JSON estruturado. O sistema nao envia o conteudo dos arquivos para a API externa: apenas metadados operacionais, como nome, extensao, tipo, tamanho, historico de modificacao/acesso, contexto de diretorio, duplicidade por hash e sinais calculados localmente. A avaliacao usa registros produzidos pelo prototipo e resultados experimentais de backup incremental, ZIP tradicional, criptografia e falha simulada de upload para S3. Os resultados indicam que os ganhos medidos decorrem principalmente da incrementalidade, deduplicacao, compactacao e preservacao local; a Gemini API e tratada como componente funcional de priorizacao, ainda sem comparacao estatistica ampla contra uma heuristica pura.
+\end{abstract}
+
+\section{Introducao}
+
+Backups pessoais e corporativos precisam equilibrar desempenho, custo de armazenamento, restaurabilidade e confiabilidade. A copia completa de todos os arquivos em cada execucao simplifica a implementacao, mas tende a repetir dados inalterados, aumentar o tempo de execucao e gerar armazenamento redundante. Tecnicas incrementais e de deduplicacao reduzem esse problema ao armazenar somente objetos novos e manter referencias para conteudos ja conhecidos \cite{lillibridge2009sparse}.
+
+O uso de armazenamento em nuvem tambem permite escalabilidade e disponibilidade, mas nao elimina a necessidade de controle local, rastreabilidade e politicas de restauracao. Recomendacoes sobre computacao em nuvem destacam que organizacoes devem avaliar beneficios, riscos, governanca e dependencia de provedores ao mover dados para esse tipo de infraestrutura \cite{nist800146}. Nesse contexto, uma solucao de backup deve preservar o estado local restauravel mesmo quando a sincronizacao remota falha.
+
+O sistema apresentado neste trabalho foi desenvolvido como um prototipo de backup incremental e hibrido. A arquitetura registra snapshots em disco local, calcula hashes para detectar duplicidade, compacta objetos quando aplicavel e pode sincronizar metadados e artefatos com nuvem. A proposta nao depende de um modelo de aprendizado de maquina treinado localmente. Em vez disso, usa uma combinacao de regras deterministicas e chamada opcional a um modelo de linguagem via Gemini API para priorizar arquivos com base em metadados. Essa escolha torna a camada inteligente mais transparente: as regras locais continuam operando mesmo quando a API falha, e o sistema registra a origem da classificacao em campos como \texttt{rules}, \texttt{gemini\_api}, \texttt{gemini\_cache} e \texttt{rules\_fallback}.
+
+O objetivo principal deste artigo e descrever a implementacao real e seus registros operacionais, sem extrapolar metricas. Assim, a contribuicao central e o sistema de backup incremental/hibrido; a Gemini API e apresentada como uma camada funcional de priorizacao por metadados, com avaliacao ainda inicial.
+
+\section{Trabalhos Relacionados}
+
+Sistemas de backup eficientes frequentemente combinam armazenamento incremental, deduplicacao e controle de versoes. Lillibridge et al. \cite{lillibridge2009sparse} descrevem uma abordagem de deduplicacao em larga escala baseada em amostragem e localidade, demonstrando a importancia de evitar a copia fisica de conteudos repetidos. Essa ideia fundamenta a decisao deste prototipo de armazenar objetos unicos e registrar referencias logicas nos snapshots.
+
+No armazenamento em nuvem, o versionamento do Amazon S3 permite manter multiplas versoes de objetos em um bucket \cite{awsS3Versioning}. No sistema proposto, esse recurso e tratado como camada complementar: a unidade principal de restauracao continua sendo o snapshot local em JSON, o que permite funcionamento hibrido e preservacao do backup mesmo quando a nuvem esta indisponivel.
+
+A priorizacao inteligente por metadados se aproxima de trabalhos de classificacao automatizada, mas nesta implementacao ela nao e apresentada como prova de superioridade de um modelo preditivo. A Gemini API e usada como componente funcional para saida estruturada em JSON \cite{googleStructuredOutput} com o modelo \texttt{gemini-2.5-flash} \cite{googleGeminiModels}, enquanto as regras locais permanecem como base de fallback e controle.
+
+\section{Sistema Proposto}
+
+O sistema e organizado em quatro blocos: scanner/dataset, priorizacao por Gemini API, backup incremental com deduplicacao e restauracao/sincronizacao local-nuvem.
+
+\subsection{Scanner e Dataset}
+
+O scanner percorre os diretorios configurados e registra informacoes de cada arquivo em uma base estruturada de metadados. Entre os campos persistidos estao nome, extensao, tipo, caminho de origem, nome no arquivo de backup, contexto do diretorio, tamanho em KB, dias desde modificacao e acesso, contadores de modificacoes e acessos observados, hash do arquivo, flags de importancia, duplicidade por hash, prioridade, pontuacao, justificativa, fonte da classificacao, confianca da LLM, modelo usado, erro de LLM, politica de backup e arvore de decisao serializada.
+
+No ambiente avaliado, o dataset registra arquivos distribuidos entre prioridades alta, media e baixa. A classificacao final pode ser atribuida diretamente pelas regras locais, pela Gemini API, por cache de classificacao anterior ou por fallback para as regras quando a API nao responde de forma aproveitavel. O objetivo dessa base nao e expor o conjunto local monitorado, mas registrar sinais suficientes para compor a fila de backup e documentar a origem de cada decisao.
+
+\begin{table}[h]
+\centering
+\caption{Campos resumidos do dataset registrado pelo sistema}
+\begin{tabular}{L{0.42\textwidth}L{0.42\textwidth}}
+\toprule
+Grupo de informacao & Finalidade no sistema \\
+\midrule
+Metadados do arquivo & Identificar tipo, contexto, tamanho e recencia \\
+Hash e duplicidade & Detectar conteudo repetido e evitar armazenamento redundante \\
+Prioridade e pontuacao & Determinar a urgencia do backup \\
+Fonte da classificacao & Registrar se a decisao veio de regra local, Gemini API, cache ou fallback \\
+Justificativa e arvore de decisao & Permitir rastreabilidade da classificacao \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Priorizacao Inteligente por Metadados com Gemini API}
+
+A camada de priorizacao combina uma regra local com uma consulta opcional a Gemini API. O codigo usa o modelo \texttt{gemini-2.5-flash}, configurado como modelo padrao, e envia requisicoes ao endpoint \texttt{generateContent}. A configuracao de geracao define \texttt{responseMimeType = application/json}, alinhando o retorno esperado a um objeto estruturado \cite{googleStructuredOutput,googleGeminiModels}.
+
+O sistema nao envia o conteudo dos arquivos a Gemini API. O prompt instrui explicitamente o modelo a usar somente metadados e a nao presumir o conteudo real do arquivo. Essa decisao reduz exposicao de dados sensiveis e preserva a funcao da API como classificador de sinais operacionais.
+
+\small
+\begin{longtable}{L{0.27\textwidth}L{0.30\textwidth}L{0.33\textwidth}}
+\caption{Metadados enviados a Gemini API}\\
+\toprule
+Campo & Origem no sistema & Finalidade \\
+\midrule
+\endfirsthead
+\toprule
+Campo & Origem no sistema & Finalidade \\
+\midrule
+\endhead
+\texttt{nome} & Nome do arquivo no dataset & Identificar sinais textuais de importancia no nome \\
+\texttt{extensao} & Extensao normalizada pelo scanner & Diferenciar documentos, codigo, temporarios e arquivos de sistema \\
+\texttt{tipo} & Tipo inferido pelo scanner & Agrupar arquivos por categoria operacional \\
+\texttt{tamanho\_kb} & Tamanho registrado em KB & Considerar custo de copia e armazenamento \\
+\texttt{dias\_desde\_modificacao} & Data de modificacao observada & Medir recencia \\
+\texttt{quantidade\_modificacoes\_observadas} & Contador de atividade local & Detectar arquivos com mudancas frequentes \\
+\texttt{quantidade\_acessos\_observados} & Contador de atividade local & Detectar arquivos consultados frequentemente \\
+\texttt{diretorio\_contexto} & Contexto extraido do caminho & Identificar diretorios de usuario, projeto ou baixa relevancia \\
+\texttt{duplicado\_por\_hash} & Comparacao por hash & Penalizar conteudo ja representado \\
+\texttt{politica\_regra\_local} & Saida da heuristica local & Informar a decisao base \\
+\texttt{pontuacao\_regra\_local} & Score local & Informar intensidade da decisao \\
+\texttt{decisoes\_regra\_local} & Arvore local serializada & Explicar os sinais usados pela regra \\
+\bottomrule
+\end{longtable}
+\normalsize
+
+\begin{table}[h]
+\centering
+\caption{Retorno esperado da Gemini API}
+\begin{tabular}{L{0.28\textwidth}L{0.58\textwidth}}
+\toprule
+Campo retornado & Uso dentro do software \\
+\midrule
+\texttt{prioridade} & Define classificacao baixa, media ou alta \\
+\texttt{pontuacao} & Complementa o score final de priorizacao \\
+\texttt{confianca} & Controla a fusao entre regra local e LLM \\
+\texttt{motivos} & Alimenta a justificativa registrada no dataset \\
+\texttt{decisoes} & E incorporado a arvore de decisao final com prefixo de LLM \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A fusao preserva a regra local em casos de baixa confianca. Quando a confianca da LLM fica abaixo de 0,55 e a prioridade proposta pela LLM discorda da regra, prevalece a regra local. Nos demais casos, o sistema usa a maior prioridade entre regra local e Gemini. A prioridade final determina a politica de fila: prioridade baixa entra em janela semanal, prioridade media entra a cada dois dias e prioridade alta entra no primeiro inicio do dia e novamente a cada quatro horas quando houver alteracao.
+
+\subsection{Arquitetura Operacional}
+
+A Figura~\ref{fig:arquitetura-upload} apresenta a arquitetura de envio do sistema, agora interpretada a partir da implementacao incremental. O fluxo inicia com a configuracao do diretorio monitorado, passa pelo scanner de metadados, aplica a classificacao por regras locais e Gemini API, calcula hashes para deduplicacao e registra o estado em snapshots restauraveis. Quando a nuvem esta configurada, os objetos e metadados podem ser sincronizados com o Amazon S3, mantendo o backup local como referencia principal de restauracao.
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.95\linewidth]{figura1.png}
+    \caption{Arquitetura geral de upload e sincronizacao do sistema de backup incremental.}
+    \label{fig:arquitetura-upload}
+\end{figure}
+
+A Figura~\ref{fig:arquitetura-download} representa o fluxo de restauracao. O usuario seleciona um snapshot ou versao disponivel, e o sistema reconstrui os arquivos a partir dos objetos locais ou, quando necessario, de objetos recuperados da nuvem. Essa separacao entre snapshot logico e armazenamento fisico permite restaurar estados anteriores sem depender exclusivamente do versionamento nativo do provedor.
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.95\linewidth]{figura2.png}
+    \caption{Arquitetura geral de restauracao a partir de snapshots e objetos armazenados.}
+    \label{fig:arquitetura-download}
+\end{figure}
+
+A Figura~\ref{fig:tabela-servicos-nuvem} mantem a comparacao entre servicos de armazenamento em nuvem do artigo base. No escopo deste trabalho, essa comparacao justifica a escolha do S3 como camada de sincronizacao externa, mas o controle de restauracao permanece no sistema por meio de snapshots locais e historico proprio.
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.95\linewidth]{figura3.png}
+    \caption{Comparacao entre servicos de armazenamento em nuvem considerados no projeto.}
+    \label{fig:tabela-servicos-nuvem}
+\end{figure}
+
+\subsection{Backup Incremental e Deduplicacao}
+
+O backup incremental gera snapshots JSON com identificador, data de criacao, gatilho, total de arquivos, contadores por status e lista de arquivos. Cada item pode registrar caminho original, nome arquivado, \texttt{file\_hash}, \texttt{object\_path}, prioridade, score, tamanho e status. A deduplicacao evita duplicacao fisica: se o objeto ja existe ou o arquivo nao foi alterado, o snapshot registra referencia ou status de ignorado, em vez de gravar novamente o mesmo conteudo.
+
+O historico operacional registra verificacoes incrementais, snapshots gerados, arquivos inalterados, itens fora da janela de prioridade e estados de sincronizacao. Esses registros representam execucoes em que a politica incremental decide entre armazenar novos objetos, referenciar conteudos existentes ou adiar arquivos ainda nao elegiveis para backup.
+
+\begin{table}[h]
+\centering
+\caption{Dados registrados por backup incremental}
+\begin{tabular}{L{0.34\textwidth}L{0.52\textwidth}}
+\toprule
+Campo do historico/snapshot & Interpretacao \\
+\midrule
+\texttt{total\_files} & Quantidade de arquivos avaliados na execucao \\
+\texttt{objects\_stored} & Objetos novos gravados no armazenamento local \\
+\texttt{objects\_referenced} & Objetos ja existentes referenciados pelo snapshot \\
+\texttt{files\_unchanged} & Arquivos ignorados por hash inalterado \\
+\texttt{files\_not\_eligible} & Arquivos fora da janela da politica de prioridade \\
+\texttt{duplicate\_files\_skipped} & Arquivos duplicados ignorados por hash \\
+\texttt{compacted\_size\_bytes} & Tamanho compactado registrado para a execucao \\
+\texttt{cloud\_sync\_status} & Estado de sincronizacao com nuvem \\
+\texttt{sync\_status} & Estado de sincronizacao de metadados com API \\
+\texttt{started\_at}/\texttt{finished\_at} & Inicio e fim da execucao \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{Tipos de informacao consolidados no historico}
+\begin{tabular}{L{0.34\textwidth}L{0.50\textwidth}}
+\toprule
+Informacao consolidada & Uso analitico \\
+\midrule
+Arquivos avaliados & Medir o escopo de cada verificacao incremental \\
+Objetos novos e referenciados & Distinguir escrita fisica de reaproveitamento por deduplicacao \\
+Arquivos inalterados & Identificar economia de trabalho em execucoes sem mudancas \\
+Arquivos nao elegiveis & Explicar a acao da politica de prioridade \\
+Estados de sincronizacao & Registrar sucesso, pendencia ou falha de integracao externa \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Restauracao e Sincronizacao Local-Nuvem}
+
+Os snapshots locais sao a unidade de restauracao. Eles mantem a composicao do backup mesmo quando a sincronizacao externa nao e concluida. Essa abordagem separa o estado local restauravel do estado remoto, permitindo que uma falha de upload nao invalide os objetos e manifestos ja persistidos.
+
+O prototipo tambem registra estados de nuvem e sincronizacao com API. A avaliacao experimental inclui uma falha simulada de upload S3 com \texttt{cloud\_sync\_status = falhou} e erro \texttt{AccessDenied}. Nesse caso, o dado relevante nao e sucesso de nuvem, mas a preservacao do estado local e o registro explicito do erro para reprocessamento ou diagnostico. O uso de armazenamento em nuvem e versionamento de objetos e consistente com praticas documentadas para servicos como Amazon S3 Versioning \cite{awsS3Versioning}.
+
+\section{Resultados e Discussao}
+
+Como resultado do desenvolvimento, foi obtido um prototipo funcional de sistema de backup incremental com interface desktop, API central, painel web e integracao com armazenamento em nuvem. A aplicacao permite cadastro e autenticacao de usuarios, configuracao de diretorios monitorados, execucao de backup manual ou agendado, geracao de historico, restauracao por snapshots e sincronizacao de metadados com a API.
+
+A Figura~\ref{fig:resumo-avaliacao-experimental} apresenta o resumo visual dos resultados do artigo base. As tabelas desta secao detalham os mesmos dados numericos a partir dos registros experimentais do prototipo, evitando extrapolacoes alem do que foi medido.
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=1\linewidth]{figura4.png}
+    \caption{Resumo visual dos resultados experimentais disponiveis no prototipo.}
+    \label{fig:resumo-avaliacao-experimental}
+\end{figure}
+
+Os resultados experimentais disponiveis foram obtidos no cenario \texttt{small}, com tamanho de origem de 1.638.400 bytes. A comparacao direta registrada mostra backup ZIP tradicional em 2,894523 s e backup incremental sem alteracoes em 0,091404 s. A maior reducao de armazenamento registrada foi de 17,6650\% no backup incremental inicial. A execucao incremental criptografada levou 0,173721 s e registrou reducao de 3,4193\%. A falha simulada de upload para S3 levou 0,547110 s, registrando \texttt{falhou} e \texttt{AccessDenied}.
+
+\begin{table}[h]
+\centering
+\caption{Resultados experimentais disponiveis}
+\begin{tabular}{L{0.26\textwidth}L{0.18\textwidth}L{0.18\textwidth}L{0.26\textwidth}}
+\toprule
+Cenario & Tempo & Reducao/tamanho & Observacao \\
+\midrule
+ZIP tradicional & 2,894523 s & -2,2288\% & Backup completo em ZIP \\
+Incremental inicial & 0,193627 s & 17,6650\% & Escrita inicial com objetos novos e referencias deduplicadas \\
+Incremental sem alteracoes & 0,091404 s & 11,8340\% & Cenario sem mudancas relevantes entre execucoes \\
+Incremental com mudancas & 0,127334 s & -4,2583\% & Cenario com atualizacao parcial do conjunto avaliado \\
+Restauracao incremental & 1,442226 s & 1.638.400 bytes restaurados & Valida restaurabilidade local \\
+Exportacao ZIP & 1,427627 s & -2,2293\% & Exportacao a partir do estado incremental \\
+Incremental criptografado & 0,173721 s & 3,4193\% & Execucao com protecao criptografica habilitada \\
+Upload S3 com falha & 0,547110 s & -4,2583\% & \texttt{AccessDenied}; estado local preservado \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Esses numeros nao devem ser interpretados como prova geral de superioridade estatistica. Eles indicam, no prototipo e nesse cenario, que a incrementalidade reduz trabalho quando nao ha mudancas, que a deduplicacao permite representar arquivos por referencia e que a preservacao local protege a restauracao mesmo diante de falha de nuvem. A camada Gemini ja e operacional na fila de prioridade: os metadados classificados alimentam o dataset, o dataset alimenta o manifesto elegivel e o manifesto define quais arquivos entram no snapshot por prioridade. Ainda assim, nao ha comparacao formal suficiente para afirmar que a Gemini supera uma heuristica pura.
+
+Os snapshots existentes reforcam a estrutura incremental. Neles aparecem registros de objetos novos, conteudos reaproveitados por referencia e arquivos ignorados por permanecerem inalterados. Essa estrutura confirma que a unidade de restauracao do sistema e logica: o snapshot descreve o estado do backup, enquanto os objetos fisicos armazenam apenas o conteudo necessario para reconstruir esse estado.
+
+\begin{table}[h]
+\centering
+\caption{Limitacoes da avaliacao}
+\begin{tabular}{L{0.36\textwidth}L{0.50\textwidth}}
+\toprule
+Limitacao & Impacto \\
+\midrule
+Dataset sintetico experimental & Os tempos nao representam todos os perfis de uso reais \\
+Poucas execucoes de benchmark & Nao ha base para intervalo de confianca ou teste estatistico amplo \\
+Validacao inicial da Gemini & A API foi integrada funcionalmente, mas nao comparada formalmente contra heuristica pura \\
+Falha de nuvem simulada & Demonstra registro e preservacao local, mas nao mede comportamento em multiplos provedores \\
+Figuras reaproveitadas do artigo base & As imagens apoiam a explicacao, mas os dados numericos principais estao nas tabelas \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Conclusao}
+
+O trabalho descreve um sistema de backup incremental, hibrido e restauravel que combina deduplicacao, snapshots locais, sincronizacao em nuvem e priorizacao por metadados. A implementacao atual substitui a promessa generica de aprendizado de maquina por um mecanismo concreto: regras locais complementadas pela Gemini API quando disponivel. A API recebe apenas metadados operacionais e retorna uma classificacao JSON usada para compor a fila de backup.
+
+A avaliacao deve ser lida como validacao inicial do prototipo. Os dados reais mostram dataset classificado, historico de verificacoes incrementais, snapshots com objetos novos e arquivos inalterados, e benchmarks com tempos para ZIP tradicional, backup incremental, restauracao, criptografia e falha de upload. Os ganhos observados decorrem principalmente da incrementalidade, deduplicacao, compactacao e preservacao local. Trabalhos futuros devem ampliar o numero de execucoes, variar datasets, comparar formalmente a priorizacao Gemini contra heuristicas puras e medir o comportamento em condicoes reais de rede e nuvem.
+
+\section{Agradecimentos}
+
+Agradecemos aos professores orientadores, colegas e instituicoes que contribuiram direta ou indiretamente para este trabalho.
+
+\begin{thebibliography}{9}
+
+\bibitem{googleStructuredOutput}
+Google AI for Developers.
+\textit{Structured Outputs, Gemini API}.
+Disponivel em: \url{https://ai.google.dev/gemini-api/docs/structured-output}.
+Acesso em: 29 maio 2026.
+
+\bibitem{googleGeminiModels}
+Google AI for Developers.
+\textit{Gemini models, Gemini API}.
+Disponivel em: \url{https://ai.google.dev/gemini-api/docs/models/gemini}.
+Acesso em: 29 maio 2026.
+
+\bibitem{awsS3Versioning}
+Amazon Web Services.
+\textit{Retaining multiple versions of objects with S3 Versioning}.
+Disponivel em: \url{https://docs.aws.amazon.com/AmazonS3/latest/userguide/Versioning.html}.
+Acesso em: 29 maio 2026.
+
+\bibitem{nist800146}
+Badger, M.; Grance, T.; Patt-Corner, R.; Voas, J.
+\textit{Cloud Computing Synopsis and Recommendations}.
+NIST Special Publication 800-146, 2012.
+DOI: \url{https://doi.org/10.6028/NIST.SP.800-146}.
+
+\bibitem{lillibridge2009sparse}
+Lillibridge, M.; Eshghi, K.; Bhagwat, D.; Deolalikar, V.; Trezise, G.; Camble, P.
+\textit{Sparse Indexing: Large Scale, Inline Deduplication Using Sampling and Locality}.
+Proceedings of the 7th USENIX Conference on File and Storage Technologies (FAST), 2009.
+Disponivel em: \url{https://www.usenix.org/events/fast09/tech/full_papers/lillibridge/lillibridge_html/}.
+
+\end{thebibliography}
+
+\end{document}
