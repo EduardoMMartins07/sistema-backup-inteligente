@@ -19,7 +19,7 @@
       <nav class="nav">
         {% if current_user and current_user.role == "ADMIN_EMPRESA" %}
           <a href="/web/dashboard" class="{{ 'active' if request.url.path == '/web/dashboard' else '' }}">Dashboard</a>
-          <a href="/web/users" class="{{ 'active' if request.url.path == '/web/users' else '' }}">Usuarios</a>
+          <a href="/web/users" class="{{ 'active' if request.url.path == '/web/users' else '' }}">Usu&aacute;rios</a>
           <a href="/web/devices" class="{{ 'active' if request.url.path == '/web/devices' else '' }}">Dispositivos</a>
           <a href="/web/backups" class="{{ 'active' if request.url.path.startswith('/web/backups') else '' }}">Backups</a>
           <a href="/web/snapshots" class="{{ 'active' if request.url.path == '/web/snapshots' else '' }}">Snapshots</a>
@@ -33,7 +33,7 @@
       <header class="topbar">
         <div>
           <h1>{{ title }}</h1>
-          <p>{{ current_user.name if current_user else "" }}{% if current_user %} · {{ current_user.role }}{% endif %}</p>
+          <p>{{ current_user.name if current_user else "" }}{% if current_user %} &middot; {{ current_user.role }}{% endif %}</p>
         </div>
         <form action="/web/logout" method="post">
           <button class="button ghost" type="submit">Sair</button>
@@ -47,4 +47,3 @@
   <script src="{{ url_for('static', path='app.js') }}"></script>
 </body>
 </html>
-

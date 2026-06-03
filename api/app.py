@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from sqlite3 import Connection
 from time import time
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -76,6 +78,7 @@ logger = get_logger(__name__)
 LOGIN_ATTEMPTS = {}
 LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 8
 LOGIN_RATE_LIMIT_WINDOW_SECONDS = 15 * 60
+BRASILIA_TZ = ZoneInfo("America/Sao_Paulo")
 
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -97,7 +100,34 @@ def format_bytes(value):
         size /= 1024
 
 
+def format_datetime_br(value):
+    if not value:
+        return "-"
+
+    if isinstance(value, datetime):
+        current = value
+    else:
+        text = str(value).strip()
+
+        if not text:
+            return "-"
+
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+
+        try:
+            current = datetime.fromisoformat(text)
+        except ValueError:
+            return value
+
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+
+    return current.astimezone(BRASILIA_TZ).strftime("%d/%m/%Y %H:%M")
+
+
 templates.env.filters["bytes"] = format_bytes
+templates.env.filters["datetime_br"] = format_datetime_br
 
 
 def api_backup(backup):
@@ -991,7 +1021,7 @@ def create_app():
             request,
             "users.html",
             {
-                "title": "Usuarios",
+                "title": "Usuários",
                 "current_user": current_user,
                 "users": list_company_users(db, current_user["company_id"]),
             },

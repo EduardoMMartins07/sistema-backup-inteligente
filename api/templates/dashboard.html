@@ -1,8 +1,31 @@
 {% extends "base.html" %}
 {% block content %}
+<section class="health-grid">
+  <article class="health-card success">
+    <span>Taxa de sucesso</span>
+    <strong>{{ summary.successRate }}%</strong>
+    <p>{{ summary.successfulBackups }} backups conclu&iacute;dos com sucesso.</p>
+  </article>
+  <article class="health-card danger">
+    <span>&Uacute;ltima falha</span>
+    <strong>{{ summary.latestFailureAt | datetime_br }}</strong>
+    <p>{{ summary.failedBackups }} falhas registradas no hist&oacute;rico.</p>
+  </article>
+  <article class="health-card warning">
+    <span>Sem backup recente</span>
+    <strong>{{ summary.staleDevices }}</strong>
+    <p>Dispositivos sem backup nos &uacute;ltimos {{ summary.staleWindowHours }}h.</p>
+  </article>
+  <article class="health-card accent">
+    <span>Volume protegido</span>
+    <strong>{{ summary.totalSizeBytes | bytes }}</strong>
+    <p>Total armazenado pela empresa.</p>
+  </article>
+</section>
+
 <section class="metric-grid">
   <article class="metric">
-    <span>Usuarios</span>
+    <span>Usu&aacute;rios</span>
     <strong>{{ summary.users }}</strong>
   </article>
   <article class="metric">
@@ -21,10 +44,6 @@
     <span>Falhas</span>
     <strong>{{ summary.failedBackups }}</strong>
   </article>
-  <article class="metric">
-    <span>Tamanho total</span>
-    <strong>{{ summary.totalSizeBytes | bytes }}</strong>
-  </article>
 </section>
 
 <section class="panel">
@@ -37,12 +56,12 @@
       <thead>
         <tr>
           <th>Nome</th>
-          <th>Usuario</th>
+          <th>Usu&aacute;rio</th>
           <th>Dispositivo</th>
           <th>Pasta</th>
           <th>Status</th>
           <th>Tamanho</th>
-          <th>Data</th>
+          <th>Hor&aacute;rio</th>
         </tr>
       </thead>
       <tbody>
@@ -54,7 +73,7 @@
             <td class="path">{{ backup.folder_path }}</td>
             <td><span class="status {{ backup.status | lower }}">{{ backup.status }}</span></td>
             <td>{{ backup.size_bytes | bytes }}</td>
-            <td>{{ backup.created_at }}</td>
+            <td>{{ backup.created_at | datetime_br }}</td>
           </tr>
         {% else %}
           <tr><td colspan="7" class="empty">Nenhum backup registrado.</td></tr>
@@ -64,4 +83,3 @@
   </div>
 </section>
 {% endblock %}
-

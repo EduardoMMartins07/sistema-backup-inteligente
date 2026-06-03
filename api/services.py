@@ -2,6 +2,7 @@ import json
 import os
 import platform
 import shutil
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import HTTPException, status
@@ -16,6 +17,7 @@ BACKUP_TYPES = {"FULL", "INCREMENTAL", "SNAPSHOT"}
 BACKUP_STATUS = {"PENDING", "RUNNING", "SUCCESS", "FAILED", "CANCELED"}
 BACKUP_PRIORITIES = {"LOW", "MEDIUM", "HIGH", "NORMAL"}
 SNAPSHOT_EVENT = "SNAPSHOT_CREATED"
+RECENT_BACKUP_WINDOW_HOURS = 72
 
 
 def require_found(resource, message="Recurso nao encontrado."):
@@ -1099,6 +1101,40 @@ def admin_dashboard(db, current_user):
             "SELECT COALESCE(SUM(size_bytes), 0) AS total FROM backups WHERE company_id = ?"
         ),
     }
+    stale_threshold = (
+        datetime.now(timezone.utc) - timedelta(hours=RECENT_BACKUP_WINDOW_HOURS)
+    ).replace(microsecond=0).isoformat()
+    summary["staleDevices"] = db.execute(
+        """
+        SELECT COUNT(*) AS total
+        FROM devices d
+        WHERE d.company_id = ?
+          AND NOT EXISTS (
+              SELECT 1
+              FROM backups b
+              WHERE b.company_id = d.company_id
+                AND b.device_id = d.id
+                AND b.created_at >= ?
+          )
+        """,
+        (company_id, stale_threshold),
+    ).fetchone()["total"]
+    summary["staleWindowHours"] = RECENT_BACKUP_WINDOW_HOURS
+    total_backups = summary["backups"] or 0
+    summary["successRate"] = round(
+        (summary["successfulBackups"] / total_backups) * 100, 1
+    ) if total_backups else 0
+    latest_failure = db.execute(
+        """
+        SELECT created_at
+        FROM backups
+        WHERE company_id = ? AND status = 'FAILED'
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (company_id,),
+    ).fetchone()
+    summary["latestFailureAt"] = latest_failure["created_at"] if latest_failure else None
     recent = list_backups(db, current_user, limit=8)
     return {
         "company": public_company(company),

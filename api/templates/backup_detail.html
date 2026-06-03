@@ -14,8 +14,8 @@
       <dt>Arquivos</dt><dd>{{ backup.file_count }}</dd>
       <dt>Checksum</dt><dd class="mono">{{ backup.checksum or "-" }}</dd>
       <dt>S3 key</dt><dd class="mono path">{{ backup.s3_key }}</dd>
-      <dt>Inicio</dt><dd>{{ backup.started_at }}</dd>
-      <dt>Fim</dt><dd>{{ backup.finished_at or "-" }}</dd>
+      <dt>In&iacute;cio</dt><dd>{{ backup.started_at | datetime_br }}</dd>
+      <dt>Fim</dt><dd>{{ backup.finished_at | datetime_br }}</dd>
       <dt>Erro</dt><dd>{{ backup.error_message or "-" }}</dd>
     </dl>
   </article>
@@ -42,7 +42,7 @@
     {% else %}
       <div class="empty-state compact">
         <strong>Nenhum arquivo encontrado nos metadados do backup.</strong>
-        <p>O backup continua registrado, mas a lista de arquivos ainda nao foi sincronizada.</p>
+        <p>O backup continua registrado, mas a lista de arquivos ainda n&atilde;o foi sincronizada.</p>
       </div>
     {% endif %}
   </article>
@@ -70,7 +70,7 @@
             <td class="mono path">{{ snapshot.s3_key }}</td>
             <td>{{ snapshot.size_bytes | bytes }}</td>
             <td>{{ snapshot.file_count }}</td>
-            <td>{{ snapshot.created_at }}</td>
+            <td>{{ snapshot.created_at | datetime_br }}</td>
           </tr>
         {% else %}
           <tr><td colspan="5" class="empty">Nenhum snapshot vinculado.</td></tr>

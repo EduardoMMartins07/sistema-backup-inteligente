@@ -22,10 +22,10 @@
       <thead>
         <tr>
           <th>Evento</th>
-          <th>Usuario</th>
-          <th>Descricao</th>
+          <th>Usu&aacute;rio</th>
+          <th>Descri&ccedil;&atilde;o</th>
           <th>Metadados</th>
-          <th>Data</th>
+          <th>Hor&aacute;rio</th>
         </tr>
       </thead>
       <tbody>
@@ -35,7 +35,7 @@
             <td>{{ log.user_name or "-" }}</td>
             <td>{{ log.description }}</td>
             <td><code>{{ log.metadata }}</code></td>
-            <td>{{ log.created_at }}</td>
+            <td>{{ log.created_at | datetime_br }}</td>
           </tr>
         {% else %}
           <tr><td colspan="5" class="empty">Nenhum evento encontrado.</td></tr>
@@ -45,4 +45,3 @@
   </div>
 </section>
 {% endblock %}
-

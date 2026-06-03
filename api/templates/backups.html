@@ -7,7 +7,7 @@
   <form class="filters" method="get" action="{{ '/web/my-backups' if personal_view else '/web/backups' }}">
     {% if not personal_view %}
       <select name="userId">
-        <option value="">Todos usuarios</option>
+        <option value="">Todos os usu&aacute;rios</option>
         {% for user in users %}
           <option value="{{ user.id }}" {{ "selected" if filters.userId == user.id else "" }}>{{ user.name }}</option>
         {% endfor %}
@@ -59,13 +59,13 @@
       <thead>
         <tr>
           <th>Nome</th>
-          <th>Usuario</th>
+          <th>Usu&aacute;rio</th>
           <th>Dispositivo</th>
           <th>Tipo</th>
           <th>Status</th>
           <th>Prioridade</th>
           <th>Tamanho</th>
-          <th>Data</th>
+          <th>Hor&aacute;rio</th>
         </tr>
       </thead>
       <tbody>
@@ -78,7 +78,7 @@
             <td><span class="status {{ backup.status | lower }}">{{ backup.status }}</span></td>
             <td>{{ backup.priority }}</td>
             <td>{{ backup.size_bytes | bytes }}</td>
-            <td>{{ backup.created_at }}</td>
+            <td>{{ backup.created_at | datetime_br }}</td>
           </tr>
         {% else %}
           <tr><td colspan="8" class="empty">Nenhum backup encontrado.</td></tr>

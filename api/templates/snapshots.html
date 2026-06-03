@@ -10,7 +10,7 @@
         <tr>
           <th>Nome</th>
           <th>Backup</th>
-          <th>Usuario</th>
+          <th>Usu&aacute;rio</th>
           <th>Dispositivo</th>
           <th>S3 key</th>
           <th>Tamanho</th>
@@ -26,7 +26,7 @@
             <td>{{ snapshot.device_name }}</td>
             <td class="mono path">{{ snapshot.s3_key }}</td>
             <td>{{ snapshot.size_bytes | bytes }}</td>
-            <td>{{ snapshot.created_at }}</td>
+            <td>{{ snapshot.created_at | datetime_br }}</td>
           </tr>
         {% else %}
           <tr><td colspan="7" class="empty">Nenhum snapshot registrado.</td></tr>
@@ -36,4 +36,3 @@
   </div>
 </section>
 {% endblock %}
-

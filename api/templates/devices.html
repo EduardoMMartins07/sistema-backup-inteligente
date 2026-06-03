@@ -10,9 +10,9 @@
         <tr>
           <th>Nome</th>
           <th>Hostname</th>
-          <th>Usuario</th>
+          <th>Usu&aacute;rio</th>
           <th>Identificador</th>
-          <th>Ultimo contato</th>
+          <th>&Uacute;ltimo contato</th>
           <th>Pastas</th>
         </tr>
       </thead>
@@ -23,7 +23,7 @@
             <td>{{ device.hostname }}</td>
             <td>{{ device.user_name }}</td>
             <td class="mono">{{ device.identifier }}</td>
-            <td>{{ device.last_seen_at }}</td>
+            <td>{{ device.last_seen_at | datetime_br }}</td>
             <td>
               {% for folder in device.folders %}
                 <div class="path">{{ folder.path }}</div>
@@ -40,4 +40,3 @@
   </div>
 </section>
 {% endblock %}
-
