@@ -86,5 +86,31 @@
       </tbody>
     </table>
   </div>
+  {% if pagination and pagination.pages > 1 %}
+    <nav class="pagination" aria-label="Navegacao entre paginas">
+      <span class="pagination-info">{{ pagination.total }} backups &middot; Pagina {{ pagination.page }} de {{ pagination.pages }}</span>
+      <div class="pagination-links">
+        {% set base_url = '/web/my-backups' if personal_view else '/web/backups' %}
+
+        {% if pagination.page > 1 %}
+          <a class="button small ghost" href="{{ base_url }}{{ pagination_qs }}page={{ pagination.page - 1 }}">&laquo; Anterior</a>
+        {% endif %}
+
+        {% for p in range(1, pagination.pages + 1) %}
+          {% if p == pagination.page %}
+            <span class="pagination-current">{{ p }}</span>
+          {% elif p == 1 or p == pagination.pages or (p >= pagination.page - 2 and p <= pagination.page + 2) %}
+            <a class="button small ghost" href="{{ base_url }}{{ pagination_qs }}page={{ p }}">{{ p }}</a>
+          {% elif p == pagination.page - 3 or p == pagination.page + 3 %}
+            <span class="pagination-ellipsis">&hellip;</span>
+          {% endif %}
+        {% endfor %}
+
+        {% if pagination.page < pagination.pages %}
+          <a class="button small ghost" href="{{ base_url }}{{ pagination_qs }}page={{ pagination.page + 1 }}">Proximo &raquo;</a>
+        {% endif %}
+      </div>
+    </nav>
+  {% endif %}
 </section>
 {% endblock %}

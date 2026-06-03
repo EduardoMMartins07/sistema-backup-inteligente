@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -55,6 +56,7 @@ class ApiSettings:
     db_connect_timeout: int
     auto_migrate: bool
     log_web_timing: bool
+    redis_url: str
 
 
 def _int_env(name, default):
@@ -134,7 +136,15 @@ def _db_path_from_url(database_url, fallback):
     return path
 
 
+_SETTINGS_CACHE = None
+
+
 def get_settings():
+    global _SETTINGS_CACHE
+
+    if _SETTINGS_CACHE is not None:
+        return _SETTINGS_CACHE
+
     load_env_file()
     environment = _environment()
     db_path = os.environ.get(
@@ -142,7 +152,7 @@ def get_settings():
         str(PROJECT_ROOT / "config" / "api.sqlite3"),
     )
     database_url = _database_url(db_path)
-    return ApiSettings(
+    _SETTINGS_CACHE = ApiSettings(
         environment=environment,
         port=_int_env("PORT", 8000),
         api_base_url=_first_env(
@@ -194,11 +204,14 @@ def get_settings():
         seed_operator_password=_first_env("SEED_OPERATOR_PASSWORD"),
         seed_viewer_password=_first_env("SEED_VIEWER_PASSWORD"),
         db_pool_min=_int_env("SMARTBACKUP_DB_POOL_MIN", 0),
-        db_pool_max=_int_env("SMARTBACKUP_DB_POOL_MAX", 5),
+        db_pool_max=_int_env("SMARTBACKUP_DB_POOL_MAX", 20),
         db_connect_timeout=_int_env("SMARTBACKUP_DB_CONNECT_TIMEOUT", 10),
         auto_migrate=is_truthy(os.environ.get("SMARTBACKUP_AUTO_MIGRATE", "true")),
         log_web_timing=is_truthy(os.environ.get("SMARTBACKUP_LOG_WEB_TIMING")),
+        redis_url=_first_env("REDIS_URL"),
     )
+
+    return _SETTINGS_CACHE
 
 
 def is_truthy(value):

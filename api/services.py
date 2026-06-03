@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import platform
 import shutil
@@ -7,6 +8,7 @@ from pathlib import Path
 
 from fastapi import HTTPException, status
 
+from api.cache import cache_get, cache_set, is_redis_configured, make_cache_key
 from api.config import get_settings
 from api.database import row_to_dict, rows_to_dicts, utc_now
 from api.security import create_password_hash, new_id, normalize_role, verify_password
@@ -228,17 +230,26 @@ def create_company_with_admin(db, company_name, name, email, password):
 
 
 def list_company_users(db, company_id):
-    return rows_to_dicts(
+    cache_key = make_cache_key("users", company_id)
+    cached = cache_get(cache_key)
+
+    if cached is not None:
+        return cached
+
+    result = rows_to_dicts(
         db.execute(
             """
             SELECT id, company_id, name, email, role, status, created_at, updated_at
             FROM users
             WHERE company_id = ?
             ORDER BY status ASC, LOWER(name) ASC
+            LIMIT 200
             """,
             (company_id,),
         ).fetchall()
     )
+    cache_set(cache_key, result, ttl=60)
+    return result
 
 
 def update_company_user(db, company_id, user_id, name=None, role=None, status_value=None):
@@ -1056,7 +1067,11 @@ def list_backups(db, current_user, filters=None, limit=200):
     rows = db.execute(
         f"""
         SELECT
-            b.*,
+            b.id, b.name, b.type, b.status, b.priority,
+            b.size_bytes, b.file_count, b.s3_key, b.checksum,
+            b.error_message, b.company_id, b.user_id, b.device_id,
+            b.folder_id, b.local_path,
+            b.started_at, b.finished_at, b.created_at, b.updated_at,
             u.name AS user_name,
             d.name AS device_name,
             f.path AS folder_path
@@ -1073,14 +1088,86 @@ def list_backups(db, current_user, filters=None, limit=200):
     backups = rows_to_dicts(rows)
 
     for backup in backups:
-        backup["metadata"] = json_loads(backup.pop("metadata_json", "{}"))
+        backup["metadata"] = {}
 
     return backups
 
 
+PAGE_SIZE_DEFAULT = 25
+
+
+def list_backups_paginated(db, current_user, filters=None, page=1, page_size=PAGE_SIZE_DEFAULT):
+    """Retorna backups com paginacao.
+
+    Returns:
+        dict com chaves: items, total, page, pages, page_size
+    """
+    filters = filters or {}
+    where = ["b.company_id = ?"]
+    params = [current_user["company_id"]]
+
+    if current_user["role"] != "ADMIN_EMPRESA":
+        where.append("b.user_id = ?")
+        params.append(current_user["id"])
+
+    build_backup_filters(where, params, filters)
+    where_clause = " AND ".join(where)
+
+    # Total de registros
+    count_row = db.execute(
+        f"SELECT COUNT(*) AS total FROM backups b WHERE {where_clause}",
+        params,
+    ).fetchone()
+    total = count_row["total"] if isinstance(count_row, dict) else count_row[0]
+    pages = max(1, math.ceil(total / page_size))
+    page = max(1, min(page, pages))
+    offset = (page - 1) * page_size
+
+    rows = db.execute(
+        f"""
+        SELECT
+            b.id, b.name, b.type, b.status, b.priority,
+            b.size_bytes, b.file_count, b.s3_key, b.checksum,
+            b.error_message, b.company_id, b.user_id, b.device_id,
+            b.folder_id, b.local_path,
+            b.started_at, b.finished_at, b.created_at, b.updated_at,
+            u.name AS user_name,
+            d.name AS device_name,
+            f.path AS folder_path
+        FROM backups b
+        JOIN users u ON u.id = b.user_id
+        JOIN devices d ON d.id = b.device_id
+        JOIN monitored_folders f ON f.id = b.folder_id
+        WHERE {where_clause}
+        ORDER BY b.created_at DESC
+        LIMIT ? OFFSET ?
+        """,
+        params + [page_size, offset],
+    ).fetchall()
+    backups = rows_to_dicts(rows)
+
+    for backup in backups:
+        backup["metadata"] = {}
+
+    return {
+        "items": backups,
+        "total": total,
+        "page": page,
+        "pages": pages,
+        "page_size": page_size,
+    }
+
+
 def admin_dashboard(db, current_user):
-    company = require_found(get_company_by_id(db, current_user["company_id"]))
     company_id = current_user["company_id"]
+    cache_key = make_cache_key("dashboard", company_id)
+    cached = cache_get(cache_key)
+
+    if cached is not None:
+        cached["recentBackups"] = list_backups(db, current_user, limit=8)
+        return cached
+
+    company = require_found(get_company_by_id(db, company_id))
     summary_row = db.execute(
         """
         SELECT
@@ -1129,21 +1216,32 @@ def admin_dashboard(db, current_user):
         (summary["successfulBackups"] / total_backups) * 100, 1
     ) if total_backups else 0
     recent = list_backups(db, current_user, limit=8)
-    return {
+    result = {
         "company": public_company(company),
         "summary": summary,
         "recentBackups": recent,
     }
+    cache_set(cache_key, result, ttl=30)
+    return result
 
 
 def list_devices(db, current_user):
+    cache_key = make_cache_key("devices", current_user["company_id"])
+    cached = cache_get(cache_key)
+
+    if cached is not None:
+        return cached
+
     rows = db.execute(
         """
-        SELECT d.*, u.name AS user_name, u.email AS user_email
+        SELECT d.id, d.company_id, d.user_id, d.name, d.hostname,
+               d.identifier, d.created_at, d.updated_at, d.last_seen_at,
+               u.name AS user_name, u.email AS user_email
         FROM devices d
         JOIN users u ON u.id = d.user_id
         WHERE d.company_id = ?
         ORDER BY d.last_seen_at DESC
+        LIMIT 200
         """,
         (current_user["company_id"],),
     ).fetchall()
@@ -1155,7 +1253,8 @@ def list_devices(db, current_user):
         folders = rows_to_dicts(
             db.execute(
                 f"""
-                SELECT *
+                SELECT id, company_id, user_id, device_id, path, alias, active,
+                       created_at, updated_at
                 FROM monitored_folders
                 WHERE company_id = ? AND device_id IN ({placeholders})
                 ORDER BY LOWER(path)
@@ -1170,23 +1269,35 @@ def list_devices(db, current_user):
     for device in devices:
         device["folders"] = folders_by_device.get(device["id"], [])
 
+    cache_set(cache_key, devices, ttl=60)
     return devices
 
 
 def list_company_folders(db, current_user):
-    return rows_to_dicts(
+    cache_key = make_cache_key("folders", current_user["company_id"])
+    cached = cache_get(cache_key)
+
+    if cached is not None:
+        return cached
+
+    result = rows_to_dicts(
         db.execute(
             """
-            SELECT f.*, d.name AS device_name, u.name AS user_name
+            SELECT f.id, f.company_id, f.user_id, f.device_id, f.path,
+                   f.alias, f.active, f.created_at, f.updated_at,
+                   d.name AS device_name, u.name AS user_name
             FROM monitored_folders f
             JOIN devices d ON d.id = f.device_id
             JOIN users u ON u.id = f.user_id
             WHERE f.company_id = ?
             ORDER BY f.updated_at DESC
+            LIMIT 200
             """,
             (current_user["company_id"],),
         ).fetchall()
     )
+    cache_set(cache_key, result, ttl=60)
+    return result
 
 
 def _desktop_cache_device_id(device_id=None):
@@ -1389,15 +1500,22 @@ def list_snapshots(db, current_user, backup_id=None):
         where.append("s.backup_id = ?")
         params.append(backup_id)
 
+    limit_clause = "" if backup_id else "LIMIT 200"
+
     rows = db.execute(
         f"""
-        SELECT s.*, b.name AS backup_name, b.type AS backup_type, u.name AS user_name, d.name AS device_name
+        SELECT s.id, s.company_id, s.user_id, s.device_id, s.folder_id,
+               s.backup_id, s.name, s.s3_key, s.size_bytes, s.file_count,
+               s.checksum, s.created_at,
+               b.name AS backup_name, b.type AS backup_type,
+               u.name AS user_name, d.name AS device_name
         FROM snapshots s
         JOIN backups b ON b.id = s.backup_id
         JOIN users u ON u.id = s.user_id
         JOIN devices d ON d.id = s.device_id
         WHERE {' AND '.join(where)}
         ORDER BY s.created_at DESC
+        {limit_clause}
         """,
         params,
     ).fetchall()
@@ -1432,7 +1550,8 @@ def list_audit_logs(db, current_user, filters=None, limit=200):
 
     rows = db.execute(
         f"""
-        SELECT a.*, u.name AS user_name, u.email AS user_email
+        SELECT a.id, a.company_id, a.user_id, a.event, a.description,
+               a.created_at, u.name AS user_name, u.email AS user_email
         FROM audit_logs a
         LEFT JOIN users u ON u.id = a.user_id
         WHERE {' AND '.join(where)}
@@ -1444,7 +1563,7 @@ def list_audit_logs(db, current_user, filters=None, limit=200):
     logs = rows_to_dicts(rows)
 
     for log in logs:
-        log["metadata"] = json_loads(log.pop("metadata_json", "{}"))
+        log["metadata"] = {}
 
     return logs
 

@@ -199,6 +199,8 @@ def _with_neon_endpoint_option(database_url, parsed):
 
 class PostgresConnection:
 
+    _SQL_TRANSLATION_CACHE = {}
+
     def __init__(self, connection, pool=None):
         self._connection = connection
         self._pool = pool
@@ -230,8 +232,14 @@ class PostgresConnection:
 
     @staticmethod
     def _translate_sql(sql):
+        cached = PostgresConnection._SQL_TRANSLATION_CACHE.get(sql)
+
+        if cached is not None:
+            return cached
+
         translated = re.sub(r":([A-Za-z_][A-Za-z0-9_]*)", r"%(\1)s", sql)
         translated = translated.replace("?", "%s")
+        PostgresConnection._SQL_TRANSLATION_CACHE[sql] = translated
         return translated
 
 
@@ -287,7 +295,7 @@ def _get_postgres_pool(database_url):
             },
             open=False,
         )
-        _POSTGRES_POOL.open(wait=False)
+        _POSTGRES_POOL.open(wait=True, timeout=settings.db_connect_timeout)
         _POSTGRES_POOL_URL = url
         return _POSTGRES_POOL
 

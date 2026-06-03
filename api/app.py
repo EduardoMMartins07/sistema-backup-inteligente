@@ -1,3 +1,5 @@
+import urllib.parse
+
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from starlette import status
 
 from api.config import get_settings, s3_configured, validate_environment
@@ -51,6 +54,7 @@ from api.services import (
     get_user_by_id,
     list_audit_logs,
     list_backups,
+    list_backups_paginated,
     list_company_folders,
     list_company_users,
     list_device_backups,
@@ -82,6 +86,7 @@ BRASILIA_TZ = ZoneInfo("America/Sao_Paulo")
 
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates.env.auto_reload = get_settings().environment == "development"
 
 
 def format_bytes(value):
@@ -128,6 +133,15 @@ def format_datetime_br(value):
 
 templates.env.filters["bytes"] = format_bytes
 templates.env.filters["datetime_br"] = format_datetime_br
+
+
+def urlencode_filter(value):
+    if value is None:
+        return ""
+    return urllib.parse.quote(str(value), safe="")
+
+
+templates.env.filters["urlencode"] = urlencode_filter
 
 
 def api_backup(backup):
@@ -205,6 +219,14 @@ def normalize_s3_download_key(value):
     return key
 
 
+def _get_company_name_fast(db, company_id):
+    row = db.execute(
+        "SELECT name FROM companies WHERE id = ?",
+        (company_id,),
+    ).fetchone()
+    return row["name"] if row else company_id
+
+
 def build_auth_response(user):
     return {
         "token": create_access_token(user),
@@ -236,6 +258,18 @@ def record_failed_login(request, email):
 
 def clear_login_attempts(request, email):
     LOGIN_ATTEMPTS.pop(login_rate_limit_key(request, email), None)
+
+
+def build_pagination_qs(filters, personal_view=False):
+    """Constrói a query string para os links de paginacao preservando os filtros ativos."""
+    params = []
+
+    for k, v in filters.items():
+        if v not in (None, ""):
+            params.append(f"{k}={urllib.parse.quote(str(v), safe='')}")
+
+    prefix = ("?" + "&".join(params) + "&") if params else "?"
+    return prefix
 
 
 def filters_from_query(
@@ -294,9 +328,7 @@ def require_web_admin(request: Request, db: Connection):
     if not current_user:
         return None, web_redirect_to_login(request)
 
-    company = get_company_by_id(db, current_user["company_id"])
-    if company:
-        current_user["company_name"] = company.get("name") or current_user["company_id"]
+    current_user["company_name"] = _get_company_name_fast(db, current_user["company_id"])
 
     if current_user["role"] != "ADMIN_EMPRESA":
         return current_user, web_forbidden(request, current_user)
@@ -310,9 +342,7 @@ def require_web_user(request: Request, db: Connection):
     if not current_user:
         return None, web_redirect_to_login(request)
 
-    company = get_company_by_id(db, current_user["company_id"])
-    if company:
-        current_user["company_name"] = company.get("name") or current_user["company_id"]
+    current_user["company_name"] = _get_company_name_fast(db, current_user["company_id"])
 
     return current_user, None
 
@@ -364,6 +394,8 @@ def create_app():
 
             return response
 
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
+
     if settings.cors_origins:
         app.add_middleware(
             CORSMiddleware,
@@ -372,7 +404,20 @@ def create_app():
             allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
             allow_headers=["Authorization", "Content-Type"],
         )
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    app.mount(
+        "/static",
+        StaticFiles(directory=str(STATIC_DIR), check_dir=False),
+        name="static",
+    )
+
+    @app.middleware("http")
+    async def add_cache_headers(request: Request, call_next):
+        response = await call_next(request)
+
+        if request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "public, max-age=3600, immutable"
+
+        return response
 
     @app.get("/")
     def root():
@@ -1136,6 +1181,7 @@ def create_app():
         priority: str | None = None,
         startDate: str | None = None,
         endDate: str | None = None,
+        page: int = 1,
         db: Connection = Depends(get_db),
     ):
         current_user, response = require_web_admin(request, db)
@@ -1144,18 +1190,26 @@ def create_app():
             return response
 
         filters = filters_from_query(userId, deviceId, folderId, status, type, priority, startDate, endDate)
+        paginated = list_backups_paginated(db, current_user, filters=filters, page=page)
         return templates.TemplateResponse(
             request,
             "backups.html",
             {
                 "title": "Backups",
                 "current_user": current_user,
-                "backups": list_backups(db, current_user, filters=filters),
+                "backups": paginated["items"],
                 "users": list_company_users(db, current_user["company_id"]),
                 "devices": list_devices(db, current_user),
                 "folders": list_company_folders(db, current_user),
                 "filters": filters,
                 "personal_view": False,
+                "pagination": {
+                    "page": paginated["page"],
+                    "pages": paginated["pages"],
+                    "total": paginated["total"],
+                    "page_size": paginated["page_size"],
+                },
+                "pagination_qs": build_pagination_qs(filters),
             },
         )
 
@@ -1167,6 +1221,7 @@ def create_app():
         priority: str | None = None,
         startDate: str | None = None,
         endDate: str | None = None,
+        page: int = 1,
         db: Connection = Depends(get_db),
     ):
         current_user, response = require_web_user(request, db)
@@ -1184,18 +1239,26 @@ def create_app():
             startDate,
             endDate,
         )
+        paginated = list_backups_paginated(db, current_user, filters=filters, page=page)
         return templates.TemplateResponse(
             request,
             "backups.html",
             {
                 "title": "Meus Backups",
                 "current_user": current_user,
-                "backups": list_backups(db, current_user, filters=filters),
+                "backups": paginated["items"],
                 "users": [],
                 "devices": [],
                 "folders": [],
                 "filters": filters,
                 "personal_view": True,
+                "pagination": {
+                    "page": paginated["page"],
+                    "pages": paginated["pages"],
+                    "total": paginated["total"],
+                    "page_size": paginated["page_size"],
+                },
+                "pagination_qs": build_pagination_qs(filters, personal_view=True),
             },
         )
 

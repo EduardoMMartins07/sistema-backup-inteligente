@@ -668,6 +668,48 @@ code,
   margin: 0;
 }
 
+/* ─── Paginacao ─────────────────────────────────────────── */
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 14px 4px 4px;
+}
+
+.pagination-info {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.pagination-links {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.pagination-current {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  height: 34px;
+  padding: 0 8px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: 900;
+  font-size: 14px;
+}
+
+.pagination-ellipsis {
+  color: var(--muted);
+  padding: 0 3px;
+}
+
 @media (max-width: 1120px) {
   .health-grid,
   .metric-grid {
