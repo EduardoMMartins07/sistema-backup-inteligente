@@ -50,6 +50,11 @@ class ApiSettings:
     seed_admin_password: str
     seed_operator_password: str
     seed_viewer_password: str
+    db_pool_min: int
+    db_pool_max: int
+    db_connect_timeout: int
+    auto_migrate: bool
+    log_web_timing: bool
 
 
 def _int_env(name, default):
@@ -188,6 +193,11 @@ def get_settings():
         seed_admin_password=_first_env("SEED_ADMIN_PASSWORD"),
         seed_operator_password=_first_env("SEED_OPERATOR_PASSWORD"),
         seed_viewer_password=_first_env("SEED_VIEWER_PASSWORD"),
+        db_pool_min=_int_env("SMARTBACKUP_DB_POOL_MIN", 0),
+        db_pool_max=_int_env("SMARTBACKUP_DB_POOL_MAX", 5),
+        db_connect_timeout=_int_env("SMARTBACKUP_DB_CONNECT_TIMEOUT", 10),
+        auto_migrate=is_truthy(os.environ.get("SMARTBACKUP_AUTO_MIGRATE", "true")),
+        log_web_timing=is_truthy(os.environ.get("SMARTBACKUP_LOG_WEB_TIMING")),
     )
 
 

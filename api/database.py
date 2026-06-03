@@ -2,6 +2,7 @@ import os
 import socket
 import sqlite3
 import re
+from threading import Lock
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -11,6 +12,9 @@ from api.config import get_settings
 
 MIGRATION_NAME = "001_multiempresa_api"
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+_POSTGRES_POOL = None
+_POSTGRES_POOL_URL = None
+_POSTGRES_POOL_LOCK = Lock()
 
 
 SCHEMA_SQL = """
@@ -195,18 +199,9 @@ def _with_neon_endpoint_option(database_url, parsed):
 
 class PostgresConnection:
 
-    def __init__(self, database_url):
-        try:
-            import psycopg
-            from psycopg.rows import dict_row
-        except ImportError as error:
-            raise RuntimeError(
-                "Instale psycopg[binary] para usar DATABASE_URL PostgreSQL."
-            ) from error
-
-        self._psycopg = psycopg
-        url = _force_ipv4_url(database_url)
-        self._connection = psycopg.connect(url, row_factory=dict_row)
+    def __init__(self, connection, pool=None):
+        self._connection = connection
+        self._pool = pool
 
     def execute(self, sql, params=None):
         return self._connection.execute(self._translate_sql(sql), params)
@@ -222,13 +217,89 @@ class PostgresConnection:
         self._connection.rollback()
 
     def close(self):
-        self._connection.close()
+        if not self._pool:
+            self._connection.close()
+            return
+
+        try:
+            self._connection.rollback()
+        except Exception:
+            pass
+
+        self._pool.putconn(self._connection)
 
     @staticmethod
     def _translate_sql(sql):
         translated = re.sub(r":([A-Za-z_][A-Za-z0-9_]*)", r"%(\1)s", sql)
         translated = translated.replace("?", "%s")
         return translated
+
+
+def _connect_postgres_direct(database_url):
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+    except ImportError as error:
+        raise RuntimeError(
+            "Instale psycopg[binary] para usar DATABASE_URL PostgreSQL."
+        ) from error
+
+    settings = get_settings()
+    url = _force_ipv4_url(database_url)
+    connection = psycopg.connect(
+        url,
+        row_factory=dict_row,
+        connect_timeout=settings.db_connect_timeout,
+    )
+    return PostgresConnection(connection)
+
+
+def _get_postgres_pool(database_url):
+    global _POSTGRES_POOL, _POSTGRES_POOL_URL
+
+    settings = get_settings()
+    url = _force_ipv4_url(database_url)
+
+    with _POSTGRES_POOL_LOCK:
+        if _POSTGRES_POOL is not None and _POSTGRES_POOL_URL == url:
+            return _POSTGRES_POOL
+
+        if _POSTGRES_POOL is not None:
+            _POSTGRES_POOL.close()
+
+        try:
+            from psycopg.rows import dict_row
+            from psycopg_pool import ConnectionPool
+        except ImportError as error:
+            raise RuntimeError(
+                "Instale psycopg_pool para usar pool de conexoes PostgreSQL."
+            ) from error
+
+        max_size = max(settings.db_pool_max, 1)
+        min_size = min(max(settings.db_pool_min, 0), max_size)
+        _POSTGRES_POOL = ConnectionPool(
+            conninfo=url,
+            min_size=min_size,
+            max_size=max_size,
+            kwargs={
+                "row_factory": dict_row,
+                "connect_timeout": settings.db_connect_timeout,
+            },
+            open=False,
+        )
+        _POSTGRES_POOL.open(wait=False)
+        _POSTGRES_POOL_URL = url
+        return _POSTGRES_POOL
+
+
+def close_postgres_pool():
+    global _POSTGRES_POOL, _POSTGRES_POOL_URL
+
+    with _POSTGRES_POOL_LOCK:
+        if _POSTGRES_POOL is not None:
+            _POSTGRES_POOL.close()
+        _POSTGRES_POOL = None
+        _POSTGRES_POOL_URL = None
 
 
 def _split_sql_statements(script):
@@ -274,7 +345,11 @@ def connect(db_path=None):
     database_url = get_database_url(db_path)
 
     if is_postgres_url(database_url):
-        return PostgresConnection(database_url)
+        if db_path is not None:
+            return _connect_postgres_direct(database_url)
+
+        pool = _get_postgres_pool(database_url)
+        return PostgresConnection(pool.getconn(), pool=pool)
 
     db_path = db_path or get_db_path()
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)

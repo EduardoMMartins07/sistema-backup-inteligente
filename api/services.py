@@ -1081,25 +1081,29 @@ def list_backups(db, current_user, filters=None, limit=200):
 def admin_dashboard(db, current_user):
     company = require_found(get_company_by_id(db, current_user["company_id"]))
     company_id = current_user["company_id"]
-
-    def scalar(sql, params=(company_id,)):
-        return db.execute(sql, params).fetchone()["total"]
-
+    summary_row = db.execute(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM users WHERE company_id = ? AND status = 'ACTIVE') AS users,
+            (SELECT COUNT(*) FROM devices WHERE company_id = ?) AS devices,
+            COUNT(*) AS backups,
+            COALESCE(SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END), 0) AS successful_backups,
+            COALESCE(SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END), 0) AS failed_backups,
+            COALESCE(SUM(size_bytes), 0) AS total_size_bytes,
+            MAX(CASE WHEN status = 'FAILED' THEN created_at ELSE NULL END) AS latest_failure_at
+        FROM backups
+        WHERE company_id = ?
+        """,
+        (company_id, company_id, company_id),
+    ).fetchone()
     summary = {
-        "users": scalar(
-            "SELECT COUNT(*) AS total FROM users WHERE company_id = ? AND status = 'ACTIVE'"
-        ),
-        "devices": scalar("SELECT COUNT(*) AS total FROM devices WHERE company_id = ?"),
-        "backups": scalar("SELECT COUNT(*) AS total FROM backups WHERE company_id = ?"),
-        "successfulBackups": scalar(
-            "SELECT COUNT(*) AS total FROM backups WHERE company_id = ? AND status = 'SUCCESS'"
-        ),
-        "failedBackups": scalar(
-            "SELECT COUNT(*) AS total FROM backups WHERE company_id = ? AND status = 'FAILED'"
-        ),
-        "totalSizeBytes": scalar(
-            "SELECT COALESCE(SUM(size_bytes), 0) AS total FROM backups WHERE company_id = ?"
-        ),
+        "users": summary_row["users"],
+        "devices": summary_row["devices"],
+        "backups": summary_row["backups"],
+        "successfulBackups": summary_row["successful_backups"],
+        "failedBackups": summary_row["failed_backups"],
+        "totalSizeBytes": summary_row["total_size_bytes"],
+        "latestFailureAt": summary_row["latest_failure_at"],
     }
     stale_threshold = (
         datetime.now(timezone.utc) - timedelta(hours=RECENT_BACKUP_WINDOW_HOURS)
@@ -1124,17 +1128,6 @@ def admin_dashboard(db, current_user):
     summary["successRate"] = round(
         (summary["successfulBackups"] / total_backups) * 100, 1
     ) if total_backups else 0
-    latest_failure = db.execute(
-        """
-        SELECT created_at
-        FROM backups
-        WHERE company_id = ? AND status = 'FAILED'
-        ORDER BY created_at DESC
-        LIMIT 1
-        """,
-        (company_id,),
-    ).fetchone()
-    summary["latestFailureAt"] = latest_failure["created_at"] if latest_failure else None
     recent = list_backups(db, current_user, limit=8)
     return {
         "company": public_company(company),
@@ -1155,18 +1148,27 @@ def list_devices(db, current_user):
         (current_user["company_id"],),
     ).fetchall()
     devices = rows_to_dicts(rows)
+    folders_by_device = {device["id"]: [] for device in devices}
 
-    for device in devices:
-        device["folders"] = rows_to_dicts(
+    if folders_by_device:
+        placeholders = ", ".join("?" for _ in folders_by_device)
+        folders = rows_to_dicts(
             db.execute(
-                """
-                SELECT * FROM monitored_folders
-                WHERE company_id = ? AND device_id = ?
+                f"""
+                SELECT *
+                FROM monitored_folders
+                WHERE company_id = ? AND device_id IN ({placeholders})
                 ORDER BY LOWER(path)
                 """,
-                (current_user["company_id"], device["id"]),
+                [current_user["company_id"], *folders_by_device.keys()],
             ).fetchall()
         )
+
+        for folder in folders:
+            folders_by_device.setdefault(folder["device_id"], []).append(folder)
+
+    for device in devices:
+        device["folders"] = folders_by_device.get(device["id"], [])
 
     return devices
 

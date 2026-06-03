@@ -398,11 +398,37 @@ class ApiMultiempresaWebTests(unittest.TestCase):
         dashboard = self.client.get("/web/dashboard")
         self.assertEqual(200, dashboard.status_code)
         self.assertIn("Backups recentes", dashboard.text)
-        self.assertIn("Usuarios", dashboard.text)
+        self.assertIn("Taxa de sucesso", dashboard.text)
 
         users = self.client.get("/web/users")
         self.assertEqual(200, users.status_code)
         self.assertIn("admin.web@example.com", users.text)
+
+    def test_web_admin_pages_load_after_data_is_created(self):
+        _, admin_headers = self.setup_first_admin()
+        self.create_operator_with_backup(admin_headers)
+
+        login = self.client.post(
+            "/web/login",
+            data={"email": "admin.alpha@example.com", "password": "senha-admin"},
+            follow_redirects=False,
+        )
+        self.assertEqual(303, login.status_code, login.text)
+
+        pages = {
+            "/web/dashboard": "Backups recentes",
+            "/web/users": "admin.alpha@example.com",
+            "/web/devices": "Notebook",
+            "/web/backups": "backup.zip",
+            "/web/snapshots": "Snapshots da empresa",
+            "/web/audit-logs": "Eventos",
+        }
+
+        for path, expected_text in pages.items():
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(200, response.status_code, response.text)
+                self.assertIn(expected_text, response.text)
 
     def test_web_sidebar_shows_company_name_instead_of_company_id(self):
         response = self.client.post(

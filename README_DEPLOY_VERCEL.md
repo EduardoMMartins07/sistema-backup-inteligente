@@ -117,6 +117,10 @@ No dashboard do Vercel (ou via CLI com `vercel env add`), configure:
 | -------------------- | -------------------------------- |
 | `CORS_ORIGIN`        | `https://seu-projeto.vercel.app` |
 | `MAX_UPLOAD_SIZE_MB` | `500`                            |
+| `SMARTBACKUP_DB_POOL_MIN` | `0`                         |
+| `SMARTBACKUP_DB_POOL_MAX` | `5`                         |
+| `SMARTBACKUP_AUTO_MIGRATE` | `true`                     |
+| `SMARTBACKUP_LOG_WEB_TIMING` | `false`                  |
 
 > **Dica:** gere um JWT_SECRET forte com:
 >
@@ -133,7 +137,12 @@ No dashboard do Vercel (ou via CLI com `vercel env add`), configure:
 ## 6. Migrations e primeiro acesso
 
 As migrations rodam **automaticamente** na inicializacao da aplicacao (dentro do
-lifespan do FastAPI). Nenhum comando extra e necessario.
+lifespan do FastAPI). Em producao, quando possivel, prefira rodar
+`python -m api.manage migrate` apos o deploy e configurar
+`SMARTBACKUP_AUTO_MIGRATE=false` para reduzir trabalho em cold starts.
+
+Para PostgreSQL Neon/Supabase em serverless, use a connection string pooled
+quando a plataforma oferecer essa opcao, mantendo `sslmode=require`.
 
 Apos o deploy:
 

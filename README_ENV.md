@@ -10,6 +10,11 @@ Copie `.env.example` para `.env` em desenvolvimento. Em producao, configure as v
 | `API_URL` | Nao | `https://api.seudominio.com` | Agente | URL que o agente local deve usar para login, device e backups. |
 | `DATABASE_URL` | Sim em producao | `postgresql://user:pass@host:5432/db` | API | Banco principal. Use PostgreSQL em deploy e `sqlite:///config/api.sqlite3` localmente. |
 | `SMARTBACKUP_API_DB_PATH` | Nao | `config/api.sqlite3` | API local | Caminho SQLite quando `DATABASE_URL` nao aponta para PostgreSQL. |
+| `SMARTBACKUP_DB_POOL_MIN` | Nao | `0` | API | Minimo de conexoes PostgreSQL mantidas no pool. Use `0` em serverless. |
+| `SMARTBACKUP_DB_POOL_MAX` | Nao | `5` | API | Maximo de conexoes PostgreSQL abertas pelo processo da API. |
+| `SMARTBACKUP_DB_CONNECT_TIMEOUT` | Nao | `10` | API | Timeout em segundos para abrir conexoes PostgreSQL. |
+| `SMARTBACKUP_AUTO_MIGRATE` | Nao | `true` | API | Controla se migrations rodam automaticamente no boot/cold start. |
+| `SMARTBACKUP_LOG_WEB_TIMING` | Nao | `false` | API | Registra duracao das rotas `/web` nos logs quando ativado. |
 | `JWT_SECRET` | Sim em producao | `valor-longo-aleatorio` | Auth | Chave de assinatura JWT. Nunca use o valor de exemplo em producao. |
 | `SMARTBACKUP_JWT_SECRET` | Nao | `valor-longo-aleatorio` | Auth | Alias compativel com a implementacao local. |
 | `JWT_EXPIRES_IN` | Nao | `7d` | Auth | Duracao textual do token. Aceita `d`, `h`, `m` ou minutos. |

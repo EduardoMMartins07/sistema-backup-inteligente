@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from sqlite3 import Connection
-from time import time
+from time import perf_counter, time
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
@@ -13,7 +13,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette import status
 
 from api.config import get_settings, s3_configured, validate_environment
-from api.database import connect, get_db, init_db, utc_now
+from api.database import close_postgres_pool, connect, get_db, init_db, utc_now
 from api.dependencies import current_user_from_token, get_current_user, require_roles
 from api.logging_config import configure_logging, get_logger
 from api.schemas import (
@@ -329,8 +329,15 @@ def create_app():
             SERVICE_VERSION,
             settings.environment,
         )
-        init_db()
-        yield
+        if settings.auto_migrate:
+            init_db()
+        else:
+            logger.info("Auto migrations disabled by SMARTBACKUP_AUTO_MIGRATE.")
+
+        try:
+            yield
+        finally:
+            close_postgres_pool()
 
     settings = get_settings()
     app = FastAPI(
@@ -339,6 +346,24 @@ def create_app():
         version=SERVICE_VERSION,
         lifespan=lifespan,
     )
+
+    if settings.log_web_timing:
+        @app.middleware("http")
+        async def log_web_timing(request: Request, call_next):
+            started_at = perf_counter()
+            response = await call_next(request)
+
+            if request.url.path.startswith("/web"):
+                duration_ms = (perf_counter() - started_at) * 1000
+                logger.info(
+                    "web_request path=%s status=%s duration_ms=%.1f",
+                    request.url.path,
+                    response.status_code,
+                    duration_ms,
+                )
+
+            return response
+
     if settings.cors_origins:
         app.add_middleware(
             CORSMiddleware,

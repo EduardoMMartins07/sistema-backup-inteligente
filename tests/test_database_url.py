@@ -1,7 +1,10 @@
 import unittest
+import sqlite3
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
-from api.database import _force_ipv4_url
+from api.database import _force_ipv4_url, close_postgres_pool, connect, init_db
 
 
 class DatabaseUrlTests(unittest.TestCase):
@@ -38,6 +41,75 @@ class DatabaseUrlTests(unittest.TestCase):
             )
 
         self.assertEqual("postgresql://user:pass@203.0.113.10:5432/app", translated)
+
+    def test_sqlite_connection_does_not_use_postgres_pool(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "api.sqlite3"
+
+            with patch("api.database._get_postgres_pool") as get_pool:
+                connection = connect(str(db_path))
+
+                try:
+                    self.assertIsInstance(connection, sqlite3.Connection)
+                    self.assertFalse(get_pool.called)
+                finally:
+                    connection.close()
+
+    def test_postgres_connection_uses_pool_and_returns_connection(self):
+        class FakeRawConnection:
+            def __init__(self):
+                self.rollback_called = False
+
+            def rollback(self):
+                self.rollback_called = True
+
+        class FakePool:
+            def __init__(self):
+                self.raw_connection = FakeRawConnection()
+                self.returned_connection = None
+
+            def getconn(self):
+                return self.raw_connection
+
+            def putconn(self, connection):
+                self.returned_connection = connection
+
+        pool = FakePool()
+
+        with patch("api.database.get_database_url", return_value="postgresql://user:pass@db.example.com/app"):
+            with patch("api.database._get_postgres_pool", return_value=pool) as get_pool:
+                connection = connect()
+                connection.close()
+
+        self.assertTrue(get_pool.called)
+        self.assertTrue(pool.raw_connection.rollback_called)
+        self.assertIs(pool.raw_connection, pool.returned_connection)
+
+    def test_web_performance_indexes_migration_is_applied(self):
+        expected_indexes = {
+            "idx_backups_company_created",
+            "idx_backups_company_status_created",
+            "idx_backups_company_device_created",
+            "idx_devices_company_last_seen",
+            "idx_audit_logs_company_created",
+            "idx_snapshots_company_created",
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "api.sqlite3"
+            init_db(str(db_path))
+            connection = connect(str(db_path))
+
+            try:
+                rows = connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'"
+                ).fetchall()
+            finally:
+                connection.close()
+                close_postgres_pool()
+
+        index_names = {row["name"] for row in rows}
+        self.assertTrue(expected_indexes.issubset(index_names))
 
 
 if __name__ == "__main__":
