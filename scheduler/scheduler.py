@@ -39,7 +39,8 @@ def execute_scheduled_backup_once(now=None):
             username=context["username"],
             user_role=context["user_role"],
             company_id=context["company_id"],
-            now=now
+            now=now,
+            cancel_callback=is_shutdown_requested
         )
         mark_schedule_executed(now)
         print(f"[{_ts()}] Backup agendado criado: {result['backup_path']}")
@@ -95,7 +96,8 @@ def start_scheduler():
                     username=context["username"],
                     user_role=context["user_role"],
                     company_id=context["company_id"],
-                    now=now
+                    now=now,
+                    cancel_callback=is_shutdown_requested
                 )
 
                 if result.get("skipped"):

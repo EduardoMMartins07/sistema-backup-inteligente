@@ -79,6 +79,19 @@ def is_backup_job_running():
     return _BACKUP_EXECUTION_LOCK.locked()
 
 
+def force_release_backup_lock():
+    """Forca a liberacao do lock de execucao de backup.
+
+    Usado durante o shutdown para garantir que nenhuma thread fique
+    presa aguardando o lock, permitindo que o programa termine.
+    """
+    try:
+        while _BACKUP_EXECUTION_LOCK.locked():
+            _BACKUP_EXECUTION_LOCK.release()
+    except RuntimeError:
+        pass
+
+
 def backup_job_guard(skip_when_busy=False):
     def decorator(function):
         def wrapper(*args, **kwargs):
@@ -1118,8 +1131,12 @@ def start_background_classification_scan():
         try:
             from scanner.scanner import run_scanner
             from scanner.scanner import run_classification_background
+            from scanner.scanner import is_shutdown_requested
 
-            run_scanner(classify_files=False)
+            run_scanner(
+                classify_files=False,
+                should_cancel=is_shutdown_requested
+            )
             run_classification_background()
         except Exception as error:
             log_backup_decision(

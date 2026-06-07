@@ -22,6 +22,7 @@ threading.excepthook = lambda args: _global_exception_hook(
 from monitor.monitor import start_monitor
 from scheduler.scheduler import start_scheduler
 from tray.tray_icon import start_tray
+from tray.tray_icon import stop_tray
 from interface.gui import start_gui
 from interface.login import login_user
 from auth.local_context import set_current_user
@@ -29,6 +30,7 @@ from auth.permissions import can
 from auth.users import users_exist
 from scanner.scanner import run_scanner
 from scanner.scanner import set_shutdown_event
+from backup.backup_manager import force_release_backup_lock
 
 CONFIG_FILE = "config/config.json"
 TRAY_OPEN_GUI_EVENT = "open_gui"
@@ -47,8 +49,15 @@ def shutdown_all():
     print("\nEncerrando sistema...")
     SHUTDOWN_EVENT.set()
 
+    # Forca a liberacao do lock de backup para evitar que threads do
+    # ThreadPoolExecutor fiquem presas durante o encerramento.
+    try:
+        force_release_backup_lock()
+    except Exception:
+        pass
 
-def wait_for_background_threads(threads, join_timeout=2.0):
+
+def wait_for_background_threads(threads, join_timeout=10.0):
     for thread in threads or []:
         if not thread or thread is threading.current_thread():
             continue
@@ -96,9 +105,10 @@ def run_tray_event_loop(tray_events, tray_thread):
             run_tray_backup_request()
         elif event == TRAY_EXIT_EVENT:
             shutdown_all()
+            stop_tray()
             break
 
-    tray_thread.join()
+    wait_for_background_threads([tray_thread], join_timeout=1.0)
 
 
 def run_tray_backup_request():
@@ -168,10 +178,19 @@ if __name__ == "__main__":
             "on_run_backup": request_run_backup,
             "on_exit": request_exit,
         },
-        daemon=False,
+        daemon=True,
     )
     tray_thread.start()
     run_tray_event_loop(tray_events, tray_thread)
     wait_for_background_threads([monitor_thread, scheduler_thread])
 
     print("\nSistema encerrado.")
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+    # Tenta aguardar threads nao-daemon remanescentes (ex: workers do
+    # ThreadPoolExecutor da classificacao) por alguns segundos, para
+    # evitar mensagens "couldn't stop thread" na saida do interpretador.
+    for t in threading.enumerate():
+        if t is not threading.main_thread() and not t.daemon:
+            t.join(timeout=3.0)

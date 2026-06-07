@@ -340,25 +340,40 @@ def apply_classification(files, config=None, should_cancel=None, progress_callba
 
         return file_data
 
+    executor = None
     try:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(process_file, f): f for f in files}
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        futures = {executor.submit(process_file, f): f for f in files}
 
-            for future in as_completed(futures):
-                ensure_not_cancelled(should_cancel)
+        for future in as_completed(futures):
+            ensure_not_cancelled(should_cancel)
 
-                with lock:
-                    classified += 1
-                    _update_status(classified, total_files)
+            with lock:
+                classified += 1
+                _update_status(classified, total_files)
 
-                if progress_callback and (classified == total_files or classified % 10 == 0):
-                    percent = 30 + int((classified / max(total_files, 1)) * 5)
-                    progress_callback(
-                        min(percent, 35),
-                        f"Classificando arquivos {classified}/{total_files}"
-                    )
+            if progress_callback and (classified == total_files or classified % 10 == 0):
+                percent = 30 + int((classified / max(total_files, 1)) * 5)
+                progress_callback(
+                    min(percent, 35),
+                    f"Classificando arquivos {classified}/{total_files}"
+                )
     except (KeyboardInterrupt, SystemExit):
-        pass
+        _update_classification_status(
+            running=False, done=classified, total=total_files,
+            status=f"Classificacao interrompida: {classified}/{total_files}."
+        )
+        return files
+    except BackupCancelledError:
+        # Shutdown solicitado: nao bloqueia aguardando tarefas em execucao
+        _update_classification_status(
+            running=False, done=classified, total=total_files,
+            status=f"Classificacao interrompida: {classified}/{total_files}."
+        )
+        return files
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     _update_classification_status(
         running=False, done=total_files, total=total_files,
@@ -612,7 +627,10 @@ def run_classification_background(config=None):
                     f"Classificacao em segundo plano: "
                     f"{len(pending)} pendente(s), {reused} reaproveitado(s)..."
                 )
-                apply_classification(pending, config=_config)
+                apply_classification(
+                    pending, config=_config,
+                    should_cancel=is_shutdown_requested
+                )
             else:
                 print(
                     f"Classificacao em segundo plano: "

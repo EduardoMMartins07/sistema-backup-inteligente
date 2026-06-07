@@ -15,6 +15,7 @@ MAX_MENU_PATH_LENGTH = 48
 _on_open_gui = None
 _on_run_backup = None
 _on_exit = None
+_active_icon = None
 
 
 def configure_tray_callbacks(on_open_gui=None, on_run_backup=None, on_exit=None):
@@ -142,13 +143,17 @@ def run_backup(icon, item):
 
 def exit_app(icon, item):
 
-    print("Encerrando sistema...")
     if callable(_on_exit):
         _on_exit()
-    icon.stop()
+
+
+def stop_tray():
+    if _active_icon is not None:
+        _active_icon.stop()
 
 
 def start_tray(on_open_gui=None, on_run_backup=None, on_exit=None):
+    global _active_icon
 
     configure_tray_callbacks(
         on_open_gui=on_open_gui,
@@ -163,4 +168,9 @@ def start_tray(on_open_gui=None, on_run_backup=None, on_exit=None):
         menu=build_menu()
     )
 
-    icon.run()
+    _active_icon = icon
+    try:
+        icon.run()
+    finally:
+        if _active_icon is icon:
+            _active_icon = None
