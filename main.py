@@ -23,14 +23,17 @@ from monitor.monitor import start_monitor
 from scheduler.scheduler import start_scheduler
 from tray.tray_icon import start_tray
 from tray.tray_icon import stop_tray
+from tray.tray_icon import refresh_tray_menu
 from interface.gui import start_gui
 from interface.login import login_user
 from auth.local_context import set_current_user
 from auth.permissions import can
 from auth.users import users_exist
+from api.database import close_postgres_pool
 from scanner.scanner import run_scanner
 from scanner.scanner import set_shutdown_event
 from backup.backup_manager import force_release_backup_lock
+from backup.backup_manager import wait_for_background_tasks
 
 CONFIG_FILE = "config/config.json"
 TRAY_OPEN_GUI_EVENT = "open_gui"
@@ -53,6 +56,11 @@ def shutdown_all():
     # ThreadPoolExecutor fiquem presas durante o encerramento.
     try:
         force_release_backup_lock()
+    except Exception:
+        pass
+
+    try:
+        close_postgres_pool()
     except Exception:
         pass
 
@@ -101,8 +109,10 @@ def run_tray_event_loop(tray_events, tray_thread):
 
         if event == TRAY_OPEN_GUI_EVENT:
             start_gui()
+            refresh_tray_menu()
         elif event == TRAY_RUN_BACKUP_EVENT:
             run_tray_backup_request()
+            refresh_tray_menu()
         elif event == TRAY_EXIT_EVENT:
             shutdown_all()
             stop_tray()
@@ -182,6 +192,7 @@ if __name__ == "__main__":
     )
     tray_thread.start()
     run_tray_event_loop(tray_events, tray_thread)
+    wait_for_background_tasks(timeout=5.0)
     wait_for_background_threads([monitor_thread, scheduler_thread])
 
     print("\nSistema encerrado.")

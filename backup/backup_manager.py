@@ -41,13 +41,14 @@ PRIORITY_HIGH = "alta"
 DEFAULT_PRIORITY_BACKUP_POLICY_ENABLED = True
 ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
 _BACKUP_ENV_FILE_LOADED = False
-_ZSTD_THREAD_LOCAL = threading.local()
 _BACKUP_EXECUTION_LOCK = threading.Lock()
 _HISTORY_LOCK = threading.RLock()
 _CLOUD_SYNC_LOCK = threading.Lock()
 _CLOUD_SYNC_IN_PROGRESS = set()
 _CLOUD_SYNC_PROGRESS = {}
 _CLOUD_SYNC_LATEST_IDENTITY = None
+_BACKGROUND_TASK_THREADS = set()
+_BACKGROUND_TASK_THREADS_LOCK = threading.Lock()
 CLOUD_SYNC_PENDING_STATUSES = {"sincronizando", "nao_sincronizado"}
 PRIORITY_INTERVALS = {
     PRIORITY_LOW: timedelta(days=7),
@@ -1137,16 +1138,47 @@ def start_background_classification_scan():
                 classify_files=False,
                 should_cancel=is_shutdown_requested
             )
-            run_classification_background()
+            classification_thread = run_classification_background()
+
+            if classification_thread is not None:
+                classification_thread.join()
         except Exception as error:
             log_backup_decision(
                 "ERROR",
                 f"Falha na classificacao em segundo plano: {error}"
             )
+        finally:
+            with _BACKGROUND_TASK_THREADS_LOCK:
+                _BACKGROUND_TASK_THREADS.discard(threading.current_thread())
 
-    thread = threading.Thread(target=worker, daemon=True)
+    thread = threading.Thread(
+        target=worker,
+        daemon=False,
+        name="post-backup-classification",
+    )
+    with _BACKGROUND_TASK_THREADS_LOCK:
+        _BACKGROUND_TASK_THREADS.add(thread)
     thread.start()
     return thread
+
+
+def wait_for_background_tasks(timeout=5.0):
+    with _BACKGROUND_TASK_THREADS_LOCK:
+        threads = list(_BACKGROUND_TASK_THREADS)
+
+    for thread in threads:
+        if thread is threading.current_thread():
+            continue
+
+        if thread.is_alive():
+            thread.join(timeout=timeout)
+
+    try:
+        from scanner.scanner import wait_for_background_classification_threads
+
+        wait_for_background_classification_threads(timeout=timeout)
+    except Exception:
+        pass
 
 
 def build_object_relative_path(file_hash, now=None):
@@ -1580,36 +1612,24 @@ def read_storage_object_bytes(object_abs_path, encryption_metadata, user_master_
 
 
 def _get_zstd_compressor():
-    """Retorna (e cacheia) um compressor zstd com o nível configurado."""
-    compressor = getattr(_ZSTD_THREAD_LOCAL, "compressor", None)
-
-    if compressor is None:
-        compressor = zstd.ZstdCompressor(level=OBJECT_COMPRESSION_LEVEL)
-        _ZSTD_THREAD_LOCAL.compressor = compressor
-
-    return compressor
+    """Retorna um compressor zstd sem pool interno persistente."""
+    return zstd.ZstdCompressor(level=OBJECT_COMPRESSION_LEVEL, threads=0)
 
 
 def _get_zstd_decompressor():
-    """Retorna (e cacheia) um decompressor zstd."""
-    decompressor = getattr(_ZSTD_THREAD_LOCAL, "decompressor", None)
-
-    if decompressor is None:
-        decompressor = zstd.ZstdDecompressor()
-        _ZSTD_THREAD_LOCAL.decompressor = decompressor
-
-    return decompressor
+    """Retorna um decompressor zstd de vida curta."""
+    return zstd.ZstdDecompressor()
 
 
 def read_and_compress_file(source_path):
-    """Lê o arquivo e retorna os bytes comprimidos com zstandard (zstd)."""
+    """Le o arquivo e retorna os bytes comprimidos com gzip."""
     with open(source_path, "rb") as source_file:
         raw_data = source_file.read()
-    return _get_zstd_compressor().compress(raw_data)
+    return gzip.compress(raw_data, compresslevel=OBJECT_COMPRESSION_LEVEL)
 
 
 def hash_and_compress_file(source_path):
-    """Lê o arquivo uma unica vez, calcula o SHA-256 e ja comprime com zstd.
+    """Le o arquivo uma unica vez, calcula o SHA-256 e ja comprime com gzip.
 
     Retorna (file_hash, compressed_data) — evita ler o arquivo duas vezes
     (uma para o hash, outra para a compressao).
@@ -1627,7 +1647,7 @@ def hash_and_compress_file(source_path):
 
     file_hash = hasher.hexdigest()
     raw_data = b"".join(chunks)
-    compressed_data = _get_zstd_compressor().compress(raw_data)
+    compressed_data = gzip.compress(raw_data, compresslevel=OBJECT_COMPRESSION_LEVEL)
     return file_hash, compressed_data
 
 

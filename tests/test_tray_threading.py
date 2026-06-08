@@ -34,6 +34,12 @@ class TrayThreadingTests(unittest.TestCase):
     def test_admin_can_exit_from_tray_menu(self):
         self.assertTrue(tray_icon.is_exit_enabled({"role": "admin"}))
 
+    def test_api_admin_can_exit_from_tray_menu(self):
+        self.assertTrue(tray_icon.is_exit_enabled({"role": "ADMIN_EMPRESA"}))
+
+    def test_api_operator_can_exit_from_tray_menu(self):
+        self.assertTrue(tray_icon.is_exit_enabled({"role": "OPERADOR"}))
+
     def test_missing_user_cannot_exit_from_tray_menu(self):
         with patch("tray.tray_icon.get_current_user", return_value=None):
             self.assertFalse(tray_icon.is_exit_enabled())
@@ -53,14 +59,15 @@ class TrayThreadingTests(unittest.TestCase):
             patch("tray.tray_icon.get_backup_destination", return_value="backups"),
         ):
             tray_icon.build_menu()
-
-        exit_items = [
-            (args, kwargs)
-            for args, kwargs in created_items
-            if args and args[0] == "Sair"
-        ]
-        self.assertEqual(1, len(exit_items))
-        self.assertFalse(exit_items[0][1]["enabled"])
+            exit_items = [
+                (args, kwargs)
+                for args, kwargs in created_items
+                if args and args[0] == "Sair"
+            ]
+            self.assertEqual(1, len(exit_items))
+            enabled = exit_items[0][1]["enabled"]
+            self.assertTrue(callable(enabled))
+            self.assertFalse(enabled())
 
     def test_menu_enables_exit_for_operator(self):
         created_items = []
@@ -77,14 +84,15 @@ class TrayThreadingTests(unittest.TestCase):
             patch("tray.tray_icon.get_backup_destination", return_value="backups"),
         ):
             tray_icon.build_menu()
-
-        exit_items = [
-            (args, kwargs)
-            for args, kwargs in created_items
-            if args and args[0] == "Sair"
-        ]
-        self.assertEqual(1, len(exit_items))
-        self.assertTrue(exit_items[0][1]["enabled"])
+            exit_items = [
+                (args, kwargs)
+                for args, kwargs in created_items
+                if args and args[0] == "Sair"
+            ]
+            self.assertEqual(1, len(exit_items))
+            enabled = exit_items[0][1]["enabled"]
+            self.assertTrue(callable(enabled))
+            self.assertTrue(enabled())
 
     def test_menu_enables_exit_for_admin(self):
         created_items = []
@@ -101,14 +109,15 @@ class TrayThreadingTests(unittest.TestCase):
             patch("tray.tray_icon.get_backup_destination", return_value="backups"),
         ):
             tray_icon.build_menu()
-
-        exit_items = [
-            (args, kwargs)
-            for args, kwargs in created_items
-            if args and args[0] == "Sair"
-        ]
-        self.assertEqual(1, len(exit_items))
-        self.assertTrue(exit_items[0][1]["enabled"])
+            exit_items = [
+                (args, kwargs)
+                for args, kwargs in created_items
+                if args and args[0] == "Sair"
+            ]
+            self.assertEqual(1, len(exit_items))
+            enabled = exit_items[0][1]["enabled"]
+            self.assertTrue(callable(enabled))
+            self.assertTrue(enabled())
 
     def test_exit_app_continues_to_use_exit_callback(self):
         exit_callback = Mock()

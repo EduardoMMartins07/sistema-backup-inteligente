@@ -83,6 +83,14 @@ class IncrementalBackupTests(unittest.TestCase):
     def test_incremental_objects_use_maximum_gzip_compression_level(self):
         self.assertEqual(backup_manager.OBJECT_COMPRESSION_LEVEL, 9)
 
+    def test_new_incremental_payloads_are_gzip_compressed(self):
+        source = self.write_file("A.txt", "conteudo")
+
+        _file_hash, compressed_data = backup_manager.hash_and_compress_file(source)
+
+        self.assertTrue(compressed_data.startswith(b"\x1f\x8b"))
+        self.assertEqual(b"conteudo", gzip.decompress(compressed_data))
+
     def manifest_for(self, *paths):
         return [
             (
@@ -1122,28 +1130,14 @@ class IncrementalBackupTests(unittest.TestCase):
         self.assertGreaterEqual(len(set(worker_names)), 2)
         self.assertNotIn(threading.current_thread().name, worker_names)
 
-    def test_zstd_decompressor_is_isolated_per_worker_thread(self):
-        decompressor_ids = []
-        both_workers_started = threading.Event()
+    def test_zstd_helpers_return_short_lived_objects(self):
+        first_compressor = backup_manager._get_zstd_compressor()
+        second_compressor = backup_manager._get_zstd_compressor()
+        first_decompressor = backup_manager._get_zstd_decompressor()
+        second_decompressor = backup_manager._get_zstd_decompressor()
 
-        def collect_decompressor_id():
-            decompressor_ids.append(id(backup_manager._get_zstd_decompressor()))
-
-            if len(decompressor_ids) >= 2:
-                both_workers_started.set()
-            else:
-                both_workers_started.wait(timeout=0.5)
-
-        with backup_manager.ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [
-                executor.submit(collect_decompressor_id)
-                for _ in range(2)
-            ]
-
-            for future in futures:
-                future.result()
-
-        self.assertEqual(2, len(set(decompressor_ids)))
+        self.assertIsNot(first_compressor, second_compressor)
+        self.assertIsNot(first_decompressor, second_decompressor)
 
     def test_backup_job_separates_snapshots_by_date(self):
         backup_manager.HISTORY_PATH = str(self.root / "config" / "backup_history.json")

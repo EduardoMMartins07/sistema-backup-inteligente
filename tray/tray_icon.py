@@ -112,8 +112,12 @@ def build_tray_title():
 
 def is_exit_enabled(user=None):
     current_user = user if user is not None else get_current_user()
-    role = (current_user or {}).get("role")
-    return role in {"admin", "operator"}
+    role = str((current_user or {}).get("role") or "").strip().lower()
+    return role in {"admin", "operator", "admin_empresa", "operador"}
+
+
+def is_exit_menu_item_enabled(_item=None):
+    return is_exit_enabled()
 
 
 def build_menu():
@@ -126,7 +130,7 @@ def build_menu():
             enabled=False
         ),
         item("Executar scan", run_backup),
-        item("Sair", exit_app, enabled=is_exit_enabled())
+        item("Sair", exit_app, enabled=is_exit_menu_item_enabled)
     )
 
 
@@ -157,6 +161,11 @@ def exit_app(icon, item):
 def stop_tray():
     if _active_icon is not None:
         _active_icon.stop()
+
+
+def refresh_tray_menu():
+    if _active_icon is not None:
+        _active_icon.update_menu()
 
 
 def start_tray(on_open_gui=None, on_run_backup=None, on_exit=None):
