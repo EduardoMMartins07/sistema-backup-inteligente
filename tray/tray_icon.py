@@ -3,6 +3,7 @@ from pystray import MenuItem as item
 from PIL import Image, ImageDraw
 import os
 import json
+from auth.local_context import get_current_user
 from utils import user_data_paths
 
 ICON_PATH = os.path.join("assets", "nuvem.png")
@@ -109,6 +110,12 @@ def build_tray_title():
     return shorten_text(title, MAX_TRAY_TITLE_LENGTH)
 
 
+def is_exit_enabled(user=None):
+    current_user = user if user is not None else get_current_user()
+    role = (current_user or {}).get("role")
+    return role in {"admin", "operator"}
+
+
 def build_menu():
     return pystray.Menu(
         item("Abrir painel", open_gui, default=True),
@@ -119,7 +126,7 @@ def build_menu():
             enabled=False
         ),
         item("Executar scan", run_backup),
-        item("Sair", exit_app)
+        item("Sair", exit_app, enabled=is_exit_enabled())
     )
 
 
