@@ -358,6 +358,19 @@ class CloudStorageTests(unittest.TestCase):
         self.assertEqual(12, settings["multipart_threshold_mb"])
         self.assertEqual(16, settings["multipart_chunksize_mb"])
 
+    def test_transfer_config_disables_internal_boto_threads(self):
+        config = cloud_service.build_s3_transfer_config(
+            {
+                **self.enabled_settings(),
+                "cloud_upload_workers": 12,
+                "multipart_threshold_mb": 5,
+                "multipart_chunksize_mb": 7,
+            }
+        )
+
+        self.assertFalse(config.use_threads)
+        self.assertEqual(12, config.max_concurrency)
+
     def test_sync_backup_uses_configurable_workers_and_transfer_config(self):
         history_entry = self.write_backup_fixture()
         client = FakeS3Client()

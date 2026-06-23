@@ -1,3 +1,4 @@
+import atexit
 import os
 import socket
 import sqlite3
@@ -308,6 +309,9 @@ def close_postgres_pool():
             _POSTGRES_POOL.close()
         _POSTGRES_POOL = None
         _POSTGRES_POOL_URL = None
+
+
+atexit.register(close_postgres_pool)
 
 
 def _split_sql_statements(script):

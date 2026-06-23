@@ -50,6 +50,8 @@ CLASSIFICATION_STATUS = {
 }
 _CLASSIFICATION_STATUS_LOCK = threading.Lock()
 _CLASSIFICATION_RUN_LOCK = threading.Lock()
+_BACKGROUND_CLASSIFICATION_THREADS = set()
+_BACKGROUND_CLASSIFICATION_THREADS_LOCK = threading.Lock()
 
 
 def _update_classification_status(**kwargs):
@@ -658,10 +660,26 @@ def run_classification_background(config=None):
             print(f"Erro na classificacao em segundo plano: {error}")
         finally:
             _CLASSIFICATION_RUN_LOCK.release()
+            with _BACKGROUND_CLASSIFICATION_THREADS_LOCK:
+                _BACKGROUND_CLASSIFICATION_THREADS.discard(threading.current_thread())
 
     thread = threading.Thread(target=_classify_worker, daemon=True, name="bg-classifier")
+    with _BACKGROUND_CLASSIFICATION_THREADS_LOCK:
+        _BACKGROUND_CLASSIFICATION_THREADS.add(thread)
     thread.start()
     return thread
+
+
+def wait_for_background_classification_threads(timeout=5.0):
+    with _BACKGROUND_CLASSIFICATION_THREADS_LOCK:
+        threads = list(_BACKGROUND_CLASSIFICATION_THREADS)
+
+    for thread in threads:
+        if thread is threading.current_thread():
+            continue
+
+        if thread.is_alive():
+            thread.join(timeout=timeout)
 
 
 if __name__ == "__main__":

@@ -401,7 +401,7 @@ def build_s3_transfer_config(settings):
         multipart_threshold=multipart_threshold,
         multipart_chunksize=multipart_chunksize,
         max_concurrency=max_concurrency,
-        use_threads=True,
+        use_threads=False,
     )
 
 
