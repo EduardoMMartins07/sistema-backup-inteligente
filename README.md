@@ -1,262 +1,78 @@
 ﻿# Sistema de Backup Inteligente
 
-Aplicacao desktop para acompanhar diretorios importantes, identificar alteracoes nos arquivos e centralizar a rotina de backup em uma interface simples. O sistema combina monitoramento continuo, geracao de dataset com metadados dos arquivos e criacao de backups incrementais com deduplicacao por hash SHA-256, snapshots JSON e restauracao por manifesto.
+Sistema desktop para monitorar pastas, gerar backups incrementais e restaurar versões com deduplicação por hash.
 
-## Objetivo
+## O que faz
 
-Oferecer uma base para backup automatizado e inteligente de arquivos relevantes, permitindo que o usuario configure os diretorios de interesse, acompanhe mudancas no sistema, mantenha um historico das execucoes e tenha copias de seguranca organizadas para consulta e recuperacao futura.
+- Monitora arquivos em tempo real
+- Cria backups incrementais em segundo plano
+- Deduplica conteúdo por SHA-256
+- Usa snapshots JSON para restauração
+- Oferece interface gráfica + ícone na bandeja
+- Suporte a login local e controle de permissões
+- Integração opcional com AWS S3
+- API web básica com FastAPI
 
-## Regra de Documentacao
+## Usar
 
-Toda alteracao relevante no projeto deve ser refletida neste `README.md`, mantendo a documentacao sempre atualizada com funcionalidades, fluxos, requisitos e mudancas importantes do sistema.
+### Requisitos
 
-## Stack Tecnologica
-
-- **Runtime:** Python 3.13+
-- **Interface Desktop:** Tkinter
-- **Monitoramento de arquivos:** watchdog
-- **Manipulacao de dados:** pandas
-- **Criptografia:** cryptography com AES-256-GCM e PBKDF2-SHA256
-- **Compressao de objetos:** gzip (nivel 6) integrado ao pipeline de armazenamento
-- **Bandeja do sistema:** pystray
-- **Imagens/icones:** pillow
-- **Classificacao inteligente:** arvore de decisao local com integracao opcional via Gemini API
-- **LLM externa opcional:** Gemini API via REST, usando apenas metadados dos arquivos
-- **API central:** FastAPI com SQLite, JWT e templates Jinja2
-- **Painel web:** HTML/CSS/JS servido pela propria API
-- **Deploy:** Docker, PostgreSQL via `DATABASE_URL`, CORS por ambiente e S3 por variaveis AWS
-
-## Requisitos
-
-- Python 3.13 ou superior
+- Python 3.13+
 - pip
-- Ambiente Windows recomendado
-- Chave `GEMINI_API_KEY` opcional para ativar classificacao com Gemini API
-- Chave `SMARTBACKUP_JWT_SECRET` recomendada para a API central
+- Windows recomendado
 
-## Instalacao e Execucao
-
-1. Clone o repositorio
-2. Crie e ative um ambiente virtual:
-   ```bash
-   python -m venv venv
-   venv\Scripts\activate
-   ```
-3. Instale as dependencias:
-   ```bash
-   pip install -r requirements.txt
-   ```
-4. Execute a aplicacao:
-   ```bash
-   python main.py
-   ```
-5. Para executar a API central e o painel web:
-   ```bash
-   python -m api
-   ```
-   Acesse `http://127.0.0.1:8000/web/login`.
-
-## Funcionalidades
-
-- [x] Configuracao inicial e gerenciamento dos diretorios que serao acompanhados pelo sistema
-- [x] Monitoramento continuo de criacao, alteracao, remocao e movimentacao de arquivos
-- [x] Scanner automatico para varredura dos diretorios monitorados sempre que ha mudancas relevantes
-- [x] Geracao de dataset CSV com nome, extensao, tipo, tamanho, tempo desde a ultima modificacao, hash do arquivo e indicador de relevancia
-- [x] Marcacao de arquivos duplicados no dataset por hash SHA-256
-- [x] Classificacao inicial de arquivos importantes com base em metadados, palavras-chave e contexto do arquivo
-- [x] Classificacao por prioridade usando arvore de decisao local e Gemini API com metadados dos arquivos
-- [x] Cache local das respostas da LLM para evitar chamadas repetidas para o mesmo arquivo/hash
-- [x] Registro observado de modificacoes e acessos entre varreduras para alimentar a arvore de decisao
-- [x] Backup manual e backup agendado com armazenamento incremental em `backup_storage/`
-- [x] Objetos comprimidos com gzip antes do armazenamento, reduzindo o uso de disco sem impacto na deduplicacao ou na estrutura de indices
-- [x] Deduplicacao persistente por hash SHA-256, evitando salvar o mesmo conteudo mais de uma vez
-- [x] Snapshots JSON restauraveis para representar o estado logico de cada execucao
-- [x] Politica opcional de backup por prioridade: baixa semanal, media a cada 2 dias e alta no inicio do dia + a cada 4 horas quando alterada
-- [x] Versionamento automatico dos backups por dia e horario, com organizacao em pastas por data
-- [x] Definicao de diretorio padrao para armazenamento dos backups
-- [x] Barra de loading / janela de progresso para acompanhamento da execucao do backup
-- [x] Execucao do backup em segundo plano para manter a interface responsiva
-- [x] Cancelamento seguro da operacao de backup pela interface
-- [x] Historico das execucoes de backup e exportacao do artefato mais recente
-- [x] Tratamento de falhas parciais durante a copia incremental, ignorando arquivos problematicos sem derrubar toda a execucao
-- [x] Protecao contra recursao, ignorando pastas internas do sistema e a propria area de backup
-- [x] Interface grafica principal com menu central e suporte por icone na bandeja do sistema
-- [x] Icone personalizado aplicado na janela principal, barra de tarefas e bandeja do sistema
-- [x] Rodape da interface principal com resumo do ultimo backup e pasta destino
-- [x] Bandeja do sistema com informacoes resumidas do ultimo backup e destino atual
-- [x] Tooltip da bandeja ajustado para respeitar o limite de caracteres do Windows
-- [x] Layout da tela principal ajustado para evitar sobreposicao entre botoes auxiliares e menu
-- [x] Login local com criacao automatica do primeiro administrador
-- [x] Controle de usuarios por perfil: administrador, operador e visualizador
-- [x] API central multiempresa com empresas, usuarios, dispositivos, pastas, backups, snapshots e auditoria em SQLite
-- [x] Painel web administrativo para `ADMIN_EMPRESA` com dashboard, usuarios, dispositivos, backups, snapshots e logs
-- [x] Preparacao de deploy com `/health`, `/ready`, Dockerfile, Docker Compose, PostgreSQL, CORS, S3 e URL pre-assinada
-- [x] Permissoes aplicadas na interface para backup, agendamento, historico, arquivos, configuracoes e usuarios
-- [x] Registro do usuario responsavel em cada backup manual
-- [x] Logout com retorno para a tela de login
-- [x] Historico filtravel por backup com arquivos adicionados, alterados e excluidos
-- [x] Visibilidade do historico por perfil: visualizador ve apenas os proprios backups, operador ve os proprios e os de visualizadores, administrador ve todos
-- [x] Tela de arquivos analisados com data de inclusao no backup, filtros por coluna e barras de rolagem
-- [x] Administrador pode nomear o backup e adicionar descricao antes da execucao manual
-- [x] Filtros avancados por janela nas telas de arquivos analisados e historico de backups
-- [x] Clique esquerdo no icone da bandeja abre o painel; clique direito mantem o menu de opcoes
-- [x] Restauracao de arquivos excluidos, versoes anteriores e snapshots incrementais pela interface
-- [x] Busca por nome de arquivo na tela de recuperacao para localizar rapidamente backups relacionados
-- [x] Busca com sugestoes de arquivos nas telas de recuperacao e historico de backups
-- [x] Tela de arquivos mostra o status de cobertura do backup: em backup, fara backup ou sera excluido no proximo backup
-- [x] Criptografia em envelope para backups de usuarios autenticados, com chave mestra por usuario e chave individual por backup/objeto
-- [x] Refinamento de UI/UX com fontes padronizadas, botoes com profundidade, scrollbars estilizados, campos mais destacados e abertura suave de janelas
-- [x] Melhor legibilidade nas tabelas e caixa de pre-pesquisa com destaque visual para sugestoes de arquivos e pastas
-- [ ] Visualizacao do tamanho dos backups e status da ultima execucao
-- [ ] Configuracao mais avancada de agendamento
-- [x] Integracao completa da classificacao do modulo `ml/` ao scanner e ao fluxo opcional de backup por prioridade
-
-## Exemplos de Uso
-
-### Estrutura dos Backups Gerados
-
-```text
-backups/
-  backup_storage/
-    objects/
-      <hash_sha256_1>
-      <hash_sha256_2>
-    snapshots/
-      snapshot_2026-05-08_08-00-00.json
-      snapshot_2026-05-08_12-00-00.json
-    index.json
-```
-
-Os ZIPs gerados por versoes anteriores continuam legiveis para restauracao de historico, mas novas execucoes usam snapshots incrementais como artefato principal.
-
-### Criptografia dos Backups
-
-O sistema utiliza criptografia em envelope. A senha do usuario nao criptografa diretamente os arquivos de backup. Em vez disso, a senha e usada para derivar uma chave criptografica responsavel por proteger uma chave mestra do usuario. Essa chave mestra protege as chaves individuais utilizadas na criptografia dos backups compactados e dos objetos incrementais. Dessa forma, a troca de senha exige apenas a recriptografia da chave mestra, sem necessidade de reprocessar todos os arquivos armazenados.
-
-O algoritmo usado para conteudo e chaves envelopadas e `AES-256-GCM`, com nonces unicos por operacao. A derivacao a partir da senha usa `PBKDF2-SHA256` com salt unico por usuario. A tag de autenticacao do AES-GCM fica embutida no ciphertext gerado pela biblioteca `cryptography`, por isso os metadados registram `auth_tag` como `included_in_ciphertext`.
-
-Metadados sensiveis ficam em arquivos JSON locais:
-
-- `config/users.json`: hash da senha, salt do KDF, chave mestra criptografada e metadados de recuperacao.
-- `<backup_destination>/backup_storage/index.json`: metadados dos objetos incrementais, incluindo nonces e chaves de backup criptografadas.
-- `config/backup_history.json`: status criptografado, algoritmo usado e caminho do `.zip.enc` quando gerado.
-
-No login, a chave mestra e descriptografada apenas em memoria para a sessao atual. Em backups manuais feitos por usuario autenticado, novos objetos incrementais sao criptografados antes de serem gravados em `backup_storage/objects/`. O sistema tambem gera um artefato compactado criptografado em formato `.zip.enc`, mantendo o ZIP temporario apenas durante a criptografia e apagando-o em seguida.
-
-Na restauracao, o sistema usa a chave de sessao do usuario para abrir a chave do backup/objeto e descriptografar o conteudo antes de copiar para o destino. Se a senha estiver errada, a chave estiver ausente, os metadados forem alterados ou o arquivo estiver corrompido, o AES-GCM falha na autenticacao e a restauracao nao prossegue para aquele item.
-
-Na troca de senha com confirmacao da senha antiga, apenas a chave mestra criptografada e atualizada. Os backups antigos continuam acessiveis porque as chaves de backup continuam protegidas pela mesma chave mestra. Redefinicoes administrativas sem a senha antiga geram nova chave mestra e podem tornar backups criptografados antigos inacessiveis para aquele usuario.
-
-Na criacao de usuario, quando a dependencia de criptografia esta disponivel, o sistema gera uma chave de recuperacao exibida uma unica vez. Essa chave permite redefinir a senha preservando a chave mestra e o acesso aos backups antigos. Se o usuario perder a senha e tambem perder a chave de recuperacao, backups criptografados antigos nao poderao ser descriptografados.
-
-### Integracao AWS S3
-
-O sistema possui integracao com AWS S3 para armazenamento dos backups em nuvem. Os arquivos sao enviados mantendo a organizacao local, separados por empresa, usuario e data. A configuracao fica na opcao **Conexão com Nuvem**, disponivel apenas para administradores; operadores e visualizadores usam a sincronizacao automaticamente durante backups manuais, agendados e por politica de prioridade.
-
-A configuracao e salva em `config/cloud_settings.json`, com a chave secreta criptografada usando uma chave local em `config/cloud_secret.key`. Esses arquivos sao dados locais e ficam fora do Git. A interface mascara a chave secreta e nao registra credenciais em historico ou logs.
-
-O caminho remoto e montado pelo servico central de S3:
-
-```text
-backups/<company_id>/<user_id>/<YYYY-MM-DD>/snapshots/<snapshot>.json
-backups/<company_id>/<user_id>/<YYYY-MM-DD>/arquivos_relacionados/<hash>
-backups/<company_id>/<user_id>/index.json
-```
-
-Para usar a nuvem, configure na tela administrativa:
-
-- `AWS Access Key ID`
-- `AWS Secret Access Key`
-- regiao AWS
-- nome do bucket
-- prefixo base, por padrao `backups`
-- endpoint customizado, opcional
-- sincronizacao ativa ou inativa
-
-Permissoes IAM minimas recomendadas para o prefixo configurado:
-
-- `s3:ListBucket`
-- `s3:GetObject`
-- `s3:PutObject`
-- `s3:DeleteObject`
-
-Depois de cada backup, o sistema tenta enviar o snapshot incremental, os objetos relacionados e o indice local para o S3. Se a sincronizacao falhar, o backup local continua valido e o historico registra `cloud_sync_status = falhou` com uma mensagem sanitizada. Quando a nuvem esta desativada, o historico registra `desativado` e nenhum upload e tentado.
-
-Na recuperacao ou exportacao, se o snapshot ou os objetos incrementais nao existirem localmente e o historico indicar sincronizacao concluida, o sistema baixa os arquivos do S3 para a estrutura local antes de restaurar/exportar. A versao usada e a versao registrada no historico do proprio sistema; versionamento nativo por `VersionId` do S3 nao faz parte desta entrega inicial.
-
-### Exemplo de Configuracao
-
-```json
-{
-  "directories": [
-    "C:/Users/super/Documents/Projetos",
-    "C:/Users/super/Documents/Contratos"
-  ],
-  "backup_destination": "C:/Users/super/Backups/SmartBackup",
-  "deduplicate_backup": true,
-  "llm_classification_enabled": true,
-  "llm_cache_enabled": true,
-  "gemini_model": "gemini-2.5-flash",
-  "priority_backup_policy_enabled": false
-}
-```
-
-`deduplicate_backup` e mantido por compatibilidade com configuracoes antigas; no fluxo incremental novo a deduplicacao por hash e sempre aplicada.
-
-### Classificacao LLM com Gemini API
-
-O sistema usa a LLM somente com metadados, sem enviar o conteudo completo dos arquivos. A chamada inclui dados como nome, extensao, tamanho, caminho/contexto, hash, dias desde a ultima modificacao e contadores observados de modificacao/acesso.
-
-Para pegar a chave:
-
-1. Acesse a pagina oficial de chaves do Google AI Studio: https://aistudio.google.com/app/apikey
-2. Entre com sua conta Google.
-3. Clique em `Create API key` ou `Criar chave de API`.
-4. Copie a chave gerada e guarde em local seguro.
-
-Referencia oficial do Google: https://ai.google.dev/gemini-api/docs/api-key
-
-Para colocar a chave no projeto, nao salve a chave dentro do codigo. Use uma das duas opcoes abaixo.
-
-Opcao 1: variavel de ambiente do Windows.
-
-No PowerShell, apenas para a sessao atual:
+### Instalação
 
 ```powershell
-$env:GEMINI_API_KEY="SUA_CHAVE_AQUI"
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-No Windows, de forma persistente para o usuario:
+### Executar
 
 ```powershell
-[Environment]::SetEnvironmentVariable("GEMINI_API_KEY", "SUA_CHAVE_AQUI", "User")
+python main.py
 ```
 
-Depois de configurar de forma persistente, feche e abra novamente o terminal ou reinicie a aplicacao.
+Para iniciar a API web:
 
-Opcao 2: arquivo `.env` local na raiz do projeto.
+```powershell
+python -m api
+```
 
-1. Copie `.env.example` para `.env`.
-2. Abra o `.env`.
-3. Troque `SUA_CHAVE_AQUI` pela sua chave real:
-   ```text
-   GEMINI_API_KEY=SUA_CHAVE_AQUI
-   GEMINI_MODEL=gemini-2.5-flash
-   SMARTBACKUP_LLM_ENABLED=true
-   BACKUP_DEV_MODE=false
-   ```
+Acesse `http://127.0.0.1:8000/web/login`.
 
-O arquivo `.env` fica no `.gitignore` e nao deve ser enviado ao Git. O projeto carrega esse arquivo automaticamente em `ml/llm_classifier.py` sem dependencia extra.
+## Destaques
 
-Onde a chave e lida na implementacao:
+- backup manual e agendado
+- monitoramento contínuo de criação, modificação e exclusão
+- snapshots restauráveis
+- deduplicação persistente por hash
+- progresso de backup em segundo plano
+- tratamento de erros parciais sem interromper o backup
+- sincronização opcional com S3
 
-- `ml/llm_classifier.py`: carrega `.env` e depois le `GEMINI_API_KEY` ou `GOOGLE_API_KEY` pelas variaveis de ambiente.
-- `config/config.json`: controla se a classificacao LLM fica ativa com `llm_classification_enabled`.
-- `gemini_model`: define o modelo usado. O padrao documentado no projeto e `gemini-2.5-flash`.
+## Estrutura principal
 
-Se a chave nao existir, se `llm_classification_enabled` estiver `false` ou se a API falhar, o sistema usa automaticamente a arvore de decisao local como fallback.
+- `main.py` — entrada do aplicativo desktop
+- `backup/backup_manager.py` — lógica de backup
+- `scanner/scanner.py` — análise de arquivos
+- `api/` — backend e painel web
+- `config/` — configurações e histórico
 
-### Arvore de Decisao Implementada
+## Configuração opcional
+
+Use `GEMINI_API_KEY` para ativar classificação inteligente via API.
+Use `SMARTBACKUP_JWT_SECRET` para a API central.
+
+## Atalho rápido
+
+- Abra o app
+- Configure pastas de origem e destino
+- Inicie o scan manual ou deixe o monitoramento agir
+- Use o ícone da bandeja para abrir o painel ou encerrar o sistema
+
 
 A classificacao combina regras locais e, quando disponivel, Gemini API. A arvore considera:
 
