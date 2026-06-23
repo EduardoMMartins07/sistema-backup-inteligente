@@ -492,7 +492,13 @@ def classify_with_rules(file_data):
     }
 
 
-def get_api_key():
+def get_api_key(config=None):
+    config = config or {}
+    api_key = str(config.get("llm_api_key") or "").strip()
+
+    if api_key:
+        return api_key
+
     load_local_env_file()
     return (
         os.environ.get("DEEPSEEK_API_KEY")
@@ -502,31 +508,43 @@ def get_api_key():
 
 
 def get_llm_provider(config=None):
-    load_local_env_file()
     config = config or {}
+    provider = str(config.get("llm_provider") or "").lower()
+
+    if provider:
+        return provider
+
+    load_local_env_file()
     return (
         os.environ.get("LLM_PROVIDER", "").lower()
-        or config.get("llm_provider", "").lower()
         or "gemini"
     )
 
 
 def get_gemini_model(config=None):
-    load_local_env_file()
     config = config or {}
+    model = config.get("gemini_model") or config.get("llm_model")
+
+    if model:
+        return str(model)
+
+    load_local_env_file()
     return (
         os.environ.get("GEMINI_MODEL")
-        or config.get("gemini_model")
         or DEFAULT_GEMINI_MODEL
     )
 
 
 def get_deepseek_model(config=None):
-    load_local_env_file()
     config = config or {}
+    model = config.get("deepseek_model") or config.get("llm_model")
+
+    if model:
+        return str(model)
+
+    load_local_env_file()
     return (
         os.environ.get("DEEPSEEK_MODEL")
-        or config.get("deepseek_model")
         or DEFAULT_DEEPSEEK_MODEL
     )
 
@@ -547,13 +565,13 @@ def is_llm_enabled(config=None):
     env_value = os.environ.get("SMARTBACKUP_LLM_ENABLED")
 
     if env_value is not None:
-        return parse_bool(env_value, default=False) and bool(get_api_key())
+        return parse_bool(env_value, default=False) and bool(get_api_key(config))
 
     config_enabled = parse_bool(
         config.get("llm_classification_enabled"),
         default=True
     )
-    return config_enabled and bool(get_api_key())
+    return config_enabled and bool(get_api_key(config))
 
 
 def is_cache_enabled(config=None):
@@ -668,7 +686,7 @@ def _rate_limited_sleep():
 def request_gemini_classification(file_data, rule_result, config=None):
     """Classifica um arquivo via Gemini API com retry e backoff exponencial."""
     config = config or {}
-    api_key = get_api_key()
+    api_key = get_api_key(config)
 
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY nao configurada.")
@@ -937,7 +955,7 @@ def classify_all_in_one(files_data, config=None):
     """Classifica TODOS os arquivos em UMA unica chamada API. Zero erros 429."""
     config = config or {}
     if not files_data: return []
-    api_key = get_api_key()
+    api_key = get_api_key(config)
     if not api_key or not is_llm_enabled(config):
         return [classify_file_importance(fd, config) for fd in files_data]
 
@@ -1026,7 +1044,7 @@ def classify_files_batch(files_data, config=None):
     Retorna lista de resultados no formato padrao (mesmo de classify_file_importance).
     """
     config = config or {}
-    api_key = get_api_key()
+    api_key = get_api_key(config)
 
     if not api_key:
         # Sem API key: usa regras locais para todos

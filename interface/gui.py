@@ -1081,6 +1081,28 @@ class BackupGUI:
             self.cloud_button.pack(fill="x", pady=(0, 8))
             self.apply_button_feedback(self.cloud_button)
 
+            self.ai_button = tk.Button(
+                self.sidebar_footer_frame,
+                text="Configuração IA",
+                command=self.show_ai_classification_panel,
+                font=BUTTON_FONT,
+                bg=MUTED_PANEL_COLOR,
+                fg="white",
+                activebackground=MUTED_PANEL_COLOR,
+                activeforeground="white",
+                relief="flat",
+                bd=0,
+                highlightthickness=1,
+                highlightbackground="#101722",
+                highlightcolor="#101722",
+                cursor="hand2",
+                padx=10,
+                pady=6
+            )
+            self.register_responsive_font(self.ai_button, BUTTON_FONT, min_size=8)
+            self.ai_button.pack(fill="x", pady=(0, 8))
+            self.apply_button_feedback(self.ai_button)
+
         if can(self.current_user, "manage_users"):
             self.users_button = tk.Button(
                 self.sidebar_footer_frame,
@@ -2535,6 +2557,191 @@ class BackupGUI:
             "Testar conexao",
             test_cloud_connection
         ).grid(row=0, column=1)
+
+    def show_ai_classification_panel(self):
+        if not self.require_permission("manage_cloud_connection"):
+            return
+
+        _panel, content = self.create_content_shell(
+            "Configuração de IA",
+            subtitle=(
+                "Configure o provedor, modelo e a chave de API para classificação via "
+                "Gemini ou DeepSeek."
+            )
+        )
+
+        config = self.load_config() or {}
+        provider_value = str(config.get("llm_provider") or "gemini").lower()
+        provider_var = tk.StringVar(value=provider_value)
+        model_value = str(config.get("llm_model") or "gemini-2.5-flash")
+        model_var = tk.StringVar(value=model_value)
+        current_api_key = str(config.get("llm_api_key") or "")
+        api_key_mask = "************"
+        api_key_var = tk.StringVar(value=api_key_mask if current_api_key else "")
+        status_var = tk.StringVar(value="Status: não testado.")
+
+        box = tk.Frame(
+            content,
+            bg=PANEL_COLOR,
+            highlightbackground=BORDER_COLOR,
+            highlightthickness=1,
+            padx=28,
+            pady=24
+        )
+        box.place(relx=0.5, rely=0.48, anchor="center")
+
+        form = tk.Frame(box, bg=PANEL_COLOR)
+        form.columnconfigure(1, weight=1)
+        form.pack(fill="both", expand=True)
+
+        def add_field(row, label, variable, show=None):
+            tk.Label(
+                form,
+                text=label,
+                bg=PANEL_COLOR,
+                fg="white",
+                font=("Arial", 10, "bold")
+            ).grid(row=row, column=0, sticky="w", pady=6, padx=(0, 10))
+            entry = tk.Entry(
+                form,
+                textvariable=variable,
+                show=show,
+                font=("Arial", 10),
+                bg=LIGHT_BUTTON,
+                fg="white",
+                relief="flat",
+                width=42
+            )
+            entry.grid(row=row, column=1, sticky="ew", pady=6)
+            return entry
+
+        tk.Label(
+            form,
+            text="Provedor LLM",
+            bg=PANEL_COLOR,
+            fg="white",
+            font=("Arial", 10, "bold")
+        ).grid(row=1, column=0, sticky="w", pady=6, padx=(0, 10))
+        provider_combo = ttk.Combobox(
+            form,
+            textvariable=provider_var,
+            values=("gemini", "deepseek"),
+            state="readonly",
+            font=("Arial", 10),
+            width=40,
+            foreground="white"
+        )
+        provider_combo.grid(row=1, column=1, sticky="ew", pady=6)
+
+        tk.Label(
+            form,
+            text="Modelo LLM",
+            bg=PANEL_COLOR,
+            fg="white",
+            font=("Arial", 10, "bold")
+        ).grid(row=2, column=0, sticky="nw", pady=6, padx=(0, 10))
+        model_buttons_frame = tk.Frame(form, bg=PANEL_COLOR)
+        model_buttons_frame.grid(row=2, column=1, sticky="w", pady=6)
+
+        model_options = {
+            "gemini": ["gemini-2.5-flash", "gemini-3.1-flash"],
+            "deepseek": ["deepseek"],
+        }
+
+        def refresh_model_buttons(event=None):
+            for widget in model_buttons_frame.winfo_children():
+                widget.destroy()
+
+            provider = provider_var.get().strip().lower() or "gemini"
+            options = model_options.get(provider, ["gemini-2.5-flash"])
+            if model_var.get() not in options:
+                model_var.set(options[0])
+
+            for index, option in enumerate(options):
+                button = tk.Radiobutton(
+                    model_buttons_frame,
+                    text=option,
+                    variable=model_var,
+                    value=option,
+                    bg=PANEL_COLOR,
+                    fg="white",
+                    selectcolor=PANEL_COLOR,
+                    activebackground=PANEL_COLOR,
+                    activeforeground="white",
+                    font=("Arial", 10),
+                    anchor="w",
+                    width=22,
+                    padx=0,
+                    pady=4,
+                )
+                button.grid(row=index, column=0, sticky="w", pady=2)
+
+        refresh_model_buttons()
+        provider_combo.bind("<<ComboboxSelected>>", refresh_model_buttons)
+
+        add_field(3, "Chave de API", api_key_var, show="*")
+
+        tk.Label(
+            form,
+            text="Deixe a chave como está para manter o valor atual.",
+            bg=PANEL_COLOR,
+            fg="white",
+            font=("Arial", 9),
+            wraplength=460,
+            justify="left"
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        tk.Label(
+            form,
+            textvariable=status_var,
+            bg=PANEL_COLOR,
+            fg="white",
+            font=("Arial", 10),
+            wraplength=460,
+            justify="center"
+        ).grid(row=5, column=0, columnspan=2, sticky="ew", pady=(10, 14))
+
+        actions = tk.Frame(form, bg=PANEL_COLOR)
+        actions.grid(row=6, column=0, columnspan=2)
+
+        def build_payload():
+            api_key = api_key_var.get().strip()
+            if api_key == api_key_mask:
+                api_key = current_api_key
+
+            return {
+                "llm_provider": str(provider_var.get()).strip().lower() or "gemini",
+                "llm_model": str(model_var.get()).strip(),
+                "llm_api_key": api_key,
+            }
+
+        def save_ai_settings():
+            try:
+                payload = build_payload()
+                config = self.load_config() or {}
+                config.update(payload)
+                self.save_config(config)
+                self.sync_desktop_config_cache_background()
+            except Exception as error:
+                messagebox.showerror(
+                    "Erro ao salvar",
+                    str(error),
+                    parent=self.root
+                )
+                return
+
+            status_var.set("Status: configuração salva.")
+            messagebox.showinfo(
+                "Configuração de IA",
+                "Configuração de IA salva com sucesso.",
+                parent=self.root
+            )
+
+        self.create_dialog_button(
+            actions,
+            "Salvar configuração",
+            save_ai_settings
+        ).grid(row=0, column=0)
 
     def apply_button_feedback(self, button):
         default_bg = button.cget("bg")
@@ -7899,9 +8106,52 @@ class BackupGUI:
             }
         )
 
-        indexed_history = download_entries
+        # Agrupa entradas de verificacao agendada consecutivas para evitar poluicao visual
+        grouped_entries = []
+        active_group = None
+
+        def flush_group():
+            nonlocal active_group
+
+            if not active_group:
+                return
+
+            if len(active_group["items"]) == 1:
+                grouped_entries.append(active_group["items"][0])
+            else:
+                latest_entry = dict(active_group["items"][0])
+                latest_entry["download_group_count"] = len(active_group["items"])
+                latest_entry["download_group_first_timestamp"] = active_group["items"][-1].get("timestamp", "")
+                latest_entry["download_group_last_timestamp"] = latest_entry.get("timestamp", "")
+                grouped_entries.append(latest_entry)
+
+            active_group = None
+
+        for entry in download_entries:
+            if not self.is_groupable_scheduled_verification_entry(entry):
+                flush_group()
+                grouped_entries.append(entry)
+                continue
+
+            key = self.get_restore_group_key(entry)
+
+            if active_group and active_group["key"] == key:
+                active_group["items"].append(entry)
+                continue
+
+            flush_group()
+            active_group = {"key": key, "items": [entry]}
+
+        flush_group()
+        indexed_history = grouped_entries
 
         for index, entry in enumerate(indexed_history):
+            backup_name = entry.get("backup_name", "") or entry.get("backup_file", "-")
+            group_count = entry.get("download_group_count")
+
+            if group_count:
+                backup_name = f"{backup_name} ({group_count} verificacoes)"
+
             history_tree.insert(
                 "",
                 tk.END,
@@ -7909,7 +8159,7 @@ class BackupGUI:
                 values=(
                     entry.get("timestamp", "-"),
                     entry.get("user", "sistema"),
-                    entry.get("backup_name", "") or entry.get("backup_file", "-"),
+                    backup_name,
                     entry.get("trigger", "-"),
                     entry.get("total_files", 0),
                     "Parcial" if entry.get("partial_backup") else "Completo",

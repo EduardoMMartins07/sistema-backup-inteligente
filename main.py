@@ -1,4 +1,5 @@
 import threading
+import time
 import os
 import json
 import queue
@@ -55,6 +56,27 @@ def shutdown_all():
         force_release_backup_lock()
     except Exception:
         pass
+
+    # Aguarda um pouco para que as threads percebam o sinal de shutdown
+    # e terminem voluntariamente antes de forcarmos a finalizacao.
+    _wait_for_all_threads(timeout=3.0)
+
+
+def _wait_for_all_threads(timeout=3.0):
+    """Aguarda que todas as threads (inclusive daemon) finalizem."""
+    deadline = time.monotonic() + timeout
+    current = threading.current_thread()
+    while time.monotonic() < deadline:
+        remaining = 0
+        for t in threading.enumerate():
+            if t is threading.main_thread() or t is current:
+                continue
+            if t.is_alive():
+                remaining += 1
+                t.join(timeout=max(0.05, deadline - time.monotonic()))
+        if remaining == 0:
+            break
+        time.sleep(0.05)
 
 
 def wait_for_background_threads(threads, join_timeout=10.0):
@@ -188,9 +210,6 @@ if __name__ == "__main__":
     sys.stdout.flush()
     sys.stderr.flush()
 
-    # Tenta aguardar threads nao-daemon remanescentes (ex: workers do
-    # ThreadPoolExecutor da classificacao) por alguns segundos, para
-    # evitar mensagens "couldn't stop thread" na saida do interpretador.
-    for t in threading.enumerate():
-        if t is not threading.main_thread() and not t.daemon:
-            t.join(timeout=3.0)
+    # Aguarda threads remanescentes (inclusive daemon do ThreadPoolExecutor)
+    # para evitar mensagens "couldn't stop thread" na saida do interpretador.
+    _wait_for_all_threads(timeout=5.0)
